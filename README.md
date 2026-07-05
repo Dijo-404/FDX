@@ -2,6 +2,22 @@
 
 This directory contains a trimmed, no-login face detection setup.
 
+## Setup
+
+Install Docker and Python 3.
+
+Download the model weights from Drive and place them in `models/`.
+
+Expected layout:
+
+```text
+models/
+  facenet/
+  facemask/
+  agegender/
+  mtcnn/
+```
+
 ## Run
 
 ```sh
@@ -22,10 +38,11 @@ Stop the detector container and local UI proxy:
 
 ## Layout
 
-- `docker-compose.yml` - starts only `exadel/compreface-core:1.2.0`
+- `run.sh` - starts `exadel/compreface-core:1.2.0` and the local UI
+- `stop.sh` - stops the detector container and local UI proxy
 - `frontend/` - small upload UI for image detection
 - `tools/detector_proxy.py` - local proxy from the UI to `compreface-core`
-- `model-weights/` - bundled model weights mounted into the detector container
+- `models/` - local model weights from Drive, mounted into the detector container
 - `face-processing/` - Python face processing source/config for inspection
 - `backend/` - notes for the detection backend
 
@@ -38,11 +55,3 @@ Stop the detector container and local UI proxy:
 - Original upstream frontend
 - Container OS folders and runtime libraries
 - Python caches, test folders, and sample images
-
-## Included Weights
-
-- `model-weights/facenet/calculator/20180402-114759/20180402-114759.pb`
-- `model-weights/facemask/mask/inception_v3_on_mafa_kaggle123/`
-- `model-weights/agegender/age/22801/`
-- `model-weights/agegender/gender/21936/`
-- `model-weights/mtcnn/data/mtcnn_weights.npy`

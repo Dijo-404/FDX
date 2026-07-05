@@ -1,6 +1,6 @@
 # Backend
 
-The backend is the `detector` service in `../docker-compose.yml`.
+The backend is the `fdx-detector` container started by `../run.sh`.
 
 It runs only `exadel/compreface-core:1.2.0` and exposes the unauthenticated face detection endpoint:
 

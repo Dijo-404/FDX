@@ -235,7 +235,7 @@ async function detectFile(file, node) {
   }
 }
 
-async function findFaces(file, facePlugins) {
+async function findFaces(file, facePlugins, allowNoFaces = false) {
   const data = new FormData();
   data.append("file", file, file.name);
   const url = `/api/find_faces?face_plugins=${encodeURIComponent(facePlugins)}&limit=0&det_prob_threshold=${getApiThreshold()}`;
@@ -243,7 +243,11 @@ async function findFaces(file, facePlugins) {
   const payload = await response.json();
 
   if (!response.ok) {
-    throw new Error(payload.message || `HTTP ${response.status}`);
+    const message = payload.message || `HTTP ${response.status}`;
+    if (allowNoFaces && response.status === 400 && /no face/i.test(message)) {
+      return { ...payload, result: [] };
+    }
+    throw new Error(message);
   }
 
   return payload;
@@ -255,16 +259,23 @@ async function detectVideo(file, node, generation) {
   node.summary.textContent = "Loading video";
 
   const objectUrl = URL.createObjectURL(file);
+  const decoder = document.createElement("video");
   node.video.src = objectUrl;
+  node.video.controls = false;
+  decoder.preload = "auto";
+  decoder.muted = true;
+  decoder.playsInline = true;
+  decoder.src = objectUrl;
 
   try {
-    await waitForVideoMetadata(node.video);
-    await waitForVideoData(node.video);
-    const duration = node.video.duration;
+    await waitForVideoMetadata(decoder);
+    await waitForVideoData(decoder);
+    const duration = decoder.duration;
     if (!Number.isFinite(duration) || duration <= 0) {
       throw new Error("Could not determine the video duration");
     }
 
+    node.videoStage.style.aspectRatio = `${decoder.videoWidth} / ${decoder.videoHeight}`;
     const requestedInterval = getVideoInterval();
     const sampleInterval = Math.max(requestedInterval, duration / VIDEO_MAX_FRAMES);
     const timestamps = createSampleTimestamps(duration, sampleInterval);
@@ -274,27 +285,30 @@ async function detectVideo(file, node, generation) {
     let nextTrackId = 1;
     let useEmbeddings = true;
 
-    sizeFrameCanvas(frameCanvas, node.video.videoWidth, node.video.videoHeight);
+    sizeFrameCanvas(frameCanvas, decoder.videoWidth, decoder.videoHeight);
     node.videoOverlay.width = frameCanvas.width;
     node.videoOverlay.height = frameCanvas.height;
-    node.video.controls = false;
 
     for (let index = 0; index < timestamps.length; index += 1) {
       if (generation !== processingGeneration) return;
 
       const timestamp = timestamps[index];
       node.summary.textContent = `Analyzing frame ${index + 1} of ${timestamps.length} · ${formatTime(timestamp)}`;
-      await seekVideo(node.video, timestamp);
-      captureVideoFrame(node.video, frameCanvas);
+      await seekVideo(decoder, timestamp);
+      captureVideoFrame(decoder, frameCanvas);
       const frameFile = await canvasToFile(frameCanvas, file.name, index);
 
       let payload;
       try {
-        payload = await findFaces(frameFile, useEmbeddings ? "calculator" : "");
+        payload = await findFaces(
+          frameFile,
+          useEmbeddings ? "calculator" : "",
+          true,
+        );
       } catch (error) {
         if (!useEmbeddings) throw error;
         useEmbeddings = false;
-        payload = await findFaces(frameFile, "");
+        payload = await findFaces(frameFile, "", true);
       }
 
       const detectedFaces = Array.isArray(payload.result) ? payload.result : [];
@@ -307,18 +321,37 @@ async function detectVideo(file, node, generation) {
         nextTrackId,
       );
       samples.push({ timestamp, faces });
-      drawVideoOverlay(node.videoOverlay, faces);
     }
 
     if (generation !== processingGeneration) return;
 
+    const { confirmedTracks, playbackSamples, discardedTracks } =
+      createConfirmedVideoAnalysis(samples, tracks);
+    await waitForVideoMetadata(node.video);
     node.video.controls = true;
     node.video.currentTime = 0;
-    installVideoOverlayPlayback(node.video, node.videoOverlay, samples, sampleInterval);
+    installVideoOverlayPlayback(
+      node.video,
+      node.videoOverlay,
+      playbackSamples,
+      sampleInterval,
+    );
     node.summary.classList.remove("error");
-    node.summary.textContent = createVideoSummary(samples, tracks, sampleInterval, requestedInterval);
+    node.summary.textContent = createVideoSummary(
+      playbackSamples,
+      confirmedTracks,
+      sampleInterval,
+      requestedInterval,
+    );
     node.raw.textContent = JSON.stringify(
-      createVideoDiagnostics(file, duration, samples, tracks, sampleInterval),
+      createVideoDiagnostics(
+        file,
+        duration,
+        playbackSamples,
+        confirmedTracks,
+        sampleInterval,
+        discardedTracks,
+      ),
       null,
       2,
     );
@@ -327,6 +360,10 @@ async function detectVideo(file, node, generation) {
     node.summary.classList.add("error");
     node.summary.textContent = error.message;
     node.raw.textContent = "";
+  } finally {
+    decoder.pause();
+    decoder.removeAttribute("src");
+    decoder.load();
   }
 }
 
@@ -789,25 +826,50 @@ function boxIntersectionOverUnion(first = {}, second = {}) {
 }
 
 function installVideoOverlayPlayback(video, overlay, samples, sampleInterval) {
-  let animationFrame = null;
+  let scheduledFrame = null;
+  let scheduledWithVideoCallback = false;
 
-  const render = () => {
-    const sample = getClosestVideoSample(samples, video.currentTime, sampleInterval);
-    drawVideoOverlay(overlay, sample ? sample.faces : []);
+  const render = (timestamp = video.currentTime) => {
+    const faces = interpolateVideoFaces(samples, timestamp, sampleInterval);
+    drawVideoOverlay(overlay, faces);
   };
-  const renderWhilePlaying = () => {
-    render();
-    if (!video.paused && !video.ended && video.isConnected) {
-      animationFrame = window.requestAnimationFrame(renderWhilePlaying);
+
+  const cancelScheduledFrame = () => {
+    if (scheduledFrame === null) return;
+    if (scheduledWithVideoCallback && "cancelVideoFrameCallback" in video) {
+      video.cancelVideoFrameCallback(scheduledFrame);
+    } else {
+      window.cancelAnimationFrame(scheduledFrame);
+    }
+    scheduledFrame = null;
+  };
+
+  const scheduleNextFrame = () => {
+    if (video.paused || video.ended || !video.isConnected) return;
+
+    if ("requestVideoFrameCallback" in video) {
+      scheduledWithVideoCallback = true;
+      scheduledFrame = video.requestVideoFrameCallback((_now, metadata) => {
+        scheduledFrame = null;
+        render(metadata.mediaTime);
+        scheduleNextFrame();
+      });
+    } else {
+      scheduledWithVideoCallback = false;
+      scheduledFrame = window.requestAnimationFrame(() => {
+        scheduledFrame = null;
+        render();
+        scheduleNextFrame();
+      });
     }
   };
+
   const onPlay = () => {
-    if (animationFrame !== null) window.cancelAnimationFrame(animationFrame);
-    renderWhilePlaying();
+    cancelScheduledFrame();
+    scheduleNextFrame();
   };
   const onPause = () => {
-    if (animationFrame !== null) window.cancelAnimationFrame(animationFrame);
-    animationFrame = null;
+    cancelScheduledFrame();
     render();
   };
 
@@ -818,17 +880,92 @@ function installVideoOverlayPlayback(video, overlay, samples, sampleInterval) {
   render();
 }
 
-function getClosestVideoSample(samples, timestamp, sampleInterval) {
-  if (samples.length === 0) return null;
-  let closest = samples[0];
-
-  for (let index = 1; index < samples.length; index += 1) {
-    if (Math.abs(samples[index].timestamp - timestamp)
-      >= Math.abs(closest.timestamp - timestamp)) break;
-    closest = samples[index];
+function interpolateVideoFaces(samples, timestamp, sampleInterval) {
+  if (samples.length === 0) return [];
+  if (timestamp <= samples[0].timestamp) return samples[0].faces;
+  if (timestamp >= samples.at(-1).timestamp) {
+    return timestamp - samples.at(-1).timestamp <= sampleInterval * 1.5
+      ? samples.at(-1).faces
+      : [];
   }
 
-  return Math.abs(closest.timestamp - timestamp) <= sampleInterval * 1.5 ? closest : null;
+  let low = 0;
+  let high = samples.length - 1;
+  while (low + 1 < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (samples[middle].timestamp <= timestamp) {
+      low = middle;
+    } else {
+      high = middle;
+    }
+  }
+
+  const previous = samples[low];
+  const next = samples[high];
+  const span = next.timestamp - previous.timestamp;
+  const progress = span > 0 ? (timestamp - previous.timestamp) / span : 0;
+  const nextByTrack = new Map(
+    next.faces.map((face) => [face.track?.id, face]),
+  );
+  const previousTrackIds = new Set(
+    previous.faces.map((face) => face.track?.id),
+  );
+  const interpolated = previous.faces.map((face) => {
+    const nextFace = nextByTrack.get(face.track?.id);
+    return nextFace
+      ? interpolateTrackedFace(face, nextFace, progress)
+      : { ...face, overlayAlpha: 1 - progress };
+  });
+
+  next.faces.forEach((face) => {
+    if (!previousTrackIds.has(face.track?.id)) {
+      interpolated.push({ ...face, overlayAlpha: progress });
+    }
+  });
+
+  return interpolated;
+}
+
+function interpolateTrackedFace(previous, next, progress) {
+  const previousBox = previous.box || {};
+  const nextBox = next.box || {};
+  const interpolate = (key) => {
+    const start = Number(previousBox[key] || 0);
+    return start + (Number(nextBox[key] || 0) - start) * progress;
+  };
+
+  return {
+    ...previous,
+    match: next.match || previous.match,
+    track: next.track || previous.track,
+    overlayAlpha: 1,
+    box: {
+      ...previousBox,
+      x_min: interpolate("x_min"),
+      y_min: interpolate("y_min"),
+      x_max: interpolate("x_max"),
+      y_max: interpolate("y_max"),
+      probability: interpolate("probability"),
+    },
+  };
+}
+
+function createConfirmedVideoAnalysis(samples, tracks) {
+  const minimumAppearances = samples.length > 1 ? 2 : 1;
+  const confirmedTracks = tracks.filter(
+    (track) => track.appearances >= minimumAppearances,
+  );
+  const confirmedIds = new Set(confirmedTracks.map((track) => track.id));
+  const playbackSamples = samples.map((sample) => ({
+    timestamp: sample.timestamp,
+    faces: sample.faces.filter((face) => confirmedIds.has(face.track?.id)),
+  }));
+
+  return {
+    confirmedTracks,
+    playbackSamples,
+    discardedTracks: tracks.length - confirmedTracks.length,
+  };
 }
 
 function createVideoSummary(samples, tracks, sampleInterval, requestedInterval) {
@@ -841,12 +978,20 @@ function createVideoSummary(samples, tracks, sampleInterval, requestedInterval) 
   return `${tracks.length} face track${tracks.length === 1 ? "" : "s"} · ${detections} detections${named}${adjusted}`;
 }
 
-function createVideoDiagnostics(file, duration, samples, tracks, sampleInterval) {
+function createVideoDiagnostics(
+  file,
+  duration,
+  samples,
+  tracks,
+  sampleInterval,
+  discardedTracks,
+) {
   return {
     file: file.name,
     duration_seconds: Number(duration.toFixed(3)),
     sample_interval_seconds: Number(sampleInterval.toFixed(3)),
     sampled_frames: samples.length,
+    discarded_transient_tracks: discardedTracks,
     tracks: tracks.map((track) => ({
       id: track.id,
       name: track.name,
@@ -914,6 +1059,7 @@ function drawFaceBoxes(context, faces, scale) {
     const color = hasMatch ? "#13795b" : "#2563eb";
     const label = createBoxLabel(match, face.track);
 
+    context.globalAlpha = clamp(Number(face.overlayAlpha ?? 1), 0, 1);
     context.strokeStyle = color;
     context.fillStyle = color;
     context.strokeRect(x, y, w, h);
@@ -924,6 +1070,7 @@ function drawFaceBoxes(context, faces, scale) {
       context.fillText(label, x + 5, Math.max(14, y - 7));
     }
   });
+  context.globalAlpha = 1;
 }
 
 function createBoxLabel(match, track) {

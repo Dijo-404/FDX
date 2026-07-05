@@ -15,6 +15,10 @@ class DetectorHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(FRONTEND_ROOT), **kwargs)
 
+    def end_headers(self):
+        self.send_header("Cache-Control", "no-store")
+        super().end_headers()
+
     def do_GET(self):
         if self.path == "/health":
             self._proxy_get("/healthcheck")

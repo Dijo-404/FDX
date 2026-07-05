@@ -60,7 +60,8 @@ Stop the detector container and local UI proxy:
 
 Upload a browser-supported video from the Detection page. The UI samples frames,
 detects faces, assigns persistent face IDs using embeddings and box overlap, and
-draws the tracked boxes during playback. If target faces have been added, matching
+draws smoothly interpolated tracked boxes during playback. One-frame detections
+are discarded to reduce visual noise. If target faces have been added, matching
 tracks use their saved names.
 
 Long videos are automatically limited to at most 600 sampled frames. The sampling

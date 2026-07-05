@@ -19,6 +19,9 @@ class DetectorHandler(SimpleHTTPRequestHandler):
         if self.path == "/health":
             self._proxy_get("/healthcheck")
             return
+        if self.path == "/status":
+            self._proxy_get("/status")
+            return
         if self.path == "/":
             self.path = "/index.html"
         super().do_GET()

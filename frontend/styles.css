@@ -27,6 +27,21 @@ input {
   font: inherit;
 }
 
+input[type="text"] {
+  width: 100%;
+  min-height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--ink);
+  padding: 8px 10px;
+}
+
+input[type="text"]:focus {
+  border-color: var(--accent);
+  outline: 2px solid rgb(19 121 91 / 18%);
+}
+
 .shell {
   width: min(1180px, calc(100vw - 32px));
   margin: 0 auto;
@@ -38,7 +53,7 @@ input {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 16px;
+  margin-bottom: 22px;
 }
 
 h1 {
@@ -50,6 +65,16 @@ h1 {
 .topbar p {
   margin: 4px 0 0;
   color: var(--muted);
+}
+
+.pageNav {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #eaf0f4;
 }
 
 button {
@@ -66,6 +91,48 @@ button:hover {
   border-color: var(--accent);
 }
 
+.pageTab {
+  min-width: 0;
+  border-color: transparent;
+  background: transparent;
+  padding: 8px 12px;
+  color: #435466;
+}
+
+.pageTab.active {
+  border-color: var(--line);
+  background: var(--panel);
+  color: var(--ink);
+  box-shadow: 0 1px 2px rgb(23 32 42 / 8%);
+}
+
+.page {
+  display: grid;
+  gap: 16px;
+}
+
+.page[hidden] {
+  display: none;
+}
+
+.sectionHeader {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.sectionHeader h2 {
+  margin: 0;
+  font-size: 20px;
+  line-height: 1.2;
+}
+
+.sectionHeader p {
+  margin: 4px 0 0;
+  color: var(--muted);
+}
+
 .dropzone {
   position: relative;
   display: grid;
@@ -80,6 +147,10 @@ button:hover {
 .dropzone.dragover {
   border-color: var(--accent);
   background: #eef8f4;
+}
+
+.dropzone.compact {
+  min-height: 140px;
 }
 
 .dropzone input {
@@ -128,6 +199,21 @@ button:hover {
 .controls label {
   display: grid;
   grid-template-columns: auto minmax(160px, 280px) 48px;
+  align-items: center;
+  gap: 12px;
+  color: var(--muted);
+}
+
+.targetControls {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.targetControls label {
+  display: grid;
+  grid-template-columns: auto minmax(180px, 360px);
   align-items: center;
   gap: 12px;
   color: var(--muted);
@@ -192,6 +278,98 @@ pre {
   white-space: pre-wrap;
 }
 
+.emptyState {
+  display: grid;
+  align-content: center;
+  place-items: center;
+  gap: 4px;
+  min-height: 220px;
+  border: 1px dashed #b4c2ce;
+  border-radius: 8px;
+  background: #ffffff;
+  text-align: center;
+}
+
+.emptyState h3,
+.emptyState p {
+  margin: 0;
+}
+
+.emptyState h3 {
+  font-size: 18px;
+}
+
+.emptyState p {
+  margin-top: 4px;
+  color: var(--muted);
+}
+
+.facesGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 14px;
+}
+
+.faceCard {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.faceCard img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  border-radius: 6px;
+  background: #111820;
+}
+
+.faceCard h3 {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.25;
+}
+
+.faceCard p {
+  margin: 2px 0 0;
+  color: var(--muted);
+}
+
+.faceNameField {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+}
+
+.faceCard dl {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.faceCard dl div {
+  display: grid;
+  grid-template-columns: 82px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.faceCard dt {
+  color: var(--muted);
+}
+
+.faceCard dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 760px) {
   .shell {
     width: min(100vw - 20px, 1180px);
@@ -199,16 +377,32 @@ pre {
   }
 
   .topbar,
+  .sectionHeader,
   .result {
     grid-template-columns: 1fr;
   }
 
-  .topbar {
+  .topbar,
+  .sectionHeader {
     display: grid;
+  }
+
+  .pageNav {
+    display: grid;
+    grid-template-columns: 1fr;
+    width: 100%;
+  }
+
+  .pageTab {
+    width: 100%;
   }
 
   .controls label {
     grid-template-columns: 1fr;
     width: 100%;
+  }
+
+  .targetControls label {
+    grid-template-columns: 1fr;
   }
 }

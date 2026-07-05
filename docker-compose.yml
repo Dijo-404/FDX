@@ -1,0 +1,17 @@
+services:
+  detector:
+    image: exadel/compreface-core:1.2.0
+    container_name: fdx-detector
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      ML_PORT: "3000"
+      IMG_LENGTH_LIMIT: "1280"
+      FACE_DETECTION_PLUGIN: facenet.FaceDetector
+      CALCULATION_PLUGIN: facenet.Calculator
+      EXTRA_PLUGINS: " "
+      UWSGI_PROCESSES: "1"
+      UWSGI_THREADS: "1"
+    volumes:
+      - ./model-weights:/app/ml/.models:ro

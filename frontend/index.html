@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>FDX Detector</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <h1>FDX Detector</h1>
+          <p id="status">Starting backend check...</p>
+        </div>
+        <button id="clear" type="button">Clear</button>
+      </header>
+
+      <section id="dropzone" class="dropzone">
+        <input id="fileInput" type="file" accept="image/*" multiple>
+        <label for="fileInput">
+          <span>Drop images here</span>
+          <strong>Choose images</strong>
+        </label>
+      </section>
+
+      <section class="controls">
+        <label>
+          Confidence
+          <input id="threshold" type="range" min="0" max="1" step="0.01" value="0.8">
+          <output id="thresholdValue">0.80</output>
+        </label>
+      </section>
+
+      <section id="results" class="results" aria-live="polite"></section>
+    </main>
+
+    <template id="resultTemplate">
+      <article class="result">
+        <div class="canvasWrap">
+          <canvas></canvas>
+        </div>
+        <div class="meta">
+          <h2></h2>
+          <p class="summary"></p>
+          <pre></pre>
+        </div>
+      </article>
+    </template>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

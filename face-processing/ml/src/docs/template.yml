@@ -1,0 +1,19 @@
+swagger: '2.0'
+info:
+  version: v1
+  title: 'FDX Core Service'
+  description: 'FDX is a local face detection runner: upload an image and receive detected face boxes.'
+tags:
+  - name: 'Core'
+schemes:
+  - http
+definitions:
+  ErrorResponseBody:
+    type: "object"
+    properties:
+      message:
+        type: "string"
+        description: "Service returns a message along with 4xx and 5xx error responses"
+externalDocs:
+  description: 'FDX documentation'
+  url: 'https://confluence.exadel.com/display/EFRS'

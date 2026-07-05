@@ -29,10 +29,10 @@
         </div>
 
         <section id="dropzone" class="dropzone">
-          <input id="fileInput" type="file" accept="image/*" multiple>
+          <input id="fileInput" type="file" accept="image/*,video/*" multiple>
           <label for="fileInput">
-            <span>Drop images here</span>
-            <strong>Choose images</strong>
+            <span>Drop images or videos here</span>
+            <strong>Choose files</strong>
           </label>
         </section>
 
@@ -41,6 +41,15 @@
             Confidence
             <input id="threshold" type="range" min="0.01" max="0.99" step="0.01" value="0.8">
             <output id="thresholdValue">0.80</output>
+          </label>
+          <label class="videoIntervalControl">
+            Video sampling
+            <select id="videoInterval">
+              <option value="0.25">Every 0.25 seconds</option>
+              <option value="0.5" selected>Every 0.5 seconds</option>
+              <option value="1">Every 1 second</option>
+              <option value="2">Every 2 seconds</option>
+            </select>
           </label>
         </section>
 
@@ -81,8 +90,12 @@
 
     <template id="resultTemplate">
       <article class="result">
-        <div class="canvasWrap">
-          <canvas></canvas>
+        <div class="canvasWrap imageStage">
+          <canvas class="imageCanvas"></canvas>
+        </div>
+        <div class="videoStage" hidden>
+          <video controls preload="metadata"></video>
+          <canvas class="videoOverlay"></canvas>
         </div>
         <div class="meta">
           <h2></h2>

@@ -16,4 +16,4 @@ definitions:
         description: "Service returns a message along with 4xx and 5xx error responses"
 externalDocs:
   description: 'FDX documentation'
-  url: 'https://confluence.exadel.com/display/EFRS'
+  url: '/'

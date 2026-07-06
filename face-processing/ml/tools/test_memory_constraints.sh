@@ -1,5 +1,5 @@
 #!/bin/bash
-cd "${0%/*}" || exit 1 # Set Current Dir to the script's dir
+cd "${0%/*}/.." || exit 1
 IMG_DIR=$1
 
 SCANNERS=${SCANNERS:-InsightFace Facenet2018}
@@ -12,13 +12,12 @@ for scanner in ${SCANNERS/,/ }; do
   for mem_limit in ${MEM_LIMITS/,/ }; do
     for img_length_limit in ${IMG_LENGTH_LIMITS/,/ }; do
       for img_name in ${IMG_NAMES/,/ }; do
-        # Run experiment
-        OUTPUT=$(docker run --memory="$mem_limit" --memory-swap="$mem_limit" -e IMG_LENGTH_LIMIT="$img_length_limit" \
-          -e SCANNER="$scanner" -e IMG_NAMES="$img_name" -e SAVE_IMG=false \
-          embedding-calculator python -m tools.scan 2>&1)
+        # Run experiment locally. The mem_limit value is kept in the output label.
+        OUTPUT=$(IMG_LENGTH_LIMIT="$img_length_limit" SCANNER="$scanner" IMG_NAMES="$img_name" SAVE_IMG=false \
+          python -m tools.scan 2>&1)
         EXIT_CODE=$?
 
-        # Format container's output
+        # Format command output
         if [ "$SHOW_OUTPUT" = true ] && [[ -n $OUTPUT ]]; then
           NEWLINE=$'\n'
           OUTPUT="${NEWLINE}${OUTPUT}"

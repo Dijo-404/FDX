@@ -44,7 +44,7 @@ Stop the local detector service and UI proxy:
 ./stop.sh
 ```
 
-## How the repo works
+## Architecture
 
 `run.sh` checks for Python 3 and `models/`. It then starts the local detector
 service, waits for `/healthcheck`, and starts `tools/detector_proxy.py`.
@@ -79,7 +79,17 @@ The UI has three pages:
 - `Faces` lets you add target face images. The UI stores target previews and
   embeddings in browser `localStorage`, then uses them to name matching tracks.
 
-## Request flow
+## Workflow
+
+Startup workflow:
+
+1. `run.sh` validates Python 3 and the local `models/` directory.
+2. The local detector starts on `127.0.0.1:3000`.
+3. `run.sh` waits until `GET /healthcheck` responds.
+4. `tools/detector_proxy.py` starts the UI and proxy on `127.0.0.1:8080`.
+5. The browser opens the UI and sends all detection requests through the proxy.
+
+Detection workflow:
 
 ```mermaid
 sequenceDiagram

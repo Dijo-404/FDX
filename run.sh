@@ -3,8 +3,8 @@ set -eu
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 ML_DIR="$ROOT_DIR/face-processing/ml"
-PID_FILE="$ROOT_DIR/.fdx-detector.pid"
-LOG_FILE="$ROOT_DIR/.fdx-detector.log"
+PID_FILE="$ROOT_DIR/.fdx-backend.pid"
+LOG_FILE="$ROOT_DIR/.fdx-backend.log"
 
 cd "$ROOT_DIR"
 
@@ -59,7 +59,7 @@ PY
 done
 
 if [ "$ready" -ne 1 ]; then
-  printf '%s\n' "Detector backend did not become ready. See .fdx-detector.log for details."
+  printf '%s\n' "Detector backend did not become ready. See .fdx-backend.log for details."
   exit 1
 fi
 

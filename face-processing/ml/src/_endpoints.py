@@ -12,6 +12,7 @@
 #  or implied. See the License for the specific language governing
 #  permissions and limitations under the License.
 from typing import List, Optional
+from pathlib import Path
 
 from flask import request
 from flask.json import jsonify
@@ -25,9 +26,10 @@ from src.services.flask_.constants import ARG
 from src.services.flask_.needs_attached_file import needs_attached_file
 from src.services.imgtools.read_img import read_img
 from src.services.utils.pyutils import Constants
-from src.services.imgtools.test.files import IMG_DIR
 import base64
 from src.constants import SKIPPED_PLUGINS
+
+WARMUP_IMAGE = Path(__file__).resolve().parents[1] / 'assets' / 'warmup' / 'einstein.jpeg'
 
 
 class FaceDetection(object):
@@ -50,7 +52,7 @@ def endpoints(app):
         face_plugins = managers.plugin_manager.face_plugins
         face_plugins = face_detection_skip_check(face_plugins)
         detector(
-            img=read_img(str(IMG_DIR / 'einstein.jpeg')),
+            img=read_img(str(WARMUP_IMAGE)),
             det_prob_threshold=_get_det_prob_threshold(),
             face_plugins=face_plugins
         )

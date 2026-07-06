@@ -5,11 +5,15 @@ and a custom browser UI, while removing the upstream admin service, API service,
 Postgres database, accounts, and login flow.
 
 The default setup runs the local detector service on port `3000` and a small
-local Python proxy/UI server on port `8080`.
+local Python proxy/UI server on port `8080`. Docker and the upstream CompreFace
+service stack are not required.
 
 ## Quick start
 
-Install Python 3, then place the downloaded model bundle in `models/`.
+Install `uv` (recommended) or Python 3.8, then place the model bundle in
+`models/`. On its first run, FDX creates `.venv/` and installs the pinned local
+Python 3.8/TensorFlow 2.2 runtime. Allow roughly 2 GB of disk space for this
+one-time setup.
 
 Expected model folder:
 
@@ -32,6 +36,8 @@ Run the detector and UI:
 ./run.sh
 ```
 
+No Docker containers need to be running.
+
 Open:
 
 ```text
@@ -46,13 +52,26 @@ Stop the local detector service and UI proxy:
 
 ## Architecture
 
-`run.sh` checks for Python 3 and `models/`. It then starts the local detector
-service, waits for `/healthcheck`, and starts `tools/detector_proxy.py`.
+`run.sh` checks `models/`, bootstraps the pinned runtime with
+`tools/bootstrap_local.sh` when needed, starts the local detector service, waits
+for model warm-up and `/healthcheck`, then starts `tools/detector_proxy.py`.
+Backend startup failures are printed immediately and also written to
+`.fdx-backend.log`.
 
 The browser never calls the detector service directly. It loads the static UI
 from the proxy and sends detection requests to `/api/find_faces`. The proxy
 serves `frontend/`, forwards health/status requests, and forwards face detection
 uploads to `http://127.0.0.1:3000/find_faces`.
+
+Main components:
+
+| Component | Path | Role |
+| --- | --- | --- |
+| Browser UI | `frontend/` | Uploads images/videos, opens live scan, draws boxes, and stores target faces |
+| Local proxy | `tools/detector_proxy.py` | Serves the UI and forwards detector API calls |
+| Detector service | `face-processing/ml/src/` | Loads models, detects faces, and runs requested plugins |
+| Model bundle | `models/` | Stores local face, age, gender, and mask model weights |
+| Source snapshot | `face-processing/ml/` | Keeps the local detector implementation and helper tools |
 
 ```mermaid
 flowchart LR
@@ -83,13 +102,24 @@ The UI has three pages:
 
 Startup workflow:
 
-1. `run.sh` validates Python 3 and the local `models/` directory.
-2. The local detector starts on `127.0.0.1:3000`.
-3. `run.sh` waits until `GET /healthcheck` responds.
-4. `tools/detector_proxy.py` starts the UI and proxy on `127.0.0.1:8080`.
-5. The browser opens the UI and sends all detection requests through the proxy.
+1. `run.sh` validates the local `models/` directory.
+2. On first use, `tools/bootstrap_local.sh` installs Python 3.8 and the pinned
+   detector dependencies into `.venv/`.
+3. The local detector starts on `127.0.0.1:3000` and warms up the models.
+4. `run.sh` waits until `GET /healthcheck` responds.
+5. `tools/detector_proxy.py` starts the UI and proxy on `127.0.0.1:8080`.
+6. The browser opens the UI and sends all detection requests through the proxy.
 
 Detection workflow:
+
+1. The UI captures an uploaded image, a sampled video frame, or a live camera
+   frame.
+2. The UI sends that frame to `POST /api/find_faces` on the local proxy.
+3. The proxy forwards the request to `POST /find_faces` on the local detector.
+4. The detector runs face detection and any requested plugins such as
+   `calculator`, `age`, or `gender`.
+5. The UI receives JSON results, draws overlays, and assigns track or target
+   names when embeddings are available.
 
 ```mermaid
 sequenceDiagram
@@ -125,6 +155,7 @@ FDX/
 |   |-- app.js
 |   `-- styles.css
 |-- tools/
+|   |-- bootstrap_local.sh
 |   `-- detector_proxy.py
 |-- models/
 |   |-- agegender/
@@ -133,6 +164,9 @@ FDX/
 |   `-- mtcnn/
 `-- face-processing/
     `-- ml/
+        |-- assets/
+        |   `-- warmup/
+        |-- requirements-local.txt
         |-- requirements.txt
         |-- uwsgi.ini
         |-- pytest.ini
@@ -154,6 +188,7 @@ Top-level files and directories:
 
 - `run.sh` starts the local detector service and the local UI proxy.
 - `stop.sh` stops the local detector service and kills the proxy process.
+- `tools/bootstrap_local.sh` creates the Docker-free Python 3.8 runtime.
 - `frontend/` contains the browser app.
 - `tools/detector_proxy.py` serves the UI and forwards requests to the detector.
 - `models/` contains local model weights from Drive. This directory is ignored by

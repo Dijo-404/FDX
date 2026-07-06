@@ -1,8 +1,10 @@
 const fileInput = document.querySelector("#fileInput");
+const folderInput = document.querySelector("#folderInput");
 const dropzone = document.querySelector("#dropzone");
 const targetFileInput = document.querySelector("#targetFileInput");
 const targetDropzone = document.querySelector("#targetDropzone");
 const results = document.querySelector("#results");
+const resultsEmpty = document.querySelector("#resultsEmpty");
 const template = document.querySelector("#resultTemplate");
 const faceTemplate = document.querySelector("#faceTemplate");
 const statusText = document.querySelector("#status");
@@ -10,6 +12,8 @@ const statusDot = document.querySelector("#statusDot");
 const clearButton = document.querySelector("#clear");
 const clearFacesButton = document.querySelector("#clearFaces");
 const resultCount = document.querySelector("#resultCount");
+const batchProgress = document.querySelector("#batchProgress");
+const matchesOnly = document.querySelector("#matchesOnly");
 const pageTabs = document.querySelectorAll("[data-page-target]");
 const pages = document.querySelectorAll("[data-page]");
 const facesGrid = document.querySelector("#facesGrid");
@@ -46,6 +50,7 @@ const LIVE_TRACK_RETENTION_SECONDS = 8;
 const targetFaces = loadStoredTargetFaces();
 let similarityCoefficients = [0, 1];
 let processingGeneration = 0;
+let uploadInProgress = false;
 
 pageTabs.forEach((tab) => {
   tab.addEventListener("click", () => {
@@ -64,6 +69,8 @@ clearButton.addEventListener("click", () => {
   });
   results.replaceChildren();
   fileInput.value = "";
+  folderInput.value = "";
+  batchProgress.hidden = true;
   updateResultCount();
 });
 
@@ -76,6 +83,12 @@ clearFacesButton.addEventListener("click", () => {
 fileInput.addEventListener("change", () => {
   handleFiles(fileInput.files);
 });
+
+folderInput.addEventListener("change", () => {
+  handleFiles(folderInput.files);
+});
+
+matchesOnly.addEventListener("change", updateResultCount);
 
 targetFileInput.addEventListener("change", () => {
   handleTargetFiles(targetFileInput.files);
@@ -173,20 +186,46 @@ async function handleFiles(fileList) {
   const files = Array.from(fileList).filter(
     (file) => file.type.startsWith("image/") || file.type.startsWith("video/"),
   );
-  const generation = processingGeneration;
+  fileInput.value = "";
+  folderInput.value = "";
+  if (files.length === 0 || uploadInProgress) return;
 
-  for (const file of files) {
-    if (generation !== processingGeneration) break;
-    const node = createResultNode(file);
-    results.prepend(node.article);
-    updateResultCount();
-    if (file.type.startsWith("video/")) {
-      await detectVideo(file, node, generation);
-    } else {
-      await detectFile(file, node);
+  const generation = processingGeneration;
+  const nodes = files.map((file) => ({ file, node: createResultNode(file) }));
+  const fragment = document.createDocumentFragment();
+  nodes.forEach(({ node }) => fragment.append(node.article));
+  results.prepend(fragment);
+  uploadInProgress = true;
+  fileInput.disabled = true;
+  folderInput.disabled = true;
+  dropzone.classList.add("processing");
+  batchProgress.hidden = false;
+  batchProgress.textContent = `Processing 0 of ${files.length}`;
+  updateResultCount();
+
+  try {
+    for (let index = 0; index < nodes.length; index += 1) {
+      if (generation !== processingGeneration) break;
+      const { file, node } = nodes[index];
+      setResultState(node, "processing");
+      const state = file.type.startsWith("video/")
+        ? await detectVideo(file, node, generation)
+        : await detectFile(file, node);
+
+      if (generation !== processingGeneration) break;
+      setResultState(node, state);
+      batchProgress.textContent = `Processing ${index + 1} of ${files.length}`;
+    }
+  } finally {
+    uploadInProgress = false;
+    fileInput.disabled = false;
+    folderInput.disabled = false;
+    dropzone.classList.remove("processing");
+    if (generation === processingGeneration) {
+      batchProgress.textContent = `${files.length} file${files.length === 1 ? "" : "s"} processed`;
+      updateResultCount();
     }
   }
-  fileInput.value = "";
 }
 
 function createResultNode(file) {
@@ -201,9 +240,11 @@ function createResultNode(file) {
   const videoOverlay = fragment.querySelector(".videoOverlay");
   const raw = fragment.querySelector("pre");
 
-  title.textContent = file.name;
+  title.textContent = file.webkitRelativePath || file.name;
   summary.textContent = "Queued";
   raw.textContent = "";
+  article.dataset.resultState = "queued";
+  article.dataset.kind = file.type.startsWith("video/") ? "video" : "image";
 
   return {
     article,
@@ -219,14 +260,22 @@ function createResultNode(file) {
 
 async function detectFile(file, node) {
   node.summary.textContent = "Detecting";
-  const image = await loadImage(file);
+  let image;
+  try {
+    image = await loadImage(file);
+  } catch (error) {
+    node.summary.classList.add("error");
+    node.summary.textContent = error.message;
+    node.raw.textContent = "";
+    return "error";
+  }
   drawImage(node.canvas, image, []);
 
   try {
     const needsMatching = targetFaces.some((target) => Array.isArray(target.embedding));
     const payload = needsMatching
-      ? await findFaces(file, FACE_MATCH_PLUGINS)
-      : await findFaces(file, FACE_ATTRIBUTE_PLUGINS);
+      ? await findFaces(file, FACE_MATCH_PLUGINS, true)
+      : await findFaces(file, FACE_ATTRIBUTE_PLUGINS, true);
 
     const faces = Array.isArray(payload.result) ? payload.result : [];
     const matchedFaces = faces.map(addBestTargetMatch);
@@ -234,27 +283,31 @@ async function detectFile(file, node) {
     node.summary.classList.remove("error");
     node.summary.textContent = createDetectionSummary(matchedFaces);
     node.raw.textContent = JSON.stringify(addMatchDiagnostics(payload, matchedFaces), null, 2);
+    return needsMatching && matchedFaces.some((face) => face.match?.isMatch)
+      ? "match"
+      : needsMatching ? "no-match" : "detected";
   } catch (error) {
-    if (targetFaces.length > 0) {
+    if (hasSearchableTargets()) {
       try {
-        const payload = await findFaces(file, FACE_ATTRIBUTE_PLUGINS);
+        const payload = await findFaces(file, FACE_ATTRIBUTE_PLUGINS, true);
         const faces = Array.isArray(payload.result) ? payload.result : [];
         drawImage(node.canvas, image, faces);
-        node.summary.classList.remove("error");
-        node.summary.textContent = createDetectionSummary(faces);
+        node.summary.classList.add("error");
+        node.summary.textContent = `${createDetectionSummary(faces)} · target matching unavailable`;
         node.raw.textContent = JSON.stringify(payload, null, 2);
-        return;
+        return "error";
       } catch (fallbackError) {
         node.summary.classList.add("error");
         node.summary.textContent = fallbackError.message;
         node.raw.textContent = "";
-        return;
+        return "error";
       }
     }
 
     node.summary.classList.add("error");
     node.summary.textContent = error.message;
     node.raw.textContent = "";
+    return "error";
   }
 }
 
@@ -312,7 +365,7 @@ async function detectVideo(file, node, generation) {
     node.videoOverlay.height = frameCanvas.height;
 
     for (let index = 0; index < timestamps.length; index += 1) {
-      if (generation !== processingGeneration) return;
+      if (generation !== processingGeneration) return "cancelled";
 
       const timestamp = timestamps[index];
       node.summary.textContent = `Analyzing frame ${index + 1} of ${timestamps.length} · ${formatTime(timestamp)}`;
@@ -376,11 +429,15 @@ async function detectVideo(file, node, generation) {
       null,
       2,
     );
+    return confirmedTracks.some((track) => track.targetId)
+      ? "match"
+      : hasSearchableTargets() ? "no-match" : "detected";
   } catch (error) {
     node.video.controls = true;
     node.summary.classList.add("error");
     node.summary.textContent = error.message;
     node.raw.textContent = "";
+    return "error";
   } finally {
     decoder.pause();
     decoder.removeAttribute("src");
@@ -531,9 +588,16 @@ async function addTargetFaceFile(file) {
 function loadImage(file) {
   return new Promise((resolve, reject) => {
     const image = new Image();
-    image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error("Could not read image"));
-    image.src = URL.createObjectURL(file);
+    const objectUrl = URL.createObjectURL(file);
+    image.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(image);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error("Could not read image"));
+    };
+    image.src = objectUrl;
   });
 }
 
@@ -560,6 +624,12 @@ function createFaceEntry(file, image, face, index, name) {
 }
 
 function createFallbackTarget(file, image, name, message) {
+  const fullImageBox = {
+    xMin: 0,
+    yMin: 0,
+    width: image.naturalWidth,
+    height: image.naturalHeight,
+  };
   return {
     id: `${Date.now()}-${file.name}-fallback`,
     index: 1,
@@ -568,7 +638,7 @@ function createFallbackTarget(file, image, name, message) {
     probability: 0,
     width: image.naturalWidth,
     height: image.naturalHeight,
-    preview: image.src,
+    preview: createFacePreview(image, fullImageBox),
     embedding: null,
     status: message || "No face found",
   };
@@ -657,6 +727,7 @@ function renderTargetFaces() {
   });
 
   saveTargetFaces();
+  syncMatchFilter();
 }
 
 function loadStoredTargetFaces() {
@@ -719,8 +790,8 @@ function distanceToSimilarity(distance) {
 function createDetectionSummary(faces) {
   const matchCount = faces.filter((face) => face.match?.isMatch).length;
   const faceText = `${faces.length} face${faces.length === 1 ? "" : "s"} detected`;
-  if (targetFaces.length === 0) return faceText;
-  return `${faceText}, ${matchCount} named`;
+  if (!hasSearchableTargets()) return faceText;
+  return `${faceText} · ${matchCount} target match${matchCount === 1 ? "" : "es"}`;
 }
 
 function addMatchDiagnostics(payload, faces) {
@@ -1042,9 +1113,58 @@ function getApiThreshold() {
   return DEFAULT_DETECTION_THRESHOLD;
 }
 
+function hasSearchableTargets() {
+  return targetFaces.some((target) => Array.isArray(target.embedding));
+}
+
+function syncMatchFilter() {
+  const canMatch = hasSearchableTargets();
+  const wasDisabled = matchesOnly.disabled;
+  matchesOnly.disabled = !canMatch;
+  if (!canMatch) {
+    matchesOnly.checked = false;
+  } else if (wasDisabled) {
+    matchesOnly.checked = true;
+  }
+  updateResultCount();
+}
+
+function setResultState(node, state) {
+  node.article.dataset.resultState = state;
+  node.article.classList.toggle("targetMatch", state === "match");
+  updateResultCount();
+}
+
 function updateResultCount() {
-  const count = results.children.length;
-  resultCount.textContent = `${count} detection result${count === 1 ? "" : "s"}`;
+  const items = Array.from(results.querySelectorAll(".result"));
+  const filterMatches = matchesOnly.checked && hasSearchableTargets();
+  let matchCount = 0;
+  let completedCount = 0;
+  let pendingCount = 0;
+
+  items.forEach((item) => {
+    const state = item.dataset.resultState;
+    const isMatch = state === "match";
+    const isPending = state === "queued" || state === "processing";
+    const hideAsNonMatch = filterMatches && (state === "no-match" || state === "detected");
+    item.hidden = hideAsNonMatch;
+    if (isMatch) matchCount += 1;
+    if (isPending) pendingCount += 1;
+    else completedCount += 1;
+  });
+
+  if (filterMatches) {
+    resultCount.textContent = `${matchCount} target match${matchCount === 1 ? "" : "es"} · ${completedCount} of ${items.length} processed`;
+  } else {
+    resultCount.textContent = `${items.length} detection result${items.length === 1 ? "" : "s"}`;
+  }
+
+  resultsEmpty.hidden = !(
+    filterMatches
+    && items.length > 0
+    && pendingCount === 0
+    && matchCount === 0
+  );
 }
 
 function drawImage(canvas, image, faces) {

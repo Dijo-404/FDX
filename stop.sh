@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
-ROOT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+ROOT_DIR=$(CDPATH='' cd -- "$(dirname "$0")" && pwd)
 PID_FILE="$ROOT_DIR/.fdx-backend.pid"
 
 if [ -f "$PID_FILE" ]; then

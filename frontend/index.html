@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>FDX // Face Scanner</title>
-    <link rel="stylesheet" href="/styles.css?v=8">
+    <link rel="stylesheet" href="/styles.css?v=9">
   </head>
   <body>
     <main class="shell">
@@ -63,17 +63,32 @@
             <h2>Detection</h2>
             <p id="resultCount">0 detection results</p>
           </div>
-          <button id="clear" type="button">Clear results</button>
+          <div class="detectionActions">
+            <span id="batchProgress" class="batchProgress" hidden></span>
+            <label class="matchFilter">
+              <input id="matchesOnly" type="checkbox" disabled>
+              <span>Target matches only</span>
+            </label>
+            <button id="clear" type="button">Clear results</button>
+          </div>
         </div>
 
         <section id="dropzone" class="dropzone">
           <input id="fileInput" type="file" accept="image/*,video/*" multiple>
-          <label for="fileInput">
-            <span>Drop images or videos here</span>
-            <strong>Choose files</strong>
-          </label>
+          <input id="folderInput" type="file" accept="image/*" webkitdirectory directory multiple>
+          <div class="dropzoneContent">
+            <span>Drop a batch of images or videos here</span>
+            <div class="uploadChoices">
+              <label for="fileInput"><strong>Choose files</strong></label>
+              <label for="folderInput"><strong>Choose image folder</strong></label>
+            </div>
+          </div>
         </section>
 
+        <section id="resultsEmpty" class="emptyState" hidden>
+          <h3>No target matches found</h3>
+          <p>None of the processed photos contain a saved target face</p>
+        </section>
         <section id="results" class="results" aria-live="polite"></section>
       </section>
 
@@ -144,6 +159,6 @@
     </template>
 
     <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
-    <script src="/app.js?v=8"></script>
+    <script src="/app.js?v=9"></script>
   </body>
 </html>

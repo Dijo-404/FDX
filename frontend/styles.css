@@ -246,23 +246,33 @@ button:disabled:hover {
   pointer-events: none;
 }
 
-.dropzone label {
+.dropzoneContent {
   display: grid;
   gap: 10px;
   justify-items: center;
   padding: 24px;
   color: var(--muted);
-  cursor: pointer;
   text-align: center;
 }
 
-.dropzone span {
+.dropzoneContent > span {
   text-transform: uppercase;
   letter-spacing: 0.06em;
   font-size: 12px;
 }
 
-.dropzone strong {
+.uploadChoices {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.uploadChoices label {
+  cursor: pointer;
+}
+
+.uploadChoices strong {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -277,13 +287,71 @@ button:disabled:hover {
   box-shadow: var(--shadow-sm);
 }
 
-.dropzone label:hover strong {
+.uploadChoices label:hover strong {
   background: var(--yellow);
+}
+
+.dropzone.processing {
+  opacity: 0.65;
+}
+
+.dropzone.processing .uploadChoices label {
+  cursor: wait;
+  pointer-events: none;
+}
+
+.detectionActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.batchProgress {
+  color: var(--accent);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.matchFilter {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 8px 12px;
+  border: 3px solid var(--line);
+  background: var(--panel-alt);
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  box-shadow: var(--shadow-sm);
+}
+
+.matchFilter:has(input:disabled) {
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.matchFilter input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--pink);
 }
 
 .results {
   display: grid;
   gap: 18px;
+}
+
+.result.targetMatch {
+  border-color: var(--pink);
 }
 
 .result {
@@ -665,6 +733,16 @@ pre {
   .topbar,
   .sectionHeader {
     display: grid;
+  }
+
+  .detectionActions {
+    justify-content: stretch;
+  }
+
+  .matchFilter,
+  .detectionActions button {
+    justify-content: center;
+    width: 100%;
   }
 
   .pageNav {

@@ -2,15 +2,13 @@ const fileInput = document.querySelector("#fileInput");
 const dropzone = document.querySelector("#dropzone");
 const targetFileInput = document.querySelector("#targetFileInput");
 const targetDropzone = document.querySelector("#targetDropzone");
-const targetNameInput = document.querySelector("#targetNameInput");
 const results = document.querySelector("#results");
 const template = document.querySelector("#resultTemplate");
 const faceTemplate = document.querySelector("#faceTemplate");
 const statusText = document.querySelector("#status");
+const statusDot = document.querySelector("#statusDot");
 const clearButton = document.querySelector("#clear");
 const clearFacesButton = document.querySelector("#clearFaces");
-const threshold = document.querySelector("#threshold");
-const thresholdValue = document.querySelector("#thresholdValue");
 const videoInterval = document.querySelector("#videoInterval");
 const resultCount = document.querySelector("#resultCount");
 const pageTabs = document.querySelectorAll("[data-page-target]");
@@ -19,6 +17,20 @@ const facesGrid = document.querySelector("#facesGrid");
 const facesEmpty = document.querySelector("#facesEmpty");
 const faceCount = document.querySelector("#faceCount");
 
+const scanVideo = document.querySelector("#scanVideo");
+const scanOverlay = document.querySelector("#scanOverlay");
+const scanStage = document.querySelector("#scanStage");
+const scanIdle = document.querySelector("#scanIdle");
+const scanHudCorners = document.querySelector("#scanHudCorners");
+const scanReadout = document.querySelector("#scanReadout");
+const scanReadoutLine1 = document.querySelector("#scanReadoutLine1");
+const scanReadoutLine2 = document.querySelector("#scanReadoutLine2");
+const scanToggle = document.querySelector("#scanToggle");
+const scanStatusText = document.querySelector("#scanStatusText");
+const liveDot = document.querySelector("#liveDot");
+const liveTagText = document.querySelector("#liveTagText");
+
+const DEFAULT_DETECTION_THRESHOLD = "0.50";
 const MATCH_SIMILARITY_THRESHOLD = 0.8;
 const TARGET_DETECTION_THRESHOLD = "0.55";
 const TARGET_STORAGE_KEY = "fdx.targetFaces";
@@ -26,6 +38,8 @@ const VIDEO_MAX_FRAMES = 600;
 const VIDEO_MAX_SIDE = 1280;
 const TRACK_MIN_IOU = 0.12;
 const TRACK_MIN_EMBEDDING_SIMILARITY = 0.65;
+const LIVE_SCAN_INTERVAL_MS = 500;
+const LIVE_TRACK_RETENTION_SECONDS = 8;
 const targetFaces = loadStoredTargetFaces();
 let similarityCoefficients = [0, 1];
 let processingGeneration = 0;
@@ -38,10 +52,6 @@ pageTabs.forEach((tab) => {
 
 window.addEventListener("hashchange", () => {
   showPage(getPageFromHash(), false);
-});
-
-threshold.addEventListener("input", () => {
-  thresholdValue.value = Number(threshold.value).toFixed(2);
 });
 
 clearButton.addEventListener("click", () => {
@@ -103,8 +113,10 @@ async function checkBackend() {
     const response = await fetch("/health");
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     statusText.textContent = "Detector ready";
+    statusDot.classList.add("ready");
   } catch (error) {
     statusText.textContent = "Detector backend is still starting";
+    statusDot.classList.remove("ready");
   }
 }
 
@@ -121,13 +133,15 @@ async function loadStatus() {
   }
 }
 
+const PAGE_NAMES = ["scan", "detection", "faces"];
+
 function getPageFromHash() {
   const page = window.location.hash.replace("#", "");
-  return page === "faces" ? "faces" : "detection";
+  return PAGE_NAMES.includes(page) ? page : "scan";
 }
 
 function showPage(pageName, updateHash = true) {
-  const normalizedPage = pageName === "faces" ? "faces" : "detection";
+  const normalizedPage = PAGE_NAMES.includes(pageName) ? pageName : "scan";
 
   pages.forEach((page) => {
     const isActive = page.dataset.page === normalizedPage;
@@ -143,6 +157,12 @@ function showPage(pageName, updateHash = true) {
 
   if (updateHash && window.location.hash !== `#${normalizedPage}`) {
     history.pushState(null, "", `#${normalizedPage}`);
+  }
+
+  if (normalizedPage === "scan" && !scanStream) {
+    void startScanCamera();
+  } else if (normalizedPage !== "scan" && scanStream) {
+    stopScanCamera();
   }
 }
 
@@ -482,7 +502,7 @@ async function addTargetFaceFile(file) {
   const image = await loadImage(file);
   const data = new FormData();
   data.append("file", file, file.name);
-  const baseName = targetNameInput.value.trim() || getDefaultTargetName(file.name);
+  const baseName = getDefaultTargetName(file.name);
 
   try {
     const url = `/api/find_faces?face_plugins=calculator&limit=0&det_prob_threshold=${TARGET_DETECTION_THRESHOLD}`;
@@ -604,7 +624,10 @@ function createFacePreview(image, box) {
 
 function renderTargetFaces() {
   facesGrid.replaceChildren();
-  facesEmpty.hidden = targetFaces.length > 0;
+  const hasTargets = targetFaces.length > 0;
+  facesEmpty.hidden = hasTargets;
+  facesGrid.hidden = !hasTargets;
+  clearFacesButton.disabled = !hasTargets;
   faceCount.textContent = `${targetFaces.length} target face${targetFaces.length === 1 ? "" : "s"}`;
 
   targetFaces.forEach((face, index) => {
@@ -1016,8 +1039,7 @@ function formatTime(seconds) {
 }
 
 function getApiThreshold() {
-  const value = Number(threshold.value);
-  return Math.min(0.99, Math.max(0.01, Number.isFinite(value) ? value : 0.8)).toFixed(2);
+  return DEFAULT_DETECTION_THRESHOLD;
 }
 
 function updateResultCount() {
@@ -1056,7 +1078,7 @@ function drawFaceBoxes(context, faces, scale) {
     const h = (Number(box.y_max || 0) - Number(box.y_min || 0)) * scale;
     const match = face.match;
     const hasMatch = Boolean(match?.isMatch);
-    const color = hasMatch ? "#13795b" : "#2563eb";
+    const color = hasMatch ? "#ff2ea6" : "#39ff6a";
     const label = createBoxLabel(match, face.track);
 
     context.globalAlpha = clamp(Number(face.overlayAlpha ?? 1), 0, 1);
@@ -1066,7 +1088,7 @@ function drawFaceBoxes(context, faces, scale) {
     if (label) {
       const labelWidth = context.measureText(label).width + 10;
       context.fillRect(x, Math.max(0, y - 22), labelWidth, 22);
-      context.fillStyle = "#ffffff";
+      context.fillStyle = "#05070a";
       context.fillText(label, x + 5, Math.max(14, y - 7));
     }
   });
@@ -1085,9 +1107,413 @@ function getTargetLabel(target, fallbackIndex = targetFaces.indexOf(target)) {
   return `Target ${index}`;
 }
 
+/* --- Live scan (webcam) --- */
+
+let scanStream = null;
+let scanThree = null;
+let scanStartPromise = null;
+let liveScanGeneration = 0;
+let liveScanTimer = null;
+let liveScanRequest = null;
+let liveScanTracks = [];
+let liveNextTrackId = 1;
+
+scanToggle.addEventListener("click", () => {
+  if (scanStream) {
+    stopScanCamera();
+  } else {
+    void startScanCamera();
+  }
+});
+
+async function startScanCamera() {
+  if (scanStream?.active) return;
+  if (scanStartPromise) return scanStartPromise;
+
+  scanStartPromise = openScanCamera();
+  try {
+    await scanStartPromise;
+  } finally {
+    scanStartPromise = null;
+  }
+}
+
+async function openScanCamera() {
+  scanToggle.disabled = true;
+  scanStatusText.textContent = "Requesting camera access";
+  liveTagText.textContent = "Connecting";
+
+  try {
+    if (!window.isSecureContext) {
+      throw new Error("Camera access requires HTTPS or localhost");
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error("This browser does not support camera access");
+    }
+
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: { ideal: "user" },
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+        frameRate: { ideal: 30 },
+      },
+      audio: false,
+    });
+    scanStream = stream;
+    scanVideo.srcObject = stream;
+    await scanVideo.play();
+
+    const cameraName = stream.getVideoTracks()[0]?.label || "Default camera";
+    scanStage.classList.add("cameraReady");
+    scanIdle.hidden = true;
+    scanHudCorners.hidden = false;
+    scanToggle.textContent = "Stop camera";
+    scanStatusText.textContent = `${cameraName} · scanning and tracking`;
+    liveDot.classList.add("ready");
+    liveTagText.textContent = "Scanning live";
+
+    getThree().start();
+    startLiveScanning();
+  } catch (error) {
+    releaseScanCamera();
+    scanStage.classList.remove("cameraReady");
+    scanIdle.hidden = false;
+    scanIdle.querySelector("strong").textContent = "[ CAMERA ACCESS NEEDED ]";
+    scanIdle.querySelector("p").textContent = getCameraErrorMessage(error);
+    scanStatusText.textContent = "Camera unavailable";
+    liveDot.classList.remove("ready");
+    liveTagText.textContent = "Offline";
+    scanToggle.textContent = "Retry camera";
+  } finally {
+    scanToggle.disabled = false;
+  }
+}
+
+function stopScanCamera() {
+  releaseScanCamera();
+
+  scanStage.classList.remove("cameraReady");
+  scanIdle.hidden = false;
+  scanIdle.querySelector("strong").textContent = "[ CAMERA STOPPED ]";
+  scanIdle.querySelector("p").textContent = "Select Start camera to reconnect the live feed.";
+  scanHudCorners.hidden = true;
+  scanToggle.textContent = "Start camera";
+  scanStatusText.textContent = "Camera idle";
+  liveDot.classList.remove("ready");
+  liveTagText.textContent = "Offline";
+  scanReadout.hidden = true;
+  scanStage.classList.remove("scanning");
+  clearScanOverlay();
+  scanThree?.stop();
+}
+
+function releaseScanCamera() {
+  stopLiveScanning();
+  scanStream?.getTracks().forEach((track) => track.stop());
+  scanStream = null;
+  scanVideo.pause();
+  scanVideo.srcObject = null;
+}
+
+function getCameraErrorMessage(error) {
+  if (error?.name === "NotAllowedError") {
+    return "Camera permission was blocked. Allow it in your browser settings, then select Retry camera.";
+  }
+  if (error?.name === "NotFoundError") {
+    return "No camera was found on this device.";
+  }
+  if (error?.name === "NotReadableError") {
+    return "The camera is already in use by another application.";
+  }
+  return error?.message || "Could not open the camera.";
+}
+
+function startLiveScanning() {
+  stopLiveScanning();
+  liveScanTracks = [];
+  liveNextTrackId = 1;
+  const generation = liveScanGeneration;
+
+  scanStage.classList.add("scanning");
+  scanReadout.hidden = false;
+  scanReadoutLine1.textContent = "CONTINUOUS SCAN";
+  scanReadoutLine2.textContent = "SEARCHING FOR FACES";
+  getThree().setIntensity(0.7);
+  void runLiveScanLoop(generation);
+}
+
+function stopLiveScanning() {
+  liveScanGeneration += 1;
+  if (liveScanTimer !== null) {
+    window.clearTimeout(liveScanTimer);
+    liveScanTimer = null;
+  }
+  liveScanRequest?.abort();
+  liveScanRequest = null;
+  scanStage.classList.remove("scanning");
+}
+
+async function runLiveScanLoop(generation) {
+  if (generation !== liveScanGeneration || !scanStream?.active) return;
+  const startedAt = performance.now();
+  let request = null;
+
+  try {
+    const blob = await captureScanFrame();
+    const url = `/api/find_faces?face_plugins=calculator&limit=0&det_prob_threshold=${DEFAULT_DETECTION_THRESHOLD}`;
+    const data = new FormData();
+    data.append("file", blob, "scan.jpg");
+
+    request = new AbortController();
+    liveScanRequest = request;
+    const response = await fetch(url, {
+      method: "POST",
+      body: data,
+      signal: request.signal,
+    });
+    const payload = await response.json();
+    const noFaceFound = response.status === 400 && /no face/i.test(payload.message || "");
+    if (!response.ok && !noFaceFound) {
+      throw new Error(payload.message || `HTTP ${response.status}`);
+    }
+    if (generation !== liveScanGeneration) return;
+
+    const faces = noFaceFound || !Array.isArray(payload.result) ? [] : payload.result;
+    const matchedFaces = faces.map(addBestTargetMatch);
+    const timestamp = performance.now() / 1000;
+    liveScanTracks = liveScanTracks.filter(
+      (track) => timestamp - track.lastSeen <= LIVE_TRACK_RETENTION_SECONDS,
+    );
+    liveNextTrackId = assignFaceTracks(
+      matchedFaces,
+      liveScanTracks,
+      timestamp,
+      LIVE_SCAN_INTERVAL_MS / 1000,
+      liveNextTrackId,
+    );
+    drawScanOverlay(matchedFaces);
+
+    const matchCount = matchedFaces.filter((face) => face.match?.isMatch).length;
+    scanReadoutLine1.textContent = faces.length ? "TRACKING LIVE" : "CONTINUOUS SCAN";
+    scanReadoutLine2.textContent = faces.length
+      ? `FACES: ${faces.length}${targetFaces.length ? ` / NAMED: ${matchCount}` : ""}`
+      : "NO FACE IN FRAME";
+  } catch (error) {
+    if (error?.name !== "AbortError" && generation === liveScanGeneration) {
+      scanReadoutLine1.textContent = "DETECTOR RETRYING";
+      scanReadoutLine2.textContent = error.message;
+      clearScanOverlay();
+    }
+  } finally {
+    if (liveScanRequest === request) {
+      liveScanRequest = null;
+    }
+    if (generation === liveScanGeneration && scanStream?.active) {
+      const elapsed = performance.now() - startedAt;
+      const delay = Math.max(0, LIVE_SCAN_INTERVAL_MS - elapsed);
+      liveScanTimer = window.setTimeout(() => {
+        liveScanTimer = null;
+        void runLiveScanLoop(generation);
+      }, delay);
+    }
+  }
+}
+
+function captureScanFrame() {
+  const canvas = document.createElement("canvas");
+  canvas.width = scanVideo.videoWidth;
+  canvas.height = scanVideo.videoHeight;
+  const context = canvas.getContext("2d");
+  context.drawImage(scanVideo, 0, 0, canvas.width, canvas.height);
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob);
+      else reject(new Error("Could not read camera frame"));
+    }, "image/jpeg", 0.9);
+  });
+}
+
+function coverTransform(nativeWidth, nativeHeight, displayWidth, displayHeight) {
+  const scale = Math.max(displayWidth / nativeWidth, displayHeight / nativeHeight);
+  const offsetX = (nativeWidth * scale - displayWidth) / 2;
+  const offsetY = (nativeHeight * scale - displayHeight) / 2;
+  return { scale, offsetX, offsetY };
+}
+
+function drawScanOverlay(faces) {
+  const displayWidth = scanStage.clientWidth;
+  const displayHeight = scanStage.clientHeight;
+  scanOverlay.width = displayWidth;
+  scanOverlay.height = displayHeight;
+  const context = scanOverlay.getContext("2d");
+  context.clearRect(0, 0, displayWidth, displayHeight);
+
+  if (!scanVideo.videoWidth || faces.length === 0) return;
+
+  const { scale, offsetX, offsetY } = coverTransform(
+    scanVideo.videoWidth,
+    scanVideo.videoHeight,
+    displayWidth,
+    displayHeight,
+  );
+
+  context.lineWidth = 3;
+  context.font = "bold 13px 'JetBrains Mono', monospace";
+
+  faces.forEach((face) => {
+    const box = face.box || {};
+    const sourceXMax = Number(box.x_max || 0);
+    const x = displayWidth - (sourceXMax * scale - offsetX);
+    const y = Number(box.y_min || 0) * scale - offsetY;
+    const w = (Number(box.x_max || 0) - Number(box.x_min || 0)) * scale;
+    const h = (Number(box.y_max || 0) - Number(box.y_min || 0)) * scale;
+    const hasMatch = Boolean(face.match?.isMatch);
+    const color = hasMatch ? "#ff2ea6" : "#39ff6a";
+    const label = hasMatch
+      ? (face.match.target.name || getTargetLabel(face.match.target))
+      : `Face ${face.track?.id || "?"} · ${Math.round(Number(box.probability || 0) * 100)}%`;
+
+    drawReticle(context, x, y, w, h, color);
+
+    const labelWidth = context.measureText(label).width + 12;
+    context.fillStyle = color;
+    context.fillRect(x, Math.max(0, y - 22), labelWidth, 20);
+    context.fillStyle = "#05070a";
+    context.fillText(label, x + 6, Math.max(15, y - 7));
+  });
+}
+
+function drawReticle(context, x, y, w, h, color) {
+  const tick = Math.min(18, w * 0.3, h * 0.3);
+  context.strokeStyle = color;
+  context.shadowColor = color;
+  context.shadowBlur = 8;
+
+  const corners = [
+    [x, y, tick, 0, 0, tick],
+    [x + w, y, -tick, 0, 0, tick],
+    [x, y + h, tick, 0, 0, -tick],
+    [x + w, y + h, -tick, 0, 0, -tick],
+  ];
+
+  corners.forEach(([cx, cy, dx1, dy1, dx2, dy2]) => {
+    context.beginPath();
+    context.moveTo(cx + dx1, cy + dy1);
+    context.lineTo(cx, cy);
+    context.lineTo(cx + dx2, cy + dy2);
+    context.stroke();
+  });
+
+  context.shadowBlur = 0;
+}
+
+function clearScanOverlay() {
+  const context = scanOverlay.getContext("2d");
+  context.clearRect(0, 0, scanOverlay.width, scanOverlay.height);
+}
+
+function getThree() {
+  if (scanThree) return scanThree;
+  scanThree = createScanVisualizer();
+  return scanThree;
+}
+
+function createScanVisualizer() {
+  if (typeof THREE === "undefined") {
+    return { start() {}, stop() {}, setIntensity() {} };
+  }
+
+  const canvas = document.querySelector("#scanThree");
+  const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
+  camera.position.z = 6;
+
+  const group = new THREE.Group();
+  scene.add(group);
+
+  const pointCount = 900;
+  const positions = new Float32Array(pointCount * 3);
+  for (let i = 0; i < pointCount; i += 1) {
+    const phi = Math.acos(-1 + (2 * i) / pointCount);
+    const theta = Math.sqrt(pointCount * Math.PI) * phi;
+    const radius = 2.6;
+    positions[i * 3] = radius * Math.cos(theta) * Math.sin(phi);
+    positions[i * 3 + 1] = radius * Math.sin(theta) * Math.sin(phi);
+    positions[i * 3 + 2] = radius * Math.cos(phi);
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  const material = new THREE.PointsMaterial({
+    color: 0x39ff6a,
+    size: 0.035,
+    transparent: true,
+    opacity: 0.35,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+  const points = new THREE.Points(geometry, material);
+  group.add(points);
+
+  const ringGeometry = new THREE.RingGeometry(2.75, 2.8, 64);
+  const ringMaterial = new THREE.MeshBasicMaterial({
+    color: 0x39ff6a,
+    transparent: true,
+    opacity: 0.2,
+    side: THREE.DoubleSide,
+  });
+  const ring = new THREE.Mesh(ringGeometry, ringMaterial);
+  group.add(ring);
+
+  let running = false;
+  let frameId = null;
+  let intensity = 0.35;
+  let lastSize = { width: 0, height: 0 };
+
+  function resize() {
+    const width = canvas.clientWidth || 1;
+    const height = canvas.clientHeight || 1;
+    if (width === lastSize.width && height === lastSize.height) return;
+    lastSize = { width, height };
+    renderer.setSize(width, height, false);
+    camera.aspect = width / height;
+    camera.updateProjectionMatrix();
+  }
+
+  function tick() {
+    if (!running) return;
+    resize();
+    group.rotation.y += 0.0025 + intensity * 0.01;
+    group.rotation.x = Math.sin(Date.now() * 0.0004) * 0.15;
+    material.opacity = 0.2 + intensity * 0.35;
+    ringMaterial.opacity = 0.12 + intensity * 0.25;
+    renderer.render(scene, camera);
+    frameId = requestAnimationFrame(tick);
+  }
+
+  return {
+    start() {
+      if (running) return;
+      running = true;
+      tick();
+    },
+    stop() {
+      running = false;
+      if (frameId) cancelAnimationFrame(frameId);
+    },
+    setIntensity(value) {
+      intensity = value;
+    },
+  };
+}
+
 showPage(getPageFromHash(), false);
 updateResultCount();
 renderTargetFaces();
 loadStatus();
 checkBackend();
 setInterval(checkBackend, 5000);
+window.addEventListener("pagehide", releaseScanCamera);

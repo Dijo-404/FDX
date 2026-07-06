@@ -3,23 +3,61 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>FDX Detector</title>
-    <link rel="stylesheet" href="/styles.css?v=3">
+    <title>FDX // Face Scanner</title>
+    <link rel="stylesheet" href="/styles.css?v=7">
   </head>
   <body>
     <main class="shell">
       <header class="topbar">
-        <div>
-          <h1>FDX Detector</h1>
-          <p id="status">Starting backend check...</p>
+        <div class="brand">
+          <div class="brandMark">FDX</div>
+          <div>
+            <h1>FDX Face Scanner</h1>
+            <p><span id="statusDot" class="statusDot"></span><span id="status">Starting backend check...</span></p>
+          </div>
         </div>
         <nav class="pageNav" aria-label="Pages">
-          <button class="pageTab active" type="button" data-page-target="detection" aria-selected="true">Detection</button>
-          <button class="pageTab" type="button" data-page-target="faces" aria-selected="false">Faces to be detected</button>
+          <button class="pageTab active" type="button" data-page-target="scan" aria-selected="true">Live Scan</button>
+          <button class="pageTab" type="button" data-page-target="detection" aria-selected="false">Detection</button>
+          <button class="pageTab" type="button" data-page-target="faces" aria-selected="false">Faces</button>
         </nav>
       </header>
 
-      <section id="detectionPage" class="page active" data-page="detection">
+      <section id="scanPage" class="page active" data-page="scan">
+        <div class="sectionHeader">
+          <div>
+            <h2>Live Scan</h2>
+            <p id="scanStatusText">Camera idle</p>
+          </div>
+          <div class="scanControls">
+            <span class="liveTag"><span id="liveDot" class="statusDot"></span><span id="liveTagText">Offline</span></span>
+            <button id="scanToggle" type="button">Start camera</button>
+          </div>
+        </div>
+
+        <section class="scanStage" id="scanStage">
+          <video id="scanVideo" autoplay playsinline muted aria-label="Live camera feed"></video>
+          <canvas id="scanThree" class="scanHud"></canvas>
+          <canvas id="scanOverlay" class="scanHud"></canvas>
+          <div class="scanHud" id="scanHudCorners" hidden>
+            <span class="hudCorner tl"></span>
+            <span class="hudCorner tr"></span>
+            <span class="hudCorner bl"></span>
+            <span class="hudCorner br"></span>
+            <span class="scanLine" id="scanLineEl"></span>
+          </div>
+          <div class="scanIdle" id="scanIdle">
+            <strong>[ CONNECTING CAMERA ]</strong>
+            <p>Allow camera access when prompted.<br>Frames are sent only to the local detector.</p>
+          </div>
+          <div class="scanReadout" id="scanReadout" hidden>
+            <span><span class="blink">●</span> <span id="scanReadoutLine1">ANALYZING TARGET</span></span>
+            <span id="scanReadoutLine2">FACES: 0</span>
+          </div>
+        </section>
+      </section>
+
+      <section id="detectionPage" class="page" data-page="detection" hidden>
         <div class="sectionHeader">
           <div>
             <h2>Detection</h2>
@@ -37,11 +75,6 @@
         </section>
 
         <section class="controls">
-          <label>
-            Confidence
-            <input id="threshold" type="range" min="0.01" max="0.99" step="0.01" value="0.8">
-            <output id="thresholdValue">0.80</output>
-          </label>
           <label class="videoIntervalControl">
             Video sampling
             <select id="videoInterval">
@@ -64,13 +97,6 @@
           </div>
           <button id="clearFaces" type="button">Clear faces</button>
         </div>
-
-        <section class="targetControls">
-          <label>
-            Name
-            <input id="targetNameInput" type="text" placeholder="Person name">
-          </label>
-        </section>
 
         <section id="targetDropzone" class="dropzone compact">
           <input id="targetFileInput" type="file" accept="image/*" multiple>
@@ -129,6 +155,7 @@
       </article>
     </template>
 
-    <script src="/app.js?v=3"></script>
+    <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+    <script src="/app.js?v=7"></script>
   </body>
 </html>

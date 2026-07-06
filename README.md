@@ -103,31 +103,44 @@ sequenceDiagram
 
 ## Folder structure
 
-```mermaid
-flowchart TD
-  root["FDX/"]
-  root --> readme["README.md\nProject guide"]
-  root --> scripts["run.sh / stop.sh\nStart and stop local services"]
-  root --> backend["backend/\nBackend notes"]
-  root --> frontend["frontend/\nStatic browser UI"]
-  root --> proxy["tools/\nLocal proxy server"]
-  root --> models["models/\nDownloaded model weights, ignored by git"]
-  root --> faceProcessing["face-processing/ml/\nFace-processing source snapshot"]
+This section uses a plain text tree so it remains readable even if GitHub's
+Mermaid renderer fails to load.
 
-  frontend --> html["index.html\nPages and templates"]
-  frontend --> js["app.js\nDetection, tracking, matching, webcam logic"]
-  frontend --> css["styles.css\nUI styling"]
-
-  proxy --> detectorProxy["detector_proxy.py\nStatic server and request forwarder"]
-
-  faceProcessing --> src["src/\nFlask app, endpoints, services"]
-  faceProcessing --> srcext["srcext/\nBundled MTCNN implementation"]
-  faceProcessing --> toolsDir["tools/\nScan, benchmark, optimization helpers"]
-  faceProcessing --> config["requirements.txt / uwsgi.ini / pytest.ini"]
-
-  src --> endpoints["src/_endpoints.py\n/healthcheck, /status, /find_faces"]
-  src --> plugins["src/services/facescan/plugins/\nDetector and attribute plugins"]
-  src --> dto["src/services/dto/\nJSON response objects"]
+```text
+FDX/
+|-- README.md
+|-- run.sh
+|-- stop.sh
+|-- backend/
+|   `-- README.md
+|-- frontend/
+|   |-- index.html
+|   |-- app.js
+|   `-- styles.css
+|-- tools/
+|   `-- detector_proxy.py
+|-- models/
+|   |-- agegender/
+|   |-- facemask/
+|   |-- facenet/
+|   `-- mtcnn/
+`-- face-processing/
+    `-- ml/
+        |-- requirements.txt
+        |-- uwsgi.ini
+        |-- pytest.ini
+        |-- src/
+        |   |-- _endpoints.py
+        |   |-- app.py
+        |   `-- services/
+        |       |-- dto/
+        |       |-- facescan/
+        |       |   `-- plugins/
+        |       |-- flask_/
+        |       `-- imgtools/
+        |-- srcext/
+        |   `-- mtcnn/
+        `-- tools/
 ```
 
 Top-level files and directories:
@@ -166,32 +179,28 @@ The model bundle lives in `models/` locally and is mounted read-only into the
 container. Because `.gitignore` ignores `models/`, these files are expected to be
 downloaded separately.
 
-Default local model bundle:
+Models used by the default runner:
 
-| Model path | Plugin or role | Used by default | Output |
+| Purpose | Plugin | Model architecture | Enabled by default |
 | --- | --- | --- | --- |
-| `models/mtcnn/data/mtcnn_weights.npy` | MTCNN weights used by `facenet.FaceDetector` | Yes | Face boxes and 5-point landmarks |
-| `models/facenet/calculator/20180402-114759/20180402-114759.pb` | `facenet.Calculator` | Yes | Face embeddings for matching |
-| `models/agegender/age/22801/checkpoint-14999.*` | `agegender.AgeDetector` | Yes | Age range and probability |
-| `models/agegender/gender/21936/checkpoint-14999.*` | `agegender.GenderDetector` | Yes | Gender label and probability |
-| `models/facemask/mask/inception_v3_on_mafa_kaggle123/` | `facenet.facemask.MaskDetector` | No | Mask label and probability |
+| Face detection | `facenet.FaceDetector` | MTCNN | Yes |
+| Face matching embeddings | `facenet.Calculator` | FaceNet Inception ResNet v1 | Yes |
+| Age detection | `agegender.AgeDetector` | Inception v3 classifier | Yes |
+| Gender detection | `agegender.GenderDetector` | Inception v3 classifier | Yes |
+| Mask detection | `facenet.facemask.MaskDetector` | Inception v3 classifier | No |
 
-Source-supported model names:
+The default `run.sh` setup does not use ResNet-50 or EfficientNet. ResNet-50 is
+only present in the source snapshot as an optional InsightFace/ArcFace model, and
+EfficientNet is not configured in this repo.
 
-| Plugin | Model names |
+Optional model families present in the source snapshot:
+
+| Purpose | Optional architectures |
 | --- | --- |
-| `facenet.Calculator` | `20180402-114759`, `20180408-102900`, `inception_resnetv1_casia_masked` |
-| `agegender.AgeDetector` | `22801` |
-| `agegender.GenderDetector` | `21936` |
-| `facenet.facemask.MaskDetector` | `inception_v3_on_mafa_kaggle123` |
-| `insightface.FaceDetector` | `retinaface_mnet025_v1`, `retinaface_mnet025_v2`, `retinaface_r50_v1` |
-| `insightface.Calculator` | `arcface_mobilefacenet`, `arcface_r100_v1`, `arcface_resnet34`, `arcface_resnet50`, `arcface-r50-msfdrop75`, `arcface-r100-msfdrop75`, `arcface_mobilefacenet_casia_masked` |
-| `insightface.AgeDetector` / `insightface.GenderDetector` | `genderage_v1` |
-| `insightface.Landmarks2d106Detector` | `2d106det` |
-| `insightface.facemask.MaskDetector` | `mobilenet_v2_on_mafa_kaggle123`, `resnet18_on_mafa_kaggle123` |
-
-The InsightFace models are present in the source snapshot as supported plugin
-options, but they are not part of the default `run.sh` configuration.
+| InsightFace detection | RetinaFace MobileNet-0.25, RetinaFace ResNet-50 |
+| InsightFace matching | ArcFace MobileFaceNet, ArcFace ResNet-34, ResNet-50, ResNet-100 |
+| InsightFace mask detection | MobileNet v2, ResNet-18 |
+| InsightFace landmarks | 2D-106 landmark detector |
 
 ## API surface
 

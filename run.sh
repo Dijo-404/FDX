@@ -1,15 +1,15 @@
 #!/usr/bin/env sh
 set -eu
 
-cd "$(dirname "$0")"
+ROOT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+ML_DIR="$ROOT_DIR/face-processing/ml"
+PID_FILE="$ROOT_DIR/.fdx-detector.pid"
+LOG_FILE="$ROOT_DIR/.fdx-detector.log"
 
-if ! command -v docker >/dev/null 2>&1; then
-  printf '%s\n' "Docker is required to run the detector."
-  exit 1
-fi
+cd "$ROOT_DIR"
 
 if ! command -v python3 >/dev/null 2>&1; then
-  printf '%s\n' "Python 3 is required to run the local UI proxy."
+  printf '%s\n' "Python 3 is required to run the detector and local UI proxy."
   exit 1
 fi
 
@@ -19,20 +19,30 @@ if [ ! -d models ]; then
   exit 1
 fi
 
-docker rm -f fdx-detector >/dev/null 2>&1 || true
-docker run -d \
-  --name fdx-detector \
-  --restart unless-stopped \
-  -p 3000:3000 \
-  -e ML_PORT=3000 \
-  -e IMG_LENGTH_LIMIT=1280 \
-  -e FACE_DETECTION_PLUGIN=facenet.FaceDetector \
-  -e CALCULATION_PLUGIN=facenet.Calculator \
-  -e EXTRA_PLUGINS=agegender.AgeDetector,agegender.GenderDetector \
-  -e UWSGI_PROCESSES=1 \
-  -e UWSGI_THREADS=1 \
-  -v "$(pwd)/models:/app/ml/.models:ro" \
-  exadel/compreface-core:1.2.0 >/dev/null
+if [ -f "$PID_FILE" ]; then
+  old_pid=$(cat "$PID_FILE")
+  if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
+    kill "$old_pid" 2>/dev/null || true
+  fi
+  rm -f "$PID_FILE"
+fi
+
+printf '%s\n' "Starting local detector backend..."
+(
+  cd "$ML_DIR"
+  export ML_PORT=3000
+  export IMG_LENGTH_LIMIT=1280
+  export FACE_DETECTION_PLUGIN=facenet.FaceDetector
+  export CALCULATION_PLUGIN=facenet.Calculator
+  export EXTRA_PLUGINS=agegender.AgeDetector,agegender.GenderDetector
+  export UWSGI_PROCESSES=1
+  export UWSGI_THREADS=1
+  export MODELS_ROOT="$ROOT_DIR/models"
+  export PYTHONPATH="$ML_DIR:$ML_DIR/src:$ML_DIR/srcext${PYTHONPATH:+:$PYTHONPATH}"
+  exec python3 -m src.app
+) >"$LOG_FILE" 2>&1 &
+
+printf '%s\n' "$!" > "$PID_FILE"
 
 printf '%s\n' "Waiting for detector backend..."
 ready=0
@@ -49,7 +59,7 @@ PY
 done
 
 if [ "$ready" -ne 1 ]; then
-  printf '%s\n' "Detector backend did not become ready. Run 'docker logs fdx-detector' for details."
+  printf '%s\n' "Detector backend did not become ready. See .fdx-detector.log for details."
   exit 1
 fi
 

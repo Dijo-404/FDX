@@ -4,13 +4,12 @@ FDX is a trimmed, local face detection runner. It keeps the face-processing core
 and a custom browser UI, while removing the upstream admin service, API service,
 Postgres database, accounts, and login flow.
 
-The default setup runs a single `exadel/compreface-core:1.2.0` detector container
-on port `3000` and a small local Python proxy/UI server on port `8080`.
+The default setup runs the local detector service on port `3000` and a small
+local Python proxy/UI server on port `8080`.
 
 ## Quick start
 
-Install Docker and Python 3, then place the downloaded model bundle in
-`models/`.
+Install Python 3, then place the downloaded model bundle in `models/`.
 
 Expected model folder:
 
@@ -39,7 +38,7 @@ Open:
 http://127.0.0.1:8080
 ```
 
-Stop the detector container and local UI proxy:
+Stop the local detector service and UI proxy:
 
 ```sh
 ./stop.sh
@@ -47,12 +46,10 @@ Stop the detector container and local UI proxy:
 
 ## How the repo works
 
-`run.sh` checks for Docker, Python 3, and `models/`. It then starts
-`exadel/compreface-core:1.2.0` as the `fdx-detector` container, mounts the local
-`models/` directory into the container at `/app/ml/.models`, waits for
-`/healthcheck`, and starts `tools/detector_proxy.py`.
+`run.sh` checks for Python 3 and `models/`. It then starts the local detector
+service, waits for `/healthcheck`, and starts `tools/detector_proxy.py`.
 
-The browser never calls the detector container directly. It loads the static UI
+The browser never calls the detector service directly. It loads the static UI
 from the proxy and sends detection requests to `/api/find_faces`. The proxy
 serves `frontend/`, forwards health/status requests, and forwards face detection
 uploads to `http://127.0.0.1:3000/find_faces`.
@@ -61,15 +58,15 @@ uploads to `http://127.0.0.1:3000/find_faces`.
 flowchart LR
   browser["Browser\nfrontend/index.html\nfrontend/app.js"]
   proxy["Local UI proxy\n127.0.0.1:8080\ntools/detector_proxy.py"]
-  core["Detector container\n127.0.0.1:3000\nexadel/compreface-core:1.2.0"]
-  models["Local model bundle\nmodels/\nmounted read-only"]
+  core["Local detector service\n127.0.0.1:3000"]
+  models["Local model bundle\nmodels/"]
 
   browser -->|"GET /, /app.js, /styles.css"| proxy
   browser -->|"POST /api/find_faces"| proxy
   browser -->|"GET /health, /status"| proxy
   proxy -->|"POST /find_faces"| core
   proxy -->|"GET /healthcheck, /status"| core
-  core -->|"loads weights from /app/ml/.models"| models
+  core -->|"loads weights"| models
 ```
 
 The UI has three pages:
@@ -89,8 +86,8 @@ sequenceDiagram
   participant User
   participant UI as Browser UI
   participant Proxy as detector_proxy.py
-  participant Core as compreface-core
-  participant Models as /app/ml/.models
+  participant Core as Local detector
+  participant Models as models/
 
   User->>UI: Add image, video, target face, or camera frame
   UI->>Proxy: POST /api/find_faces?face_plugins=...
@@ -145,8 +142,8 @@ FDX/
 
 Top-level files and directories:
 
-- `run.sh` starts the detector container and the local UI proxy.
-- `stop.sh` stops the detector container and kills the proxy process.
+- `run.sh` starts the local detector service and the local UI proxy.
+- `stop.sh` stops the local detector service and kills the proxy process.
 - `frontend/` contains the browser app.
 - `tools/detector_proxy.py` serves the UI and forwards requests to the detector.
 - `models/` contains local model weights from Drive. This directory is ignored by
@@ -157,7 +154,7 @@ Top-level files and directories:
 
 ## Runtime configuration
 
-`run.sh` starts the container with these important settings:
+`run.sh` starts the local detector with these important settings:
 
 ```text
 ML_PORT=3000
@@ -175,9 +172,8 @@ you add the mask plugin to `EXTRA_PLUGINS` and request `mask` from the UI/API.
 
 ## Models
 
-The model bundle lives in `models/` locally and is mounted read-only into the
-container. Because `.gitignore` ignores `models/`, these files are expected to be
-downloaded separately.
+The model bundle lives in `models/` locally. Because `.gitignore` ignores
+`models/`, these files are expected to be downloaded separately.
 
 Models used by the default runner:
 
@@ -234,7 +230,7 @@ playback. One-frame detections are discarded to reduce visual noise. If target
 faces have been added, matching tracks use their saved names.
 
 Live scan uses the same detector path with camera frames captured in the browser.
-Frames are sent only to the local proxy and local detector container.
+Frames are sent only to the local proxy and local detector service.
 
 ## What was removed
 
@@ -243,13 +239,14 @@ Frames are sent only to the local proxy and local detector container.
 - Postgres service
 - User accounts and login flow
 - Original upstream frontend
-- Container OS folders and runtime libraries
+- Bundled OS folders and runtime libraries
 - Python caches, test folders, and sample images
 
 ## Troubleshooting
 
 - If `models/` is missing, download the model bundle and place it at the repo
   root before running `./run.sh`.
-- If the backend does not become ready, run `docker logs fdx-detector`.
+- If the backend does not become ready, stop it with `./stop.sh`, then run
+  `./run.sh` again and watch the terminal output.
 - If the camera does not open, use `http://127.0.0.1:8080` or HTTPS. Browser
   camera APIs require localhost or a secure context.

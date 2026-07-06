@@ -1,6 +1,15 @@
 #!/usr/bin/env sh
 set -eu
 
-cd "$(dirname "$0")"
-docker rm -f fdx-detector >/dev/null 2>&1 || true
+ROOT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+PID_FILE="$ROOT_DIR/.fdx-detector.pid"
+
+if [ -f "$PID_FILE" ]; then
+  pid=$(cat "$PID_FILE")
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    kill "$pid" 2>/dev/null || true
+  fi
+  rm -f "$PID_FILE"
+fi
+
 pkill -f "tools/detector_proxy.py" 2>/dev/null || true

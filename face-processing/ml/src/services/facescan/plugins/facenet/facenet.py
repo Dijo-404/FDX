@@ -14,6 +14,7 @@
 
 import logging
 import math
+from pathlib import Path
 from collections import namedtuple
 from typing import List
 
@@ -74,7 +75,10 @@ class FaceDetector(mixins.FaceDetectorMixin, base.BasePlugin):
 
     @cached_property
     def _face_detection_net(self):
+        weights_file = Path(base.MODELS_ROOT) / 'mtcnn' / 'data' / 'mtcnn_weights.npy'
+        weights_file = str(weights_file) if weights_file.exists() else None
         return MTCNN(
+            weights_file=weights_file,
             min_face_size=self.FACE_MIN_SIZE,
             scale_factor=self.SCALE_FACTOR,
             steps_threshold=[self.det_threshold_a, self.det_threshold_b, self.det_threshold_c]

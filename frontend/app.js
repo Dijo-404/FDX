@@ -9,7 +9,6 @@ const statusText = document.querySelector("#status");
 const statusDot = document.querySelector("#statusDot");
 const clearButton = document.querySelector("#clear");
 const clearFacesButton = document.querySelector("#clearFaces");
-const videoInterval = document.querySelector("#videoInterval");
 const resultCount = document.querySelector("#resultCount");
 const pageTabs = document.querySelectorAll("[data-page-target]");
 const pages = document.querySelectorAll("[data-page]");
@@ -34,11 +33,15 @@ const DEFAULT_DETECTION_THRESHOLD = "0.50";
 const MATCH_SIMILARITY_THRESHOLD = 0.8;
 const TARGET_DETECTION_THRESHOLD = "0.55";
 const TARGET_STORAGE_KEY = "fdx.targetFaces";
-const VIDEO_MAX_FRAMES = 600;
+const FACE_ATTRIBUTE_PLUGINS = "age,gender";
+const FACE_MATCH_PLUGINS = `calculator,${FACE_ATTRIBUTE_PLUGINS}`;
+const DEFAULT_DETECTION_FPS = 30;
+const CAMERA_IDEAL_FPS = 60;
+const VIDEO_FRAME_INTERVAL_SECONDS = 1 / DEFAULT_DETECTION_FPS;
 const VIDEO_MAX_SIDE = 1280;
 const TRACK_MIN_IOU = 0.12;
 const TRACK_MIN_EMBEDDING_SIMILARITY = 0.65;
-const LIVE_SCAN_INTERVAL_MS = 500;
+const LIVE_SCAN_INTERVAL_MS = 1000 / DEFAULT_DETECTION_FPS;
 const LIVE_TRACK_RETENTION_SECONDS = 8;
 const targetFaces = loadStoredTargetFaces();
 let similarityCoefficients = [0, 1];
@@ -222,8 +225,8 @@ async function detectFile(file, node) {
   try {
     const needsMatching = targetFaces.some((target) => Array.isArray(target.embedding));
     const payload = needsMatching
-      ? await findFaces(file, "calculator")
-      : await findFaces(file, "");
+      ? await findFaces(file, FACE_MATCH_PLUGINS)
+      : await findFaces(file, FACE_ATTRIBUTE_PLUGINS);
 
     const faces = Array.isArray(payload.result) ? payload.result : [];
     const matchedFaces = faces.map(addBestTargetMatch);
@@ -234,11 +237,11 @@ async function detectFile(file, node) {
   } catch (error) {
     if (targetFaces.length > 0) {
       try {
-        const payload = await findFaces(file, "");
+        const payload = await findFaces(file, FACE_ATTRIBUTE_PLUGINS);
         const faces = Array.isArray(payload.result) ? payload.result : [];
         drawImage(node.canvas, image, faces);
         node.summary.classList.remove("error");
-        node.summary.textContent = `${faces.length} face${faces.length === 1 ? "" : "s"} detected`;
+        node.summary.textContent = createDetectionSummary(faces);
         node.raw.textContent = JSON.stringify(payload, null, 2);
         return;
       } catch (fallbackError) {
@@ -296,8 +299,7 @@ async function detectVideo(file, node, generation) {
     }
 
     node.videoStage.style.aspectRatio = `${decoder.videoWidth} / ${decoder.videoHeight}`;
-    const requestedInterval = getVideoInterval();
-    const sampleInterval = Math.max(requestedInterval, duration / VIDEO_MAX_FRAMES);
+    const sampleInterval = VIDEO_FRAME_INTERVAL_SECONDS;
     const timestamps = createSampleTimestamps(duration, sampleInterval);
     const frameCanvas = document.createElement("canvas");
     const tracks = [];
@@ -322,13 +324,13 @@ async function detectVideo(file, node, generation) {
       try {
         payload = await findFaces(
           frameFile,
-          useEmbeddings ? "calculator" : "",
+          useEmbeddings ? FACE_MATCH_PLUGINS : FACE_ATTRIBUTE_PLUGINS,
           true,
         );
       } catch (error) {
         if (!useEmbeddings) throw error;
         useEmbeddings = false;
-        payload = await findFaces(frameFile, "", true);
+        payload = await findFaces(frameFile, FACE_ATTRIBUTE_PLUGINS, true);
       }
 
       const detectedFaces = Array.isArray(payload.result) ? payload.result : [];
@@ -361,7 +363,6 @@ async function detectVideo(file, node, generation) {
       playbackSamples,
       confirmedTracks,
       sampleInterval,
-      requestedInterval,
     );
     node.raw.textContent = JSON.stringify(
       createVideoDiagnostics(
@@ -486,7 +487,7 @@ function canvasToFile(canvas, videoName, frameIndex) {
 }
 
 function createSampleTimestamps(duration, interval) {
-  const count = Math.min(VIDEO_MAX_FRAMES, Math.max(1, Math.ceil(duration / interval)));
+  const count = Math.max(1, Math.ceil(duration / interval));
   return Array.from({ length: count }, (_, index) => Math.min(index * interval, duration - 0.001));
 }
 
@@ -959,6 +960,8 @@ function interpolateTrackedFace(previous, next, progress) {
 
   return {
     ...previous,
+    age: next.age || previous.age,
+    gender: next.gender || previous.gender,
     match: next.match || previous.match,
     track: next.track || previous.track,
     overlayAlpha: 1,
@@ -991,14 +994,12 @@ function createConfirmedVideoAnalysis(samples, tracks) {
   };
 }
 
-function createVideoSummary(samples, tracks, sampleInterval, requestedInterval) {
+function createVideoSummary(samples, tracks, sampleInterval) {
   const detections = samples.reduce((total, sample) => total + sample.faces.length, 0);
   const namedTracks = tracks.filter((track) => track.name).length;
-  const adjusted = sampleInterval > requestedInterval + 0.001
-    ? ` · sampling adjusted to ${sampleInterval.toFixed(2)}s`
-    : "";
+  const fps = formatFps(1 / sampleInterval);
   const named = namedTracks > 0 ? ` · ${namedTracks} named` : "";
-  return `${tracks.length} face track${tracks.length === 1 ? "" : "s"} · ${detections} detections${named}${adjusted}`;
+  return `${tracks.length} face track${tracks.length === 1 ? "" : "s"} · ${detections} detections · ${fps} fps${named}`;
 }
 
 function createVideoDiagnostics(
@@ -1012,8 +1013,8 @@ function createVideoDiagnostics(
   return {
     file: file.name,
     duration_seconds: Number(duration.toFixed(3)),
-    sample_interval_seconds: Number(sampleInterval.toFixed(3)),
-    sampled_frames: samples.length,
+    detection_fps: Number((1 / sampleInterval).toFixed(2)),
+    analyzed_frames: samples.length,
     discarded_transient_tracks: discardedTracks,
     tracks: tracks.map((track) => ({
       id: track.id,
@@ -1026,9 +1027,8 @@ function createVideoDiagnostics(
   };
 }
 
-function getVideoInterval() {
-  const value = Number(videoInterval.value);
-  return Number.isFinite(value) && value > 0 ? value : 0.5;
+function formatFps(fps) {
+  return Number.isInteger(fps) ? String(fps) : fps.toFixed(2);
 }
 
 function formatTime(seconds) {
@@ -1079,27 +1079,99 @@ function drawFaceBoxes(context, faces, scale) {
     const match = face.match;
     const hasMatch = Boolean(match?.isMatch);
     const color = hasMatch ? "#ff2ea6" : "#39ff6a";
-    const label = createBoxLabel(match, face.track);
+    const label = createBoxLabel(face);
 
     context.globalAlpha = clamp(Number(face.overlayAlpha ?? 1), 0, 1);
     context.strokeStyle = color;
     context.fillStyle = color;
     context.strokeRect(x, y, w, h);
     if (label) {
-      const labelWidth = context.measureText(label).width + 10;
-      context.fillRect(x, Math.max(0, y - 22), labelWidth, 22);
-      context.fillStyle = "#05070a";
-      context.fillText(label, x + 5, Math.max(14, y - 7));
+      drawCanvasLabel(context, label, x, y, color);
     }
   });
   context.globalAlpha = 1;
 }
 
-function createBoxLabel(match, track) {
+function createBoxLabel(face, options = {}) {
+  const { includeConfidence = false } = options;
+  const match = face.match;
+  const parts = [];
+
   if (match?.isMatch) {
-    return match.target.name || getTargetLabel(match.target);
+    parts.push(match.target.name || getTargetLabel(match.target));
+  } else if (face.track?.id) {
+    parts.push(`Face ${face.track.id}`);
   }
-  return track?.id ? `Face ${track.id}` : "";
+
+  parts.push(...formatFaceAttributes(face));
+
+  if (includeConfidence) {
+    parts.push(`${Math.round(Number(face.box?.probability || 0) * 100)}%`);
+  }
+
+  return parts.filter(Boolean).join(" · ");
+}
+
+function formatFaceAttributes(face) {
+  return [formatGender(face.gender), formatAge(face.age)].filter(Boolean);
+}
+
+function formatGender(gender) {
+  const value = typeof gender === "string" ? gender : gender?.value;
+  if (!value) return "";
+  const text = String(value).trim();
+  return text ? `${text.charAt(0).toUpperCase()}${text.slice(1).toLowerCase()}` : "";
+}
+
+function formatAge(age) {
+  if (!age) return "";
+
+  if (Array.isArray(age) && age.length >= 2) {
+    return `Age ${Math.round(Number(age[0]))}-${Math.round(Number(age[1]))}`;
+  }
+
+  if (typeof age === "number") {
+    return `Age ${Math.round(age)}`;
+  }
+
+  const low = Number(age.low);
+  const high = Number(age.high);
+  const hasLow = Number.isFinite(low);
+  const hasHigh = Number.isFinite(high);
+  if (hasLow && hasHigh) {
+    const roundedLow = Math.round(low);
+    const roundedHigh = Math.round(high);
+    return roundedLow === roundedHigh ? `Age ${roundedLow}` : `Age ${roundedLow}-${roundedHigh}`;
+  }
+  if (hasLow) return `Age ${Math.round(low)}`;
+  if (hasHigh) return `Age ${Math.round(high)}`;
+  return "";
+}
+
+function drawCanvasLabel(context, label, x, y, color, height = 22) {
+  const paddingX = 6;
+  const canvasWidth = context.canvas.width;
+  const naturalWidth = context.measureText(label).width + paddingX * 2;
+  const labelWidth = Math.min(naturalWidth, canvasWidth);
+  const labelX = clamp(x, 0, Math.max(0, canvasWidth - labelWidth));
+  const labelY = Math.max(0, y - height);
+  const text = truncateCanvasText(context, label, Math.max(0, labelWidth - paddingX * 2));
+
+  context.fillStyle = color;
+  context.fillRect(labelX, labelY, labelWidth, height);
+  context.fillStyle = "#05070a";
+  context.fillText(text, labelX + paddingX, Math.max(14, labelY + height - 7));
+}
+
+function truncateCanvasText(context, text, maxWidth) {
+  if (context.measureText(text).width <= maxWidth) return text;
+
+  const suffix = "...";
+  let truncated = text;
+  while (truncated.length > 0 && context.measureText(`${truncated}${suffix}`).width > maxWidth) {
+    truncated = truncated.slice(0, -1);
+  }
+  return truncated ? `${truncated}${suffix}` : suffix;
 }
 
 function getTargetLabel(target, fallbackIndex = targetFaces.indexOf(target)) {
@@ -1156,7 +1228,7 @@ async function openScanCamera() {
         facingMode: { ideal: "user" },
         width: { ideal: 1280 },
         height: { ideal: 720 },
-        frameRate: { ideal: 30 },
+        frameRate: { ideal: CAMERA_IDEAL_FPS, max: CAMERA_IDEAL_FPS },
       },
       audio: false,
     });
@@ -1261,7 +1333,7 @@ async function runLiveScanLoop(generation) {
 
   try {
     const blob = await captureScanFrame();
-    const url = `/api/find_faces?face_plugins=calculator&limit=0&det_prob_threshold=${DEFAULT_DETECTION_THRESHOLD}`;
+    const url = `/api/find_faces?face_plugins=${encodeURIComponent(FACE_MATCH_PLUGINS)}&limit=0&det_prob_threshold=${DEFAULT_DETECTION_THRESHOLD}`;
     const data = new FormData();
     data.append("file", blob, "scan.jpg");
 
@@ -1370,17 +1442,12 @@ function drawScanOverlay(faces) {
     const h = (Number(box.y_max || 0) - Number(box.y_min || 0)) * scale;
     const hasMatch = Boolean(face.match?.isMatch);
     const color = hasMatch ? "#ff2ea6" : "#39ff6a";
-    const label = hasMatch
-      ? (face.match.target.name || getTargetLabel(face.match.target))
-      : `Face ${face.track?.id || "?"} · ${Math.round(Number(box.probability || 0) * 100)}%`;
+    const label = createBoxLabel(face, { includeConfidence: true })
+      || `Face ${face.track?.id || "?"} · ${Math.round(Number(box.probability || 0) * 100)}%`;
 
     drawReticle(context, x, y, w, h, color);
 
-    const labelWidth = context.measureText(label).width + 12;
-    context.fillStyle = color;
-    context.fillRect(x, Math.max(0, y - 22), labelWidth, 20);
-    context.fillStyle = "#05070a";
-    context.fillText(label, x + 6, Math.max(15, y - 7));
+    drawCanvasLabel(context, label, x, y, color, 20);
   });
 }
 

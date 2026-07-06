@@ -28,7 +28,7 @@ docker run -d \
   -e IMG_LENGTH_LIMIT=1280 \
   -e FACE_DETECTION_PLUGIN=facenet.FaceDetector \
   -e CALCULATION_PLUGIN=facenet.Calculator \
-  -e EXTRA_PLUGINS=" " \
+  -e EXTRA_PLUGINS=agegender.AgeDetector,agegender.GenderDetector \
   -e UWSGI_PROCESSES=1 \
   -e UWSGI_THREADS=1 \
   -v "$(pwd)/models:/app/ml/.models:ro" \

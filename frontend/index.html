@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>FDX // Face Scanner</title>
-    <link rel="stylesheet" href="/styles.css?v=9">
+    <link rel="stylesheet" href="/styles.css?v=13">
   </head>
   <body>
     <main class="shell">
@@ -103,10 +103,41 @@
 
         <section id="targetDropzone" class="dropzone compact">
           <input id="targetFileInput" type="file" accept="image/*" multiple>
-          <label for="targetFileInput">
+          <input id="targetDrawFileInput" type="file" accept="image/*">
+          <div class="dropzoneContent">
             <span>Add the face images you want to find</span>
-            <strong>Add target faces</strong>
-          </label>
+            <div class="uploadChoices">
+              <label for="targetFileInput"><strong>Add target faces</strong></label>
+              <label for="targetDrawFileInput"><strong>Draw target face</strong></label>
+              <button id="openFaceCapture" class="uploadChoiceButton" type="button">Capture with camera</button>
+            </div>
+          </div>
+        </section>
+
+        <section id="targetDrawPanel" class="targetDrawPanel" hidden>
+          <div class="targetDrawStage">
+            <canvas id="targetDrawCanvas" aria-label="Target face drawing canvas"></canvas>
+          </div>
+          <div class="targetDrawControls">
+            <span id="targetDrawStatus" class="captureStatus">Draw target face</span>
+            <button id="addDrawnTarget" type="button" disabled>Add drawn face</button>
+            <button id="cancelDrawTarget" type="button">Cancel</button>
+          </div>
+        </section>
+
+        <section id="faceCapturePanel" class="capturePanel" hidden>
+          <div class="captureStage">
+            <video id="faceCaptureVideo" autoplay playsinline muted aria-label="Face capture camera preview"></video>
+            <div id="faceCaptureIdle" class="captureIdle">
+              <strong>[ CAMERA STANDBY ]</strong>
+              <p>Open the camera and center your face.</p>
+            </div>
+          </div>
+          <div class="captureControls">
+            <span id="faceCaptureStatus" class="captureStatus">Camera idle</span>
+            <button id="captureFace" type="button" disabled>Capture face</button>
+            <button id="stopFaceCapture" type="button">Close camera</button>
+          </div>
         </section>
 
         <section id="facesEmpty" class="emptyState">
@@ -136,6 +167,7 @@
 
     <template id="faceTemplate">
       <article class="faceCard">
+        <button class="faceDelete" type="button" title="Delete target face" aria-label="Delete target face">X</button>
         <img alt="">
         <div>
           <h3></h3>
@@ -158,7 +190,7 @@
       </article>
     </template>
 
-    <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
-    <script src="/app.js?v=9"></script>
+    <script src="/vendor/three.min.js?v=149"></script>
+    <script src="/app.js?v=16"></script>
   </body>
 </html>

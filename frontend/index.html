@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>FDX // Face Scanner</title>
-    <link rel="stylesheet" href="/styles.css?v=13">
+    <link rel="stylesheet" href="/styles.css?v=16">
   </head>
   <body>
     <main class="shell">
@@ -17,13 +17,12 @@
           </div>
         </div>
         <nav class="pageNav" aria-label="Pages">
-          <button class="pageTab active" type="button" data-page-target="scan" aria-selected="true">Live Scan</button>
-          <button class="pageTab" type="button" data-page-target="detection" aria-selected="false">Detection</button>
+          <button class="pageTab active" type="button" data-page-target="detection" aria-selected="true">Detection</button>
           <button class="pageTab" type="button" data-page-target="faces" aria-selected="false">Faces</button>
         </nav>
       </header>
 
-      <section id="scanPage" class="page active" data-page="scan">
+      <section id="scanPage" class="page" data-page="scan" hidden>
         <div class="sectionHeader">
           <div>
             <h2>Live Scan</h2>
@@ -57,7 +56,7 @@
         </section>
       </section>
 
-      <section id="detectionPage" class="page" data-page="detection" hidden>
+      <section id="detectionPage" class="page active" data-page="detection">
         <div class="sectionHeader">
           <div>
             <h2>Detection</h2>
@@ -80,7 +79,8 @@
             <span>Drop a batch of images or videos here</span>
             <div class="uploadChoices">
               <label for="fileInput"><strong>Choose files</strong></label>
-              <label for="folderInput"><strong>Choose image folder</strong></label>
+              <button id="chooseFolder" class="uploadChoiceButton" type="button">Choose image folder</button>
+              <button id="currentFolderPath" class="uploadChoiceButton folderPathButton" type="button" hidden></button>
             </div>
           </div>
         </section>
@@ -107,8 +107,13 @@
           <div class="dropzoneContent">
             <span>Add the face images you want to find</span>
             <div class="uploadChoices">
-              <label for="targetFileInput"><strong>Add target faces</strong></label>
-              <label for="targetDrawFileInput"><strong>Draw target face</strong></label>
+              <div class="uploadMenuWrap">
+                <button id="targetAddMenuButton" class="uploadChoiceButton" type="button" aria-expanded="false" aria-controls="targetAddMenu">Add target faces</button>
+                <div id="targetAddMenu" class="uploadMenu" role="menu" hidden>
+                  <label class="uploadMenuItem" for="targetFileInput" role="menuitem" tabindex="0" data-target-add-action>Upload images</label>
+                  <label class="uploadMenuItem" for="targetDrawFileInput" role="menuitem" tabindex="0" data-target-add-action>Draw from image</label>
+                </div>
+              </div>
               <button id="openFaceCapture" class="uploadChoiceButton" type="button">Capture with camera</button>
             </div>
           </div>
@@ -191,6 +196,6 @@
     </template>
 
     <script src="/vendor/three.min.js?v=149"></script>
-    <script src="/app.js?v=16"></script>
+    <script src="/app.js?v=19"></script>
   </body>
 </html>

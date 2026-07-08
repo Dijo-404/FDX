@@ -1,8 +1,12 @@
 const fileInput = document.querySelector("#fileInput");
 const folderInput = document.querySelector("#folderInput");
+const chooseFolderButton = document.querySelector("#chooseFolder");
+const currentFolderPathButton = document.querySelector("#currentFolderPath");
 const dropzone = document.querySelector("#dropzone");
 const targetFileInput = document.querySelector("#targetFileInput");
 const targetDrawFileInput = document.querySelector("#targetDrawFileInput");
+const targetAddMenuButton = document.querySelector("#targetAddMenuButton");
+const targetAddMenu = document.querySelector("#targetAddMenu");
 const targetDropzone = document.querySelector("#targetDropzone");
 const targetDrawPanel = document.querySelector("#targetDrawPanel");
 const targetDrawCanvas = document.querySelector("#targetDrawCanvas");
@@ -52,6 +56,10 @@ const TARGET_DETECTION_THRESHOLD = "0.98";
 const CANDIDATE_SIMILARITY_THRESHOLD = 0.98;
 const MATCH_MARGIN_THRESHOLD = 0.00001;
 const MIN_MATCH_FACE_SIZE_PX = 10;
+const DETECTION_FOLDER_STORAGE_KEY = "fdx.detectionFolder";
+const DETECTION_FOLDER_DB_NAME = "fdx.detectionFolderHandles";
+const DETECTION_FOLDER_STORE_NAME = "handles";
+const DETECTION_FOLDER_HANDLE_KEY = "current";
 const TARGET_STORAGE_KEY = "fdx.targetFaces";
 const FACE_DETECTION_PLUGINS = "";
 const FACE_MATCH_PLUGINS = "calculator";
@@ -70,8 +78,16 @@ const LIVE_SCAN_INTERVAL_MS = 1000 / DEFAULT_DETECTION_FPS;
 const LIVE_TRACK_RETENTION_SECONDS = 8;
 const LOCAL_PROXY_ORIGIN = "http://127.0.0.1:8080";
 const LOCAL_PROXY_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
+const TONE_BLACK = "#050505";
+const TONE_GRAY = "#777777";
+const TONE_WHITE = "#f5f5f5";
+const FACE_BOX_COLOR = TONE_GRAY;
+const MATCH_BOX_COLOR = TONE_WHITE;
+const LABEL_TEXT_COLOR = TONE_BLACK;
+const SCAN_VISUALIZER_COLOR = 0xf5f5f5;
 const detectorApiOrigin = getDetectorApiOrigin();
 const targetFaces = loadStoredTargetFaces();
+let detectionFolderMeta = loadStoredDetectionFolderMeta();
 let accurateSimilarityCoefficients = [0, 1];
 let fastSimilarityCoefficients = [0, 1];
 let processingGeneration = 0;
@@ -115,7 +131,15 @@ fileInput.addEventListener("change", () => {
 });
 
 folderInput.addEventListener("change", () => {
-  handleFiles(folderInput.files);
+  void handleFolderInputSelection(folderInput.files);
+});
+
+chooseFolderButton.addEventListener("click", () => {
+  void openDetectionFolderPicker();
+});
+
+currentFolderPathButton.addEventListener("click", () => {
+  void openDetectionFolderPicker();
 });
 
 matchesOnly.addEventListener("change", () => {
@@ -124,13 +148,47 @@ matchesOnly.addEventListener("change", () => {
 });
 
 targetFileInput.addEventListener("change", () => {
+  closeTargetAddMenu();
   handleTargetFiles(targetFileInput.files);
 });
 
 targetDrawFileInput.addEventListener("change", () => {
+  closeTargetAddMenu();
   const [file] = Array.from(targetDrawFileInput.files).filter((item) => item.type.startsWith("image/"));
   targetDrawFileInput.value = "";
   if (file) void openTargetDrawPanel(file);
+});
+
+targetAddMenuButton.addEventListener("click", () => {
+  toggleTargetAddMenu();
+});
+
+targetAddMenu.addEventListener("click", (event) => {
+  if (event.target.closest("[data-target-add-action]")) {
+    window.setTimeout(closeTargetAddMenu, 0);
+  }
+});
+
+targetAddMenu.addEventListener("keydown", (event) => {
+  const action = event.target.closest("[data-target-add-action]");
+  if (!action || (event.key !== "Enter" && event.key !== " ")) return;
+  event.preventDefault();
+  action.click();
+});
+
+document.addEventListener("click", (event) => {
+  if (
+    targetAddMenu.hidden
+    || targetAddMenu.contains(event.target)
+    || targetAddMenuButton.contains(event.target)
+  ) {
+    return;
+  }
+  closeTargetAddMenu();
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeTargetAddMenu();
 });
 
 targetDrawCanvas.addEventListener("pointerdown", startTargetDrawSelection);
@@ -185,6 +243,7 @@ targetDropzone.addEventListener("dragleave", () => {
 targetDropzone.addEventListener("drop", (event) => {
   event.preventDefault();
   targetDropzone.classList.remove("dragover");
+  closeTargetAddMenu();
   handleTargetFiles(event.dataTransfer.files);
 });
 
@@ -271,15 +330,15 @@ function createUnexpectedDetectorResponseMessage(response, text) {
   return `Detector returned HTTP ${response.status} without JSON. ${getDetectorConnectionMessage()}`;
 }
 
-const PAGE_NAMES = ["scan", "detection", "faces"];
+const PAGE_NAMES = ["detection", "faces"];
 
 function getPageFromHash() {
   const page = window.location.hash.replace("#", "");
-  return PAGE_NAMES.includes(page) ? page : "scan";
+  return PAGE_NAMES.includes(page) ? page : "detection";
 }
 
 function showPage(pageName, updateHash = true) {
-  const normalizedPage = PAGE_NAMES.includes(pageName) ? pageName : "scan";
+  const normalizedPage = PAGE_NAMES.includes(pageName) ? pageName : "detection";
 
   pages.forEach((page) => {
     const isActive = page.dataset.page === normalizedPage;
@@ -309,10 +368,256 @@ function showPage(pageName, updateHash = true) {
   }
 }
 
+function supportsDirectoryPicker() {
+  return typeof window.showDirectoryPicker === "function";
+}
+
+async function openDetectionFolderPicker() {
+  if (uploadInProgress) return;
+
+  if (supportsDirectoryPicker()) {
+    try {
+      const handle = await window.showDirectoryPicker({
+        id: "fdx-detection-folder",
+        mode: "read",
+      });
+      try {
+        await useDetectionDirectoryHandle(handle);
+      } catch (error) {
+        showDetectionFolderError(error);
+      }
+      return;
+    } catch (error) {
+      if (error?.name === "AbortError") return;
+    }
+  }
+
+  folderInput.click();
+}
+
+async function handleFolderInputSelection(fileList) {
+  const files = Array.from(fileList).filter(isFolderDetectionFile);
+  if (files.length === 0) {
+    folderInput.value = "";
+    return;
+  }
+
+  saveDetectionFolderMeta({
+    path: getFolderPathFromFiles(files),
+    source: "input",
+  });
+  void deleteStoredDetectionFolderHandle();
+  await handleFiles(files);
+}
+
+async function useDetectionDirectoryHandle(handle, { autoRestore = false } = {}) {
+  if (autoRestore && (uploadInProgress || results.children.length > 0)) return;
+
+  const files = await readFilesFromDirectoryHandle(handle);
+  saveDetectionFolderMeta({
+    path: handle.name || "Selected folder",
+    source: "directory-handle",
+  });
+  await writeStoredDetectionFolderHandle(handle);
+
+  if (files.length === 0) {
+    batchProgress.hidden = false;
+    batchProgress.textContent = "No image files in selected folder";
+    return;
+  }
+
+  await handleFiles(files);
+}
+
+async function restoreStoredDetectionFolderHandle() {
+  renderDetectionFolderPath();
+  const handle = await readStoredDetectionFolderHandle();
+  if (!handle) return;
+
+  if (!detectionFolderMeta?.path) {
+    saveDetectionFolderMeta({
+      path: handle.name || "Selected folder",
+      source: "directory-handle",
+    });
+  }
+
+  const hasPermission = await hasDirectoryReadPermission(handle);
+  if (hasPermission) {
+    try {
+      await useDetectionDirectoryHandle(handle, { autoRestore: true });
+    } catch (error) {
+      showDetectionFolderError(error);
+    }
+  }
+}
+
+async function hasDirectoryReadPermission(handle) {
+  if (typeof handle?.queryPermission !== "function") return false;
+
+  try {
+    return await handle.queryPermission({ mode: "read" }) === "granted";
+  } catch (error) {
+    return false;
+  }
+}
+
+async function readFilesFromDirectoryHandle(directoryHandle, basePath = directoryHandle.name) {
+  const files = [];
+
+  for await (const [name, handle] of directoryHandle.entries()) {
+    const relativePath = `${basePath}/${name}`;
+    if (handle.kind === "directory") {
+      files.push(...await readFilesFromDirectoryHandle(handle, relativePath));
+    } else if (handle.kind === "file") {
+      const file = await handle.getFile();
+      if (isFolderDetectionFile(file)) {
+        files.push(attachDetectionRelativePath(file, relativePath));
+      }
+    }
+  }
+
+  return files.sort((first, second) => getFileDisplayPath(first).localeCompare(getFileDisplayPath(second)));
+}
+
+function attachDetectionRelativePath(file, relativePath) {
+  try {
+    Object.defineProperty(file, "fdxRelativePath", {
+      value: relativePath,
+      configurable: true,
+    });
+  } catch (error) {
+    file.fdxRelativePath = relativePath;
+  }
+  return file;
+}
+
+function isProcessableDetectionFile(file) {
+  return file.type.startsWith("image/")
+    || file.type.startsWith("video/")
+    || /\.(avif|bmp|gif|heic|heif|jpe?g|m4v|mov|mp4|png|webm|webp)$/i.test(file.name);
+}
+
+function isFolderDetectionFile(file) {
+  return file.type.startsWith("image/")
+    || /\.(avif|bmp|gif|heic|heif|jpe?g|png|webp)$/i.test(file.name);
+}
+
+function getFileDisplayPath(file) {
+  return file.fdxRelativePath || file.webkitRelativePath || file.name;
+}
+
+function getFolderPathFromFiles(files) {
+  const firstPath = files.find((file) => file.webkitRelativePath)?.webkitRelativePath;
+  if (!firstPath) return "Selected folder";
+  return firstPath.split("/").filter(Boolean)[0] || "Selected folder";
+}
+
+function showDetectionFolderError(error) {
+  batchProgress.hidden = false;
+  batchProgress.textContent = error?.message || "Could not open selected folder";
+}
+
+function saveDetectionFolderMeta(meta) {
+  detectionFolderMeta = {
+    path: meta.path || "Selected folder",
+    source: meta.source || "input",
+    savedAt: Date.now(),
+  };
+  localStorage.setItem(DETECTION_FOLDER_STORAGE_KEY, JSON.stringify(detectionFolderMeta));
+  renderDetectionFolderPath();
+}
+
+function loadStoredDetectionFolderMeta() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(DETECTION_FOLDER_STORAGE_KEY) || "null");
+    if (stored && typeof stored.path === "string" && stored.path.trim()) {
+      return {
+        path: stored.path,
+        source: stored.source || "input",
+        savedAt: Number(stored.savedAt) || 0,
+      };
+    }
+  } catch (error) {
+    localStorage.removeItem(DETECTION_FOLDER_STORAGE_KEY);
+  }
+  return null;
+}
+
+function renderDetectionFolderPath() {
+  const path = detectionFolderMeta?.path;
+  chooseFolderButton.hidden = Boolean(path);
+  currentFolderPathButton.hidden = !path;
+  if (path) {
+    currentFolderPathButton.textContent = `Folder: ${path}`;
+    currentFolderPathButton.title = path;
+  } else {
+    currentFolderPathButton.textContent = "";
+    currentFolderPathButton.removeAttribute("title");
+  }
+}
+
+function openDetectionFolderDb() {
+  if (!("indexedDB" in window)) return Promise.resolve(null);
+
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DETECTION_FOLDER_DB_NAME, 1);
+    request.onupgradeneeded = () => {
+      request.result.createObjectStore(DETECTION_FOLDER_STORE_NAME);
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function writeStoredDetectionFolderHandle(handle) {
+  const db = await openDetectionFolderDb().catch(() => null);
+  if (!db) return;
+
+  await new Promise((resolve, reject) => {
+    const transaction = db.transaction(DETECTION_FOLDER_STORE_NAME, "readwrite");
+    transaction.objectStore(DETECTION_FOLDER_STORE_NAME).put(handle, DETECTION_FOLDER_HANDLE_KEY);
+    transaction.oncomplete = resolve;
+    transaction.onerror = () => reject(transaction.error);
+  }).catch(() => {});
+  db.close();
+}
+
+async function readStoredDetectionFolderHandle() {
+  const db = await openDetectionFolderDb().catch(() => null);
+  if (!db) return null;
+
+  const handle = await new Promise((resolve, reject) => {
+    const transaction = db.transaction(DETECTION_FOLDER_STORE_NAME, "readonly");
+    const request = transaction.objectStore(DETECTION_FOLDER_STORE_NAME).get(DETECTION_FOLDER_HANDLE_KEY);
+    request.onsuccess = () => resolve(request.result || null);
+    request.onerror = () => reject(request.error);
+  }).catch(() => null);
+  db.close();
+  return handle;
+}
+
+async function deleteStoredDetectionFolderHandle() {
+  const db = await openDetectionFolderDb().catch(() => null);
+  if (!db) return;
+
+  await new Promise((resolve, reject) => {
+    const transaction = db.transaction(DETECTION_FOLDER_STORE_NAME, "readwrite");
+    transaction.objectStore(DETECTION_FOLDER_STORE_NAME).delete(DETECTION_FOLDER_HANDLE_KEY);
+    transaction.oncomplete = resolve;
+    transaction.onerror = () => reject(transaction.error);
+  }).catch(() => {});
+  db.close();
+}
+
+function setUploadControlsDisabled(disabled) {
+  fileInput.disabled = disabled;
+  folderInput.disabled = disabled;
+  chooseFolderButton.disabled = disabled;
+  currentFolderPathButton.disabled = disabled;
+}
+
 async function handleFiles(fileList) {
-  const files = Array.from(fileList).filter(
-    (file) => file.type.startsWith("image/") || file.type.startsWith("video/"),
-  );
+  const files = Array.from(fileList).filter(isProcessableDetectionFile);
   fileInput.value = "";
   folderInput.value = "";
   if (files.length === 0 || uploadInProgress) return;
@@ -323,8 +628,7 @@ async function handleFiles(fileList) {
   nodes.forEach(({ node }) => fragment.append(node.article));
   results.prepend(fragment);
   uploadInProgress = true;
-  fileInput.disabled = true;
-  folderInput.disabled = true;
+  setUploadControlsDisabled(true);
   dropzone.classList.add("processing");
   batchProgress.hidden = false;
   batchProgress.textContent = `Processing 0 of ${files.length}`;
@@ -345,8 +649,7 @@ async function handleFiles(fileList) {
     }
   } finally {
     uploadInProgress = false;
-    fileInput.disabled = false;
-    folderInput.disabled = false;
+    setUploadControlsDisabled(false);
     dropzone.classList.remove("processing");
     if (generation === processingGeneration) {
       batchProgress.textContent = `${files.length} file${files.length === 1 ? "" : "s"} processed`;
@@ -367,7 +670,7 @@ function createResultNode(file) {
   const videoOverlay = fragment.querySelector(".videoOverlay");
   const raw = fragment.querySelector("pre");
 
-  title.textContent = file.webkitRelativePath || file.name;
+  title.textContent = getFileDisplayPath(file);
   summary.textContent = "Queued";
   raw.textContent = "";
   article.dataset.resultState = "queued";
@@ -868,6 +1171,19 @@ function createSampleTimestamps(duration, interval) {
   return Array.from({ length: count }, (_, index) => Math.min(index * interval, duration - 0.001));
 }
 
+function setTargetAddMenuOpen(isOpen) {
+  targetAddMenu.hidden = !isOpen;
+  targetAddMenuButton.setAttribute("aria-expanded", String(isOpen));
+}
+
+function toggleTargetAddMenu() {
+  setTargetAddMenuOpen(targetAddMenu.hidden);
+}
+
+function closeTargetAddMenu() {
+  setTargetAddMenuOpen(false);
+}
+
 async function handleTargetFiles(fileList) {
   const files = Array.from(fileList).filter((file) => file.type.startsWith("image/"));
   if (files.length > 0) {
@@ -952,6 +1268,7 @@ function selectPrimaryTargetFace(faces, image) {
 
 async function openTargetDrawPanel(file) {
   stopFaceCaptureCamera({ hidePanel: true });
+  closeTargetAddMenu();
   targetDrawState = null;
   targetDrawPanel.hidden = false;
   targetDrawCanvas.width = 0;
@@ -960,6 +1277,7 @@ async function openTargetDrawPanel(file) {
   addDrawnTargetButton.disabled = true;
   cancelDrawTargetButton.disabled = false;
   targetDrawFileInput.disabled = true;
+  targetAddMenuButton.disabled = true;
 
   try {
     const image = await loadImage(file);
@@ -977,6 +1295,7 @@ async function openTargetDrawPanel(file) {
     targetDrawStatus.textContent = error?.message || "Could not read image";
   } finally {
     targetDrawFileInput.disabled = false;
+    targetAddMenuButton.disabled = false;
   }
 }
 
@@ -989,6 +1308,7 @@ function closeTargetDrawPanel() {
   addDrawnTargetButton.disabled = true;
   cancelDrawTargetButton.disabled = false;
   targetDrawFileInput.disabled = false;
+  targetAddMenuButton.disabled = false;
 }
 
 function renderTargetDrawCanvas() {
@@ -1015,7 +1335,7 @@ function renderTargetDrawCanvas() {
 }
 
 function drawTargetSelection(context, selection, isDrawing) {
-  const color = isDrawing ? "#f6ff2e" : "#ff2ea6";
+  const color = isDrawing ? TONE_WHITE : TONE_GRAY;
 
   context.save();
   context.strokeStyle = color;
@@ -1118,6 +1438,7 @@ async function addDrawnTargetFace() {
   cancelDrawTargetButton.disabled = true;
   targetDrawFileInput.disabled = true;
   targetFileInput.disabled = true;
+  targetAddMenuButton.disabled = true;
   openFaceCaptureButton.disabled = true;
 
   try {
@@ -1143,6 +1464,7 @@ async function addDrawnTargetFace() {
     cancelDrawTargetButton.disabled = false;
     targetDrawFileInput.disabled = false;
     targetFileInput.disabled = false;
+    targetAddMenuButton.disabled = false;
     openFaceCaptureButton.disabled = Boolean(faceCaptureStream?.active);
   }
 }
@@ -1198,6 +1520,7 @@ async function startFaceCaptureCamera() {
   if (faceCaptureStream?.active) return;
   if (faceCaptureStartPromise) return faceCaptureStartPromise;
 
+  closeTargetAddMenu();
   closeTargetDrawPanel();
   faceCapturePanel.hidden = false;
   faceCaptureStartPromise = openFaceCaptureCamera();
@@ -1298,6 +1621,7 @@ async function addCurrentFaceCapture() {
   captureFaceButton.disabled = true;
   openFaceCaptureButton.disabled = true;
   targetFileInput.disabled = true;
+  targetAddMenuButton.disabled = true;
   faceCaptureStatus.textContent = "Capturing face";
 
   try {
@@ -1316,6 +1640,7 @@ async function addCurrentFaceCapture() {
     captureFaceButton.disabled = !faceCaptureStream?.active;
     openFaceCaptureButton.disabled = Boolean(faceCaptureStream?.active);
     targetFileInput.disabled = false;
+    targetAddMenuButton.disabled = false;
   }
 }
 
@@ -2358,7 +2683,7 @@ function drawFaceBoxes(context, faces, scale) {
     const h = (Number(box.y_max || 0) - Number(box.y_min || 0)) * scale;
     const match = face.match;
     const hasMatch = Boolean(match?.isMatch);
-    const color = hasMatch ? "#ff2ea6" : "#39ff6a";
+    const color = hasMatch ? MATCH_BOX_COLOR : FACE_BOX_COLOR;
     const label = createBoxLabel(face);
 
     context.globalAlpha = clamp(Number(face.overlayAlpha ?? 1), 0, 1);
@@ -2401,7 +2726,7 @@ function drawCanvasLabel(context, label, x, y, color, height = 22) {
 
   context.fillStyle = color;
   context.fillRect(labelX, labelY, labelWidth, height);
-  context.fillStyle = "#05070a";
+  context.fillStyle = LABEL_TEXT_COLOR;
   context.fillText(text, labelX + paddingX, Math.max(14, labelY + height - 7));
 }
 
@@ -2684,7 +3009,7 @@ function drawScanOverlay(faces) {
     const w = (Number(box.x_max || 0) - Number(box.x_min || 0)) * scale;
     const h = (Number(box.y_max || 0) - Number(box.y_min || 0)) * scale;
     const hasMatch = Boolean(face.match?.isMatch);
-    const color = hasMatch ? "#ff2ea6" : "#39ff6a";
+    const color = hasMatch ? MATCH_BOX_COLOR : FACE_BOX_COLOR;
     const label = createBoxLabel(face, { includeConfidence: true })
       || `Face ${face.track?.id || "?"} · ${Math.round(Number(box.probability || 0) * 100)}%`;
 
@@ -2758,7 +3083,7 @@ function createScanVisualizer() {
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
   const material = new THREE.PointsMaterial({
-    color: 0x39ff6a,
+    color: SCAN_VISUALIZER_COLOR,
     size: 0.035,
     transparent: true,
     opacity: 0.35,
@@ -2770,7 +3095,7 @@ function createScanVisualizer() {
 
   const ringGeometry = new THREE.RingGeometry(2.75, 2.8, 64);
   const ringMaterial = new THREE.MeshBasicMaterial({
-    color: 0x39ff6a,
+    color: SCAN_VISUALIZER_COLOR,
     transparent: true,
     opacity: 0.2,
     side: THREE.DoubleSide,
@@ -2821,6 +3146,8 @@ function createScanVisualizer() {
 }
 
 showPage(getPageFromHash(), false);
+renderDetectionFolderPath();
+void restoreStoredDetectionFolderHandle();
 updateResultCount();
 renderTargetFaces();
 loadStatus();

@@ -1,18 +1,27 @@
 :root {
-  color-scheme: dark;
-  --bg: #0b0d0a;
-  --panel: #14170f;
-  --panel-alt: #1c2015;
-  --ink: #eef2e6;
-  --muted: #8ea082;
-  --line: #000000;
-  --accent: #39ff6a;
-  --accent-dim: #1f7a3c;
-  --pink: #ff2ea6;
-  --yellow: #f6ff2e;
-  --warn: #ff3b3b;
-  --shadow: 6px 6px 0 var(--line);
-  --shadow-sm: 4px 4px 0 var(--line);
+  color-scheme: light;
+  --tone-black: #050505;
+  --tone-gray: #777777;
+  --tone-white: #f5f5f5;
+  --tone-black-rgb: 5 5 5;
+  --tone-gray-rgb: 119 119 119;
+  --tone-white-rgb: 245 245 245;
+  --bg: var(--tone-white);
+  --panel: var(--tone-white);
+  --panel-alt: var(--tone-gray);
+  --stage: var(--tone-black);
+  --ink: var(--tone-black);
+  --ink-inverse: var(--tone-white);
+  --muted: var(--tone-gray);
+  --line: var(--tone-black);
+  --accent: var(--tone-black);
+  --accent-inverse: var(--tone-white);
+  --accent-dim: var(--tone-gray);
+  --match: var(--tone-gray);
+  --control-hover: var(--tone-gray);
+  --warn: var(--tone-gray);
+  --shadow: 6px 6px 0 var(--tone-gray);
+  --shadow-sm: 4px 4px 0 var(--tone-gray);
 }
 
 * {
@@ -27,8 +36,8 @@ body {
   margin: 0;
   min-height: 100vh;
   background:
-    linear-gradient(rgba(57, 255, 106, 0.045) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(57, 255, 106, 0.045) 1px, transparent 1px),
+    linear-gradient(rgb(var(--tone-black-rgb) / 8%) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(var(--tone-black-rgb) / 8%) 1px, transparent 1px),
     var(--bg);
   background-size: 28px 28px, 28px 28px, auto;
   color: var(--ink);
@@ -56,7 +65,7 @@ input[type="text"] {
 input[type="text"]:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: var(--shadow-sm), 0 0 0 3px rgb(57 255 106 / 25%);
+  box-shadow: var(--shadow-sm), 0 0 0 3px rgb(var(--tone-gray-rgb) / 35%);
 }
 
 .shell {
@@ -74,6 +83,7 @@ input[type="text"]:focus {
   padding: 18px 20px;
   border: 3px solid var(--line);
   background: var(--panel);
+  color: var(--ink);
   box-shadow: var(--shadow);
 }
 
@@ -90,7 +100,7 @@ input[type="text"]:focus {
   height: 44px;
   border: 3px solid var(--line);
   background: var(--accent);
-  color: #05130a;
+  color: var(--ink-inverse);
   font-weight: 800;
   box-shadow: var(--shadow-sm);
   transform: rotate(-3deg);
@@ -123,7 +133,7 @@ h1 {
 
 .statusDot.ready {
   background: var(--accent);
-  box-shadow: 0 0 10px var(--accent);
+  box-shadow: 0 0 10px var(--tone-gray);
   animation: pulse 1.6s ease-in-out infinite;
 }
 
@@ -151,12 +161,12 @@ button {
 
 button:hover {
   transform: translate(-2px, -2px);
-  box-shadow: 6px 6px 0 var(--line);
+  box-shadow: 6px 6px 0 var(--tone-gray);
 }
 
 button:active {
   transform: translate(1px, 1px);
-  box-shadow: 2px 2px 0 var(--line);
+  box-shadow: 2px 2px 0 var(--tone-gray);
 }
 
 button:disabled {
@@ -171,13 +181,13 @@ button:disabled:hover {
 }
 
 .pageTab {
-  background: var(--panel-alt);
-  color: var(--muted);
+  background: var(--panel);
+  color: var(--ink);
 }
 
 .pageTab.active {
-  background: var(--yellow);
-  color: #0b0d0a;
+  background: var(--accent);
+  color: var(--ink-inverse);
 }
 
 .page {
@@ -195,7 +205,7 @@ button:disabled:hover {
   justify-content: space-between;
   gap: 16px;
   padding-bottom: 4px;
-  border-bottom: 3px solid var(--line);
+  border-bottom: 3px solid var(--tone-gray);
 }
 
 .sectionHeader h2 {
@@ -215,6 +225,7 @@ button:disabled:hover {
 .panel {
   border: 3px solid var(--line);
   background: var(--panel);
+  color: var(--ink);
   box-shadow: var(--shadow);
 }
 
@@ -225,6 +236,7 @@ button:disabled:hover {
   min-height: 180px;
   border: 3px dashed var(--line);
   background: var(--panel);
+  color: var(--ink);
   box-shadow: var(--shadow);
   transition: border-color 0.15s ease, background 0.15s ease;
 }
@@ -232,6 +244,10 @@ button:disabled:hover {
 .dropzone.dragover {
   border-color: var(--accent);
   background: var(--panel-alt);
+}
+
+.dropzone.dragover .dropzoneContent {
+  color: var(--ink-inverse);
 }
 
 .dropzone.compact {
@@ -280,7 +296,7 @@ button:disabled:hover {
   min-height: 44px;
   border: 3px solid var(--line);
   background: var(--accent);
-  color: #05130a;
+  color: var(--ink-inverse);
   padding: 0 18px;
   text-transform: uppercase;
   font-size: 12px;
@@ -292,16 +308,80 @@ button:disabled:hover {
   min-width: 0;
 }
 
+.uploadMenuWrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.uploadMenu {
+  position: absolute;
+  top: calc(100% + 10px);
+  left: 50%;
+  z-index: 4;
+  display: grid;
+  gap: 8px;
+  min-width: 100%;
+  width: max-content;
+  padding: 10px;
+  border: 3px solid var(--line);
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+  transform: translateX(-50%);
+}
+
+.uploadMenu[hidden] {
+  display: none;
+}
+
+.uploadMenuItem {
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 8px 14px;
+  border: 3px solid var(--line);
+  background: var(--accent);
+  color: var(--ink-inverse);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.uploadMenuItem:hover,
+.uploadMenuItem:focus {
+  outline: none;
+  background: var(--control-hover);
+}
+
+.folderPathButton {
+  justify-content: flex-start;
+  min-width: min(360px, calc(100vw - 96px));
+  max-width: min(620px, calc(100vw - 96px));
+  overflow: hidden;
+  background: var(--panel);
+  color: var(--ink);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folderPathButton:hover:not(:disabled) {
+  color: var(--ink-inverse);
+}
+
 .uploadChoices label:hover strong,
 .uploadChoiceButton:hover:not(:disabled) {
-  background: var(--yellow);
+  background: var(--control-hover);
 }
 
 .dropzone.processing {
   opacity: 0.65;
 }
 
-.dropzone.processing .uploadChoices label {
+.dropzone.processing .uploadChoices label,
+.dropzone.processing .uploadChoiceButton,
+.dropzone.processing .uploadMenuItem {
   cursor: wait;
   pointer-events: none;
 }
@@ -328,7 +408,7 @@ button:disabled:hover {
   min-height: 42px;
   padding: 8px 12px;
   border: 3px solid var(--line);
-  background: var(--panel-alt);
+  background: var(--panel);
   color: var(--ink);
   cursor: pointer;
   font-size: 11px;
@@ -341,14 +421,14 @@ button:disabled:hover {
 .matchFilter:has(input:disabled) {
   color: var(--muted);
   cursor: not-allowed;
-  opacity: 0.55;
+  opacity: 0.7;
 }
 
 .matchFilter input {
   width: 16px;
   height: 16px;
   margin: 0;
-  accent-color: var(--pink);
+  accent-color: var(--match);
 }
 
 .results {
@@ -357,7 +437,7 @@ button:disabled:hover {
 }
 
 .result.targetMatch {
-  border-color: var(--pink);
+  border-color: var(--match);
 }
 
 .result {
@@ -367,6 +447,7 @@ button:disabled:hover {
   padding: 16px;
   border: 3px solid var(--line);
   background: var(--panel);
+  color: var(--ink);
   box-shadow: var(--shadow);
 }
 
@@ -375,7 +456,7 @@ button:disabled:hover {
   min-width: 0;
   overflow: auto;
   border: 2px solid var(--line);
-  background: #05070a;
+  background: var(--stage);
 }
 
 .videoStage {
@@ -386,7 +467,7 @@ button:disabled:hover {
   align-self: start;
   overflow: hidden;
   border: 2px solid var(--line);
-  background: #05070a;
+  background: var(--stage);
 }
 
 .videoStage[hidden] {
@@ -446,8 +527,8 @@ pre {
   margin: 0;
   padding: 12px;
   border: 2px solid var(--line);
-  background: #05070a;
-  color: var(--accent);
+  background: var(--stage);
+  color: var(--ink-inverse);
   font-size: 11px;
   white-space: pre-wrap;
 }
@@ -460,6 +541,7 @@ pre {
   min-height: 220px;
   border: 3px dashed var(--line);
   background: var(--panel);
+  color: var(--ink);
   text-align: center;
 }
 
@@ -495,6 +577,7 @@ pre {
   padding: 16px;
   border: 3px solid var(--line);
   background: var(--panel);
+  color: var(--ink);
   box-shadow: var(--shadow);
 }
 
@@ -505,7 +588,7 @@ pre {
   max-height: 70vh;
   overflow: auto;
   border: 2px solid var(--line);
-  background: #05070a;
+  background: var(--stage);
 }
 
 .targetDrawStage canvas {
@@ -525,7 +608,7 @@ pre {
   aspect-ratio: 16 / 9;
   overflow: hidden;
   border: 2px solid var(--line);
-  background: #05070a;
+  background: var(--stage);
 }
 
 .captureStage video {
@@ -548,8 +631,8 @@ pre {
   position: absolute;
   inset: 0;
   background:
-    linear-gradient(rgba(57, 255, 106, 0.12) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(57, 255, 106, 0.12) 1px, transparent 1px);
+    linear-gradient(rgb(var(--tone-white-rgb) / 14%) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(var(--tone-white-rgb) / 14%) 1px, transparent 1px);
   background-size: 22px 22px;
   pointer-events: none;
 }
@@ -567,7 +650,7 @@ pre {
 }
 
 .captureIdle strong {
-  color: var(--accent);
+  color: var(--accent-inverse);
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }
@@ -606,6 +689,7 @@ pre {
   padding: 14px;
   border: 3px solid var(--line);
   background: var(--panel);
+  color: var(--ink);
   box-shadow: var(--shadow-sm);
 }
 
@@ -620,15 +704,15 @@ pre {
   min-width: 0;
   height: 34px;
   padding: 0;
-  background: var(--warn);
-  color: var(--ink);
+  background: var(--accent);
+  color: var(--ink-inverse);
   font-size: 14px;
   line-height: 1;
-  box-shadow: 3px 3px 0 var(--line);
+  box-shadow: 3px 3px 0 var(--tone-gray);
 }
 
 .faceDelete:hover {
-  box-shadow: 5px 5px 0 var(--line);
+  box-shadow: 5px 5px 0 var(--tone-gray);
 }
 
 .faceCard img {
@@ -638,7 +722,7 @@ pre {
   aspect-ratio: 1 / 1;
   object-fit: cover;
   border: 2px solid var(--line);
-  background: #05070a;
+  background: var(--stage);
 }
 
 .faceCard h3 {
@@ -695,8 +779,8 @@ pre {
   display: grid;
   place-items: center;
   min-height: 420px;
-  border: 3px solid var(--line);
-  background: #05070a;
+  border: 3px solid var(--tone-white);
+  background: var(--stage);
   background-image: none;
   overflow: hidden;
   box-shadow: var(--shadow);
@@ -715,7 +799,7 @@ pre {
 
 .scanStage video {
   z-index: 0;
-  background: #05070a;
+  background: var(--stage);
   opacity: 0;
   transform: scaleX(-1);
   transition: opacity 160ms ease;
@@ -755,7 +839,7 @@ pre {
 }
 
 .scanIdle strong {
-  color: var(--accent);
+  color: var(--accent-inverse);
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }
@@ -764,7 +848,7 @@ pre {
   position: absolute;
   width: 34px;
   height: 34px;
-  border: 4px solid var(--accent);
+  border: 4px solid var(--accent-inverse);
   opacity: 0.85;
 }
 
@@ -778,8 +862,8 @@ pre {
   left: 0;
   right: 0;
   height: 3px;
-  background: linear-gradient(90deg, transparent, var(--accent) 20%, var(--accent) 80%, transparent);
-  box-shadow: 0 0 12px var(--accent), 0 0 30px var(--accent);
+  background: linear-gradient(90deg, transparent, var(--accent-inverse) 20%, var(--accent-inverse) 80%, transparent);
+  box-shadow: 0 0 12px var(--accent-inverse), 0 0 30px var(--tone-gray);
   animation: sweep 2.2s linear infinite;
 }
 
@@ -796,9 +880,9 @@ pre {
   gap: 2px;
   max-width: min(680px, calc(100% - 24px));
   padding: 8px 10px;
-  border: 2px solid var(--accent);
-  background: rgb(5 7 10 / 80%);
-  color: var(--accent);
+  border: 2px solid var(--accent-inverse);
+  background: rgb(var(--tone-black-rgb) / 86%);
+  color: var(--accent-inverse);
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -826,8 +910,8 @@ pre {
   gap: 8px;
   padding: 8px 14px;
   border: 3px solid var(--line);
-  background: var(--panel-alt);
-  color: var(--muted);
+  background: var(--panel);
+  color: var(--ink);
   text-transform: uppercase;
   font-size: 11px;
   letter-spacing: 0.06em;
@@ -855,7 +939,7 @@ pre {
 
 ::selection {
   background: var(--accent);
-  color: #05130a;
+  color: var(--ink-inverse);
 }
 
 @media (max-width: 760px) {
@@ -891,7 +975,7 @@ pre {
 
   .pageNav {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(2, 1fr);
     width: 100%;
   }
 

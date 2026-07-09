@@ -45,6 +45,10 @@ body {
   letter-spacing: 0.01em;
 }
 
+body.modalOpen {
+  overflow: hidden;
+}
+
 button,
 input,
 select {
@@ -91,6 +95,15 @@ input[type="text"]:focus {
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+.topbarUploadActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-left: auto;
 }
 
 .brandMark {
@@ -197,6 +210,28 @@ button:disabled:hover {
 
 .page[hidden] {
   display: none;
+}
+
+.scannerBox {
+  display: grid;
+  gap: 22px;
+  color: var(--ink);
+}
+
+.scannerBox .topbar {
+  margin-bottom: 0;
+}
+
+.scannerBox .workflowSection {
+  padding: 18px 20px 20px;
+  border: 3px solid var(--line);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.workflowSection {
+  display: grid;
+  gap: 18px;
 }
 
 .sectionHeader {
@@ -336,15 +371,18 @@ button:disabled:hover {
 .uploadMenuItem {
   display: flex;
   align-items: center;
+  width: 100%;
   min-height: 40px;
   padding: 8px 14px;
   border: 3px solid var(--line);
   background: var(--accent);
   color: var(--ink-inverse);
   cursor: pointer;
+  font-family: inherit;
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.05em;
+  text-align: left;
   text-transform: uppercase;
   white-space: nowrap;
 }
@@ -355,19 +393,13 @@ button:disabled:hover {
   background: var(--control-hover);
 }
 
-.folderPathButton {
+.sourceChoiceButton {
   justify-content: flex-start;
   min-width: min(360px, calc(100vw - 96px));
   max-width: min(620px, calc(100vw - 96px));
   overflow: hidden;
-  background: var(--panel);
-  color: var(--ink);
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.folderPathButton:hover:not(:disabled) {
-  color: var(--ink-inverse);
 }
 
 .uploadChoices label:hover strong,
@@ -394,41 +426,20 @@ button:disabled:hover {
   flex-wrap: wrap;
 }
 
+.startDetectionButton {
+  background: var(--accent);
+  color: var(--ink-inverse);
+}
+
+.startDetectionButton:hover:not(:disabled) {
+  background: var(--control-hover);
+}
+
 .batchProgress {
   color: var(--accent);
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-}
-
-.matchFilter {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 42px;
-  padding: 8px 12px;
-  border: 3px solid var(--line);
-  background: var(--panel);
-  color: var(--ink);
-  cursor: pointer;
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  box-shadow: var(--shadow-sm);
-}
-
-.matchFilter:has(input:disabled) {
-  color: var(--muted);
-  cursor: not-allowed;
-  opacity: 0.7;
-}
-
-.matchFilter input {
-  width: 16px;
-  height: 16px;
-  margin: 0;
-  accent-color: var(--match);
 }
 
 .results {
@@ -437,26 +448,24 @@ button:disabled:hover {
 }
 
 .result.targetMatch {
-  border-color: var(--match);
+  border-color: transparent;
 }
 
 .result {
-  display: grid;
-  grid-template-columns: minmax(260px, 1fr) minmax(220px, 320px);
-  gap: 18px;
-  padding: 16px;
-  border: 3px solid var(--line);
-  background: var(--panel);
+  display: block;
+  padding: 0;
+  border: 0;
+  background: transparent;
   color: var(--ink);
-  box-shadow: var(--shadow);
+  box-shadow: none;
 }
 
 .canvasWrap {
   position: relative;
   min-width: 0;
   overflow: auto;
-  border: 2px solid var(--line);
-  background: var(--stage);
+  border: 0;
+  background: transparent;
 }
 
 .videoStage {
@@ -466,8 +475,8 @@ button:disabled:hover {
   min-width: 0;
   align-self: start;
   overflow: hidden;
-  border: 2px solid var(--line);
-  background: var(--stage);
+  border: 0;
+  background: transparent;
 }
 
 .videoStage[hidden] {
@@ -498,7 +507,7 @@ canvas {
 }
 
 .meta {
-  min-width: 0;
+  display: none;
 }
 
 .meta h2 {
@@ -519,18 +528,6 @@ canvas {
 
 .summary.error {
   color: var(--warn);
-}
-
-pre {
-  max-height: 260px;
-  overflow: auto;
-  margin: 0;
-  padding: 12px;
-  border: 2px solid var(--line);
-  background: var(--stage);
-  color: var(--ink-inverse);
-  font-size: 11px;
-  white-space: pre-wrap;
 }
 
 .emptyState {
@@ -581,6 +578,48 @@ pre {
   box-shadow: var(--shadow);
 }
 
+.captureBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background:
+    linear-gradient(rgb(var(--tone-white-rgb) / 7%) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(var(--tone-white-rgb) / 7%) 1px, transparent 1px),
+    rgb(var(--tone-black-rgb) / 72%);
+  background-size: 28px 28px, 28px 28px, auto;
+}
+
+.capturePopup {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  z-index: 41;
+  display: grid;
+  gap: 12px;
+  width: min(1120px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  padding: 12px;
+  border: 3px solid var(--line);
+  background: var(--panel);
+  color: var(--ink);
+  box-shadow: var(--shadow);
+  transform: translate(-50%, -50%);
+}
+
+.capturePopup .capturePanel {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.capturePopup:focus {
+  outline: none;
+  box-shadow: var(--shadow), 0 0 0 4px rgb(var(--tone-white-rgb) / 40%);
+}
+
 .targetDrawStage {
   display: grid;
   place-items: start center;
@@ -604,6 +643,7 @@ pre {
 
 .captureStage {
   position: relative;
+  min-width: 0;
   min-height: 260px;
   aspect-ratio: 16 / 9;
   overflow: hidden;
@@ -663,6 +703,7 @@ pre {
   display: grid;
   align-content: start;
   gap: 12px;
+  min-width: 0;
 }
 
 .captureStatus {
@@ -961,16 +1002,35 @@ pre {
     display: grid;
   }
 
+  .topbarUploadActions {
+    display: grid;
+    justify-content: stretch;
+    margin-left: 0;
+  }
+
+  .topbarUploadActions .uploadMenuWrap,
+  .topbarUploadActions .uploadChoiceButton {
+    width: 100%;
+  }
+
   .detectionActions {
     justify-content: stretch;
   }
 
-  .matchFilter,
   .detectionActions button,
   .captureControls button,
   .targetDrawControls button {
     justify-content: center;
     width: 100%;
+  }
+
+  .capturePopup {
+    width: calc(100vw - 20px);
+    max-height: calc(100vh - 20px);
+  }
+
+  .capturePopup .captureStage {
+    min-height: 0;
   }
 
   .pageNav {

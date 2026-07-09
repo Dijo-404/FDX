@@ -4,24 +4,10 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>FDX // Face Scanner</title>
-    <link rel="stylesheet" href="/styles.css?v=16">
+    <link rel="stylesheet" href="/styles.css?v=35">
   </head>
   <body>
     <main class="shell">
-      <header class="topbar">
-        <div class="brand">
-          <div class="brandMark">FDX</div>
-          <div>
-            <h1>FDX Face Scanner</h1>
-            <p><span id="statusDot" class="statusDot"></span><span id="status">Starting backend check...</span></p>
-          </div>
-        </div>
-        <nav class="pageNav" aria-label="Pages">
-          <button class="pageTab active" type="button" data-page-target="detection" aria-selected="true">Detection</button>
-          <button class="pageTab" type="button" data-page-target="faces" aria-selected="false">Faces</button>
-        </nav>
-      </header>
-
       <section id="scanPage" class="page" data-page="scan" hidden>
         <div class="sectionHeader">
           <div>
@@ -57,99 +43,110 @@
       </section>
 
       <section id="detectionPage" class="page active" data-page="detection">
-        <div class="sectionHeader">
-          <div>
-            <h2>Detection</h2>
-            <p id="resultCount">0 detection results</p>
-          </div>
-          <div class="detectionActions">
-            <span id="batchProgress" class="batchProgress" hidden></span>
-            <label class="matchFilter">
-              <input id="matchesOnly" type="checkbox" disabled>
-              <span>Target matches only</span>
-            </label>
-            <button id="clear" type="button">Clear results</button>
-          </div>
-        </div>
-
-        <section id="dropzone" class="dropzone">
-          <input id="fileInput" type="file" accept="image/*,video/*" multiple>
-          <input id="folderInput" type="file" accept="image/*" webkitdirectory directory multiple>
-          <div class="dropzoneContent">
-            <span>Drop a batch of images or videos here</span>
-            <div class="uploadChoices">
-              <label for="fileInput"><strong>Choose files</strong></label>
-              <button id="chooseFolder" class="uploadChoiceButton" type="button">Choose image folder</button>
-              <button id="currentFolderPath" class="uploadChoiceButton folderPathButton" type="button" hidden></button>
+        <div class="scannerBox">
+          <header class="topbar">
+            <div class="brand">
+              <div class="brandMark">FDX</div>
+              <div>
+                <h1>FDX Face Scanner</h1>
+                <p><span id="statusDot" class="statusDot"></span><span id="status">Starting backend check...</span></p>
+              </div>
             </div>
-          </div>
-        </section>
+            <div class="topbarUploadActions">
+              <button id="detectionUploadButton" class="uploadChoiceButton sourceChoiceButton" type="button">Choose files or folder</button>
+            </div>
+          </header>
+
+          <section id="facesPage" class="workflowSection targetFacesSection" aria-labelledby="facesTitle">
+            <div class="sectionHeader">
+              <div>
+                <h2 id="facesTitle">Faces to be detected</h2>
+                <p id="faceCount">0 target faces</p>
+              </div>
+              <button id="clearFaces" type="button">Clear faces</button>
+            </div>
+
+            <section id="targetDropzone" class="dropzone compact">
+              <input id="targetFileInput" type="file" accept="image/*" multiple>
+              <input id="targetDrawFileInput" type="file" accept="image/*">
+              <div class="dropzoneContent">
+                <span>Add the face images you want to find</span>
+                <div class="uploadChoices">
+                  <div class="uploadMenuWrap">
+                    <button id="targetAddMenuButton" class="uploadChoiceButton" type="button" aria-expanded="false" aria-controls="targetAddMenu">Add target faces</button>
+                    <div id="targetAddMenu" class="uploadMenu" role="menu" hidden>
+                      <label class="uploadMenuItem" for="targetFileInput" role="menuitem" tabindex="0" data-target-add-action>Upload images</label>
+                      <label class="uploadMenuItem" for="targetDrawFileInput" role="menuitem" tabindex="0" data-target-add-action>Draw from image</label>
+                    </div>
+                  </div>
+                  <button id="openFaceCapture" class="uploadChoiceButton" type="button">Capture with camera</button>
+                </div>
+              </div>
+            </section>
+
+            <section id="targetDrawPanel" class="targetDrawPanel" hidden>
+              <div class="targetDrawStage">
+                <canvas id="targetDrawCanvas" aria-label="Target face drawing canvas"></canvas>
+              </div>
+              <div class="targetDrawControls">
+                <span id="targetDrawStatus" class="captureStatus">Draw target face</span>
+                <button id="addDrawnTarget" type="button" disabled>Add drawn face</button>
+                <button id="cancelDrawTarget" type="button">Cancel</button>
+              </div>
+            </section>
+
+            <div id="faceCaptureBackdrop" class="captureBackdrop" hidden></div>
+            <div id="faceCaptureShell" class="capturePopup" role="dialog" aria-modal="true" aria-label="Capture target face" tabindex="-1" hidden>
+              <section id="faceCapturePanel" class="capturePanel">
+                <div class="captureStage">
+                  <video id="faceCaptureVideo" autoplay playsinline muted aria-label="Face capture camera preview"></video>
+                  <div id="faceCaptureIdle" class="captureIdle">
+                    <strong>[ CAMERA STANDBY ]</strong>
+                    <p>Open the camera and center your face.</p>
+                  </div>
+                </div>
+                <div class="captureControls">
+                  <span id="faceCaptureStatus" class="captureStatus">Camera idle</span>
+                  <button id="captureFace" type="button" disabled>Capture face</button>
+                  <button id="retakeFaceCapture" type="button" disabled>Retake</button>
+                </div>
+              </section>
+            </div>
+
+            <section id="facesEmpty" class="emptyState">
+              <h3>No target faces yet</h3>
+              <p>Add images above</p>
+            </section>
+            <section id="facesGrid" class="facesGrid" aria-live="polite"></section>
+          </section>
+
+          <section class="workflowSection detectionWorkflow" aria-labelledby="detectionTitle">
+            <div class="sectionHeader">
+              <div>
+                <h2 id="detectionTitle">Detection</h2>
+                <p id="resultCount">0 detection results</p>
+              </div>
+              <div class="detectionActions">
+                <button id="startDetectionButton" class="startDetectionButton" type="button">Start detection</button>
+                <span id="batchProgress" class="batchProgress" hidden></span>
+              </div>
+            </div>
+
+            <section id="dropzone" class="dropzone">
+              <input id="fileInput" type="file" accept="image/*,video/*" multiple>
+              <input id="folderInput" type="file" accept="image/*" webkitdirectory directory multiple>
+              <div class="dropzoneContent">
+                <span>Drop a batch of images or videos here</span>
+              </div>
+            </section>
+          </section>
+        </div>
 
         <section id="resultsEmpty" class="emptyState" hidden>
           <h3>No target matches found</h3>
           <p>None of the processed photos contain a saved target face</p>
         </section>
         <section id="results" class="results" aria-live="polite"></section>
-      </section>
-
-      <section id="facesPage" class="page" data-page="faces" hidden>
-        <div class="sectionHeader">
-          <div>
-            <h2>Faces to be detected</h2>
-            <p id="faceCount">0 target faces</p>
-          </div>
-          <button id="clearFaces" type="button">Clear faces</button>
-        </div>
-
-        <section id="targetDropzone" class="dropzone compact">
-          <input id="targetFileInput" type="file" accept="image/*" multiple>
-          <input id="targetDrawFileInput" type="file" accept="image/*">
-          <div class="dropzoneContent">
-            <span>Add the face images you want to find</span>
-            <div class="uploadChoices">
-              <div class="uploadMenuWrap">
-                <button id="targetAddMenuButton" class="uploadChoiceButton" type="button" aria-expanded="false" aria-controls="targetAddMenu">Add target faces</button>
-                <div id="targetAddMenu" class="uploadMenu" role="menu" hidden>
-                  <label class="uploadMenuItem" for="targetFileInput" role="menuitem" tabindex="0" data-target-add-action>Upload images</label>
-                  <label class="uploadMenuItem" for="targetDrawFileInput" role="menuitem" tabindex="0" data-target-add-action>Draw from image</label>
-                </div>
-              </div>
-              <button id="openFaceCapture" class="uploadChoiceButton" type="button">Capture with camera</button>
-            </div>
-          </div>
-        </section>
-
-        <section id="targetDrawPanel" class="targetDrawPanel" hidden>
-          <div class="targetDrawStage">
-            <canvas id="targetDrawCanvas" aria-label="Target face drawing canvas"></canvas>
-          </div>
-          <div class="targetDrawControls">
-            <span id="targetDrawStatus" class="captureStatus">Draw target face</span>
-            <button id="addDrawnTarget" type="button" disabled>Add drawn face</button>
-            <button id="cancelDrawTarget" type="button">Cancel</button>
-          </div>
-        </section>
-
-        <section id="faceCapturePanel" class="capturePanel" hidden>
-          <div class="captureStage">
-            <video id="faceCaptureVideo" autoplay playsinline muted aria-label="Face capture camera preview"></video>
-            <div id="faceCaptureIdle" class="captureIdle">
-              <strong>[ CAMERA STANDBY ]</strong>
-              <p>Open the camera and center your face.</p>
-            </div>
-          </div>
-          <div class="captureControls">
-            <span id="faceCaptureStatus" class="captureStatus">Camera idle</span>
-            <button id="captureFace" type="button" disabled>Capture face</button>
-            <button id="stopFaceCapture" type="button">Close camera</button>
-          </div>
-        </section>
-
-        <section id="facesEmpty" class="emptyState">
-          <h3>No target faces yet</h3>
-          <p>Add images above</p>
-        </section>
-        <section id="facesGrid" class="facesGrid" aria-live="polite"></section>
       </section>
     </main>
 
@@ -165,7 +162,6 @@
         <div class="meta">
           <h2></h2>
           <p class="summary"></p>
-          <pre></pre>
         </div>
       </article>
     </template>
@@ -196,6 +192,6 @@
     </template>
 
     <script src="/vendor/three.min.js?v=149"></script>
-    <script src="/app.js?v=19"></script>
+    <script src="/app.js?v=30"></script>
   </body>
 </html>

@@ -1,7 +1,7 @@
 const fileInput = document.querySelector("#fileInput");
 const folderInput = document.querySelector("#folderInput");
-const chooseFolderButton = document.querySelector("#chooseFolder");
-const currentFolderPathButton = document.querySelector("#currentFolderPath");
+const detectionUploadButton = document.querySelector("#detectionUploadButton");
+const startDetectionButton = document.querySelector("#startDetectionButton");
 const dropzone = document.querySelector("#dropzone");
 const targetFileInput = document.querySelector("#targetFileInput");
 const targetDrawFileInput = document.querySelector("#targetDrawFileInput");
@@ -14,23 +14,23 @@ const targetDrawStatus = document.querySelector("#targetDrawStatus");
 const addDrawnTargetButton = document.querySelector("#addDrawnTarget");
 const cancelDrawTargetButton = document.querySelector("#cancelDrawTarget");
 const openFaceCaptureButton = document.querySelector("#openFaceCapture");
+const faceCaptureBackdrop = document.querySelector("#faceCaptureBackdrop");
+const faceCaptureShell = document.querySelector("#faceCaptureShell");
 const faceCapturePanel = document.querySelector("#faceCapturePanel");
 const faceCaptureVideo = document.querySelector("#faceCaptureVideo");
 const faceCaptureIdle = document.querySelector("#faceCaptureIdle");
 const faceCaptureStatus = document.querySelector("#faceCaptureStatus");
 const captureFaceButton = document.querySelector("#captureFace");
-const stopFaceCaptureButton = document.querySelector("#stopFaceCapture");
+const retakeFaceCaptureButton = document.querySelector("#retakeFaceCapture");
 const results = document.querySelector("#results");
 const resultsEmpty = document.querySelector("#resultsEmpty");
 const template = document.querySelector("#resultTemplate");
 const faceTemplate = document.querySelector("#faceTemplate");
 const statusText = document.querySelector("#status");
 const statusDot = document.querySelector("#statusDot");
-const clearButton = document.querySelector("#clear");
 const clearFacesButton = document.querySelector("#clearFaces");
 const resultCount = document.querySelector("#resultCount");
 const batchProgress = document.querySelector("#batchProgress");
-const matchesOnly = document.querySelector("#matchesOnly");
 const pageTabs = document.querySelectorAll("[data-page-target]");
 const pages = document.querySelectorAll("[data-page]");
 const facesGrid = document.querySelector("#facesGrid");
@@ -88,13 +88,22 @@ const SCAN_VISUALIZER_COLOR = 0xf5f5f5;
 const detectorApiOrigin = getDetectorApiOrigin();
 const targetFaces = loadStoredTargetFaces();
 let detectionFolderMeta = loadStoredDetectionFolderMeta();
+let currentDetectionSource = null;
 let accurateSimilarityCoefficients = [0, 1];
 let fastSimilarityCoefficients = [0, 1];
 let processingGeneration = 0;
 let uploadInProgress = false;
+let detectionUploadQueue = [];
+let detectionUploadPromise = null;
+let detectionSourceRefreshPromise = null;
+let detectionFolderRestorePromise = null;
+let pendingDetectionSourceRefresh = false;
+let detectionUploadProcessedCount = 0;
+let detectionUploadTotalCount = 0;
 let faceCaptureStream = null;
 let faceCaptureStartPromise = null;
 let faceCaptureAddInProgress = false;
+let latestFaceCaptureIds = [];
 let targetDrawState = null;
 
 pageTabs.forEach((tab) => {
@@ -107,19 +116,8 @@ window.addEventListener("hashchange", () => {
   showPage(getPageFromHash(), false);
 });
 
-clearButton.addEventListener("click", () => {
-  processingGeneration += 1;
-  results.querySelectorAll("video").forEach((video) => {
-    URL.revokeObjectURL(video.src);
-  });
-  results.replaceChildren();
-  fileInput.value = "";
-  folderInput.value = "";
-  batchProgress.hidden = true;
-  updateResultCount();
-});
-
 clearFacesButton.addEventListener("click", () => {
+  pendingDetectionSourceRefresh = false;
   const removedTargetIds = new Set(targetFaces.map((face) => face.id));
   targetFaces.splice(0, targetFaces.length);
   refreshCachedTargetMatches(removedTargetIds);
@@ -127,24 +125,19 @@ clearFacesButton.addEventListener("click", () => {
 });
 
 fileInput.addEventListener("change", () => {
-  handleFiles(fileInput.files);
+  void handleFileInputSelection(fileInput.files);
 });
 
 folderInput.addEventListener("change", () => {
   void handleFolderInputSelection(folderInput.files);
 });
 
-chooseFolderButton.addEventListener("click", () => {
-  void openDetectionFolderPicker();
+detectionUploadButton.addEventListener("click", () => {
+  void openDetectionSourcePicker();
 });
 
-currentFolderPathButton.addEventListener("click", () => {
-  void openDetectionFolderPicker();
-});
-
-matchesOnly.addEventListener("change", () => {
-  updateResultCount();
-  redrawDetectionOverlays();
+startDetectionButton.addEventListener("click", () => {
+  void startDetectionFromCurrentSource();
 });
 
 targetFileInput.addEventListener("change", () => {
@@ -178,17 +171,19 @@ targetAddMenu.addEventListener("keydown", (event) => {
 
 document.addEventListener("click", (event) => {
   if (
-    targetAddMenu.hidden
-    || targetAddMenu.contains(event.target)
-    || targetAddMenuButton.contains(event.target)
+    !targetAddMenu.hidden
+    && !targetAddMenu.contains(event.target)
+    && !targetAddMenuButton.contains(event.target)
   ) {
-    return;
+    closeTargetAddMenu();
   }
-  closeTargetAddMenu();
 });
 
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") closeTargetAddMenu();
+  if (event.key === "Escape") {
+    closeTargetAddMenu();
+    closeFaceCapturePopup();
+  }
 });
 
 targetDrawCanvas.addEventListener("pointerdown", startTargetDrawSelection);
@@ -208,12 +203,16 @@ openFaceCaptureButton.addEventListener("click", () => {
   void startFaceCaptureCamera();
 });
 
+faceCaptureBackdrop.addEventListener("click", () => {
+  closeFaceCapturePopup();
+});
+
 captureFaceButton.addEventListener("click", () => {
   void addCurrentFaceCapture();
 });
 
-stopFaceCaptureButton.addEventListener("click", () => {
-  stopFaceCaptureCamera({ hidePanel: true });
+retakeFaceCaptureButton.addEventListener("click", () => {
+  retakeLatestFaceCapture();
 });
 
 dropzone.addEventListener("dragover", (event) => {
@@ -228,7 +227,7 @@ dropzone.addEventListener("dragleave", () => {
 dropzone.addEventListener("drop", (event) => {
   event.preventDefault();
   dropzone.classList.remove("dragover");
-  handleFiles(event.dataTransfer.files);
+  void handleDroppedDetectionItems(event.dataTransfer);
 });
 
 targetDropzone.addEventListener("dragover", (event) => {
@@ -330,7 +329,7 @@ function createUnexpectedDetectorResponseMessage(response, text) {
   return `Detector returned HTTP ${response.status} without JSON. ${getDetectorConnectionMessage()}`;
 }
 
-const PAGE_NAMES = ["detection", "faces"];
+const PAGE_NAMES = ["detection"];
 
 function getPageFromHash() {
   const page = window.location.hash.replace("#", "");
@@ -356,7 +355,7 @@ function showPage(pageName, updateHash = true) {
     history.pushState(null, "", `#${normalizedPage}`);
   }
 
-  if (normalizedPage !== "faces") {
+  if (normalizedPage !== "detection") {
     stopFaceCaptureCamera({ hidePanel: true });
     closeTargetDrawPanel();
   }
@@ -372,9 +371,21 @@ function supportsDirectoryPicker() {
   return typeof window.showDirectoryPicker === "function";
 }
 
-async function openDetectionFolderPicker() {
-  if (uploadInProgress) return;
+async function openDetectionSourcePicker() {
+  if (supportsDirectoryPicker()) {
+    await openDetectionFolderPicker();
+    return;
+  }
 
+  if ("webkitdirectory" in folderInput) {
+    folderInput.click();
+    return;
+  }
+
+  fileInput.click();
+}
+
+async function openDetectionFolderPicker() {
   if (supportsDirectoryPicker()) {
     try {
       const handle = await window.showDirectoryPicker({
@@ -395,6 +406,50 @@ async function openDetectionFolderPicker() {
   folderInput.click();
 }
 
+async function startDetectionFromCurrentSource() {
+  if (uploadInProgress) return;
+
+  if (!hasReusableDetectionSource()) {
+    if (detectionFolderMeta?.path) {
+      batchProgress.hidden = false;
+      batchProgress.textContent = `Choose ${detectionFolderMeta.path} again to start detection`;
+    }
+    await openDetectionSourcePicker();
+    return;
+  }
+
+  const label = currentDetectionSource.label || currentDetectionSource.path || "current batch";
+  batchProgress.hidden = false;
+  batchProgress.textContent = `${results.children.length > 0 ? "Re-detecting" : "Starting detection for"} ${label}`;
+
+  try {
+    const files = await getCurrentDetectionSourceFiles();
+    if (files.length === 0) {
+      batchProgress.textContent = "No image files in selected folder";
+      return;
+    }
+
+    await replaceDetectionResults(files);
+  } catch (error) {
+    showDetectionFolderError(error);
+  }
+}
+
+async function handleFileInputSelection(fileList) {
+  const files = Array.from(fileList).filter(isProcessableDetectionFile);
+  fileInput.value = "";
+  if (files.length === 0) return;
+
+  clearDetectionFolderMeta();
+  setCurrentDetectionSource({
+    type: "files",
+    files,
+    label: `${files.length} selected file${files.length === 1 ? "" : "s"}`,
+  });
+  void deleteStoredDetectionFolderHandle();
+  await handleFiles(files);
+}
+
 async function handleFolderInputSelection(fileList) {
   const files = Array.from(fileList).filter(isFolderDetectionFile);
   if (files.length === 0) {
@@ -406,18 +461,32 @@ async function handleFolderInputSelection(fileList) {
     path: getFolderPathFromFiles(files),
     source: "input",
   });
+  setCurrentDetectionSource({
+    type: "folder-files",
+    files,
+    path: detectionFolderMeta.path,
+    label: detectionFolderMeta.path,
+  });
   void deleteStoredDetectionFolderHandle();
   await handleFiles(files);
 }
 
 async function useDetectionDirectoryHandle(handle, { autoRestore = false } = {}) {
+  const path = handle.name || "Selected folder";
+  saveDetectionFolderMeta({
+    path,
+    source: "directory-handle",
+  });
+  setCurrentDetectionSource({
+    type: "directory-handle",
+    handle,
+    path,
+    label: path,
+  });
+
   if (autoRestore && (uploadInProgress || results.children.length > 0)) return;
 
   const files = await readFilesFromDirectoryHandle(handle);
-  saveDetectionFolderMeta({
-    path: handle.name || "Selected folder",
-    source: "directory-handle",
-  });
   await writeStoredDetectionFolderHandle(handle);
 
   if (files.length === 0) {
@@ -434,9 +503,17 @@ async function restoreStoredDetectionFolderHandle() {
   const handle = await readStoredDetectionFolderHandle();
   if (!handle) return;
 
+  const path = detectionFolderMeta?.path || handle.name || "Selected folder";
+  setCurrentDetectionSource({
+    type: "directory-handle",
+    handle,
+    path,
+    label: path,
+  });
+
   if (!detectionFolderMeta?.path) {
     saveDetectionFolderMeta({
-      path: handle.name || "Selected folder",
+      path,
       source: "directory-handle",
     });
   }
@@ -444,7 +521,11 @@ async function restoreStoredDetectionFolderHandle() {
   const hasPermission = await hasDirectoryReadPermission(handle);
   if (hasPermission) {
     try {
-      await useDetectionDirectoryHandle(handle, { autoRestore: true });
+      if (hasSearchableTargets()) {
+        await useDetectionDirectoryHandle(handle, { autoRestore: true });
+      } else {
+        await writeStoredDetectionFolderHandle(handle);
+      }
     } catch (error) {
       showDetectionFolderError(error);
     }
@@ -456,6 +537,18 @@ async function hasDirectoryReadPermission(handle) {
 
   try {
     return await handle.queryPermission({ mode: "read" }) === "granted";
+  } catch (error) {
+    return false;
+  }
+}
+
+async function ensureDirectoryReadPermission(handle) {
+  if (!handle) return false;
+  if (await hasDirectoryReadPermission(handle)) return true;
+  if (typeof handle.requestPermission !== "function") return false;
+
+  try {
+    return await handle.requestPermission({ mode: "read" }) === "granted";
   } catch (error) {
     return false;
   }
@@ -477,6 +570,102 @@ async function readFilesFromDirectoryHandle(directoryHandle, basePath = director
   }
 
   return files.sort((first, second) => getFileDisplayPath(first).localeCompare(getFileDisplayPath(second)));
+}
+
+async function handleDroppedDetectionItems(dataTransfer) {
+  const files = await readDroppedDetectionFiles(dataTransfer);
+  const processableFiles = files.filter(isProcessableDetectionFile);
+  if (processableFiles.length === 0) return;
+
+  const label = getDroppedDetectionSourceLabel(processableFiles);
+  const isDroppedFolder = Boolean(label) && processableFiles.every(isFolderDetectionFile);
+  if (isDroppedFolder) {
+    saveDetectionFolderMeta({
+      path: label,
+      source: "drop",
+    });
+  } else {
+    clearDetectionFolderMeta();
+  }
+
+  setCurrentDetectionSource({
+    type: isDroppedFolder ? "folder-files" : "dropped-files",
+    files: processableFiles,
+    path: label || null,
+    label: label || `${processableFiles.length} dropped file${processableFiles.length === 1 ? "" : "s"}`,
+  });
+  await handleFiles(files);
+}
+
+async function readDroppedDetectionFiles(dataTransfer) {
+  const items = Array.from(dataTransfer.items || []);
+  const hasEntries = items.some((item) => typeof item.webkitGetAsEntry === "function");
+  if (!hasEntries) return Array.from(dataTransfer.files || []);
+
+  const files = [];
+  for (const item of items) {
+    if (item.kind !== "file") continue;
+
+    const entry = item.webkitGetAsEntry();
+    if (!entry) {
+      const file = item.getAsFile();
+      if (file) files.push(file);
+      continue;
+    }
+
+    files.push(...await readFilesFromDroppedEntry(entry, entry.name, entry.isFile));
+  }
+
+  return files.sort((first, second) => getFileDisplayPath(first).localeCompare(getFileDisplayPath(second)));
+}
+
+async function readFilesFromDroppedEntry(entry, relativePath, allowVideos) {
+  if (entry.isFile) {
+    const file = await readFileFromDroppedEntry(entry);
+    if (!file) return [];
+
+    const isAllowed = allowVideos ? isProcessableDetectionFile(file) : isFolderDetectionFile(file);
+    return isAllowed ? [attachDetectionRelativePath(file, relativePath)] : [];
+  }
+
+  if (!entry.isDirectory) return [];
+
+  const files = [];
+  const entries = await readDroppedDirectoryEntries(entry);
+  for (const childEntry of entries) {
+    files.push(...await readFilesFromDroppedEntry(
+      childEntry,
+      `${relativePath}/${childEntry.name}`,
+      false,
+    ));
+  }
+  return files;
+}
+
+function readFileFromDroppedEntry(entry) {
+  return new Promise((resolve) => {
+    entry.file(resolve, () => resolve(null));
+  });
+}
+
+function readDroppedDirectoryEntries(entry) {
+  const reader = entry.createReader();
+  const entries = [];
+
+  return new Promise((resolve, reject) => {
+    const readBatch = () => {
+      reader.readEntries((batch) => {
+        if (batch.length === 0) {
+          resolve(entries);
+          return;
+        }
+        entries.push(...batch);
+        readBatch();
+      }, reject);
+    };
+
+    readBatch();
+  }).catch(() => []);
 }
 
 function attachDetectionRelativePath(file, relativePath) {
@@ -512,9 +701,26 @@ function getFolderPathFromFiles(files) {
   return firstPath.split("/").filter(Boolean)[0] || "Selected folder";
 }
 
+function getDroppedDetectionSourceLabel(files) {
+  const firstPath = files.find((file) => getFileDisplayPath(file).includes("/"));
+  if (!firstPath) return null;
+  return getFileDisplayPath(firstPath).split("/").filter(Boolean)[0] || null;
+}
+
 function showDetectionFolderError(error) {
   batchProgress.hidden = false;
   batchProgress.textContent = error?.message || "Could not open selected folder";
+}
+
+function setCurrentDetectionSource(source) {
+  currentDetectionSource = source;
+  renderDetectionFolderPath();
+}
+
+function clearDetectionFolderMeta() {
+  detectionFolderMeta = null;
+  localStorage.removeItem(DETECTION_FOLDER_STORAGE_KEY);
+  renderDetectionFolderPath();
 }
 
 function saveDetectionFolderMeta(meta) {
@@ -544,16 +750,36 @@ function loadStoredDetectionFolderMeta() {
 }
 
 function renderDetectionFolderPath() {
-  const path = detectionFolderMeta?.path;
-  chooseFolderButton.hidden = Boolean(path);
-  currentFolderPathButton.hidden = !path;
-  if (path) {
-    currentFolderPathButton.textContent = `Folder: ${path}`;
-    currentFolderPathButton.title = path;
+  const sourceLabel = currentDetectionSource?.label || detectionFolderMeta?.path;
+  const sourceType = currentDetectionSource?.type || detectionFolderMeta?.source;
+
+  if (sourceLabel) {
+    const prefix = sourceType === "files" || sourceType === "dropped-files" ? "Batch" : "Folder";
+    detectionUploadButton.textContent = `${prefix}: ${sourceLabel}`;
+    detectionUploadButton.title = "Choose another file batch or folder";
   } else {
-    currentFolderPathButton.textContent = "";
-    currentFolderPathButton.removeAttribute("title");
+    detectionUploadButton.textContent = "Choose files or folder";
+    detectionUploadButton.title = "Choose an image folder, or drop files into the detection area";
   }
+
+  renderDetectionStartButton(sourceLabel);
+}
+
+function renderDetectionStartButton(sourceLabel = currentDetectionSource?.label || detectionFolderMeta?.path) {
+  if (uploadInProgress) {
+    startDetectionButton.textContent = "Detecting";
+    startDetectionButton.title = "Detection is already running";
+    startDetectionButton.disabled = true;
+    return;
+  }
+
+  startDetectionButton.disabled = false;
+  startDetectionButton.textContent = results.children.length > 0 && hasReusableDetectionSource()
+    ? "Re-detect"
+    : "Start detection";
+  startDetectionButton.title = sourceLabel
+    ? `Start detection from ${sourceLabel}`
+    : "Choose files or a folder, then start detection";
 }
 
 function openDetectionFolderDb() {
@@ -609,35 +835,40 @@ async function deleteStoredDetectionFolderHandle() {
   db.close();
 }
 
-function setUploadControlsDisabled(disabled) {
-  fileInput.disabled = disabled;
-  folderInput.disabled = disabled;
-  chooseFolderButton.disabled = disabled;
-  currentFolderPathButton.disabled = disabled;
-}
-
 async function handleFiles(fileList) {
   const files = Array.from(fileList).filter(isProcessableDetectionFile);
   fileInput.value = "";
   folderInput.value = "";
-  if (files.length === 0 || uploadInProgress) return;
+  if (files.length === 0) return detectionUploadPromise || Promise.resolve();
 
   const generation = processingGeneration;
   const nodes = files.map((file) => ({ file, node: createResultNode(file) }));
   const fragment = document.createDocumentFragment();
   nodes.forEach(({ node }) => fragment.append(node.article));
   results.prepend(fragment);
-  uploadInProgress = true;
-  setUploadControlsDisabled(true);
-  dropzone.classList.add("processing");
+
+  detectionUploadQueue.push(...nodes);
+  detectionUploadTotalCount += nodes.length;
   batchProgress.hidden = false;
-  batchProgress.textContent = `Processing 0 of ${files.length}`;
+  updateUploadProgressText();
   updateResultCount();
 
+  if (!detectionUploadPromise) {
+    detectionUploadPromise = processDetectionUploadQueue(generation);
+  }
+
+  return detectionUploadPromise;
+}
+
+async function processDetectionUploadQueue(generation) {
+  uploadInProgress = true;
+  dropzone.classList.add("processing");
+  renderDetectionStartButton();
+
   try {
-    for (let index = 0; index < nodes.length; index += 1) {
+    while (detectionUploadQueue.length > 0) {
       if (generation !== processingGeneration) break;
-      const { file, node } = nodes[index];
+      const { file, node } = detectionUploadQueue.shift();
       setResultState(node, "processing");
       const state = file.type.startsWith("video/")
         ? await detectVideo(file, node, generation)
@@ -645,17 +876,140 @@ async function handleFiles(fileList) {
 
       if (generation !== processingGeneration) break;
       setResultState(node, state);
-      batchProgress.textContent = `Processing ${index + 1} of ${files.length}`;
+      detectionUploadProcessedCount += 1;
+      updateUploadProgressText();
     }
   } finally {
+    const processedCount = detectionUploadProcessedCount;
     uploadInProgress = false;
-    setUploadControlsDisabled(false);
+    detectionUploadPromise = null;
+    detectionUploadQueue = [];
+    detectionUploadProcessedCount = 0;
+    detectionUploadTotalCount = 0;
     dropzone.classList.remove("processing");
+    renderDetectionStartButton();
     if (generation === processingGeneration) {
-      batchProgress.textContent = `${files.length} file${files.length === 1 ? "" : "s"} processed`;
+      batchProgress.textContent = `${processedCount} file${processedCount === 1 ? "" : "s"} processed`;
       updateResultCount();
     }
   }
+}
+
+function requestCurrentDetectionSourceRefresh() {
+  if (!hasSearchableTargets()) return;
+
+  pendingDetectionSourceRefresh = true;
+  if (!detectionSourceRefreshPromise) {
+    detectionSourceRefreshPromise = runPendingDetectionSourceRefresh()
+      .finally(() => {
+        detectionSourceRefreshPromise = null;
+        if (pendingDetectionSourceRefresh) {
+          requestCurrentDetectionSourceRefresh();
+        }
+      });
+  }
+}
+
+async function runPendingDetectionSourceRefresh() {
+  while (pendingDetectionSourceRefresh) {
+    pendingDetectionSourceRefresh = false;
+    await refreshCurrentDetectionSource();
+  }
+}
+
+function hasReusableDetectionSource() {
+  return Boolean(
+    currentDetectionSource?.handle
+    || currentDetectionSource?.files?.some(isProcessableDetectionFile),
+  );
+}
+
+async function refreshCurrentDetectionSource() {
+  if (!hasSearchableTargets()) return;
+
+  if (!hasReusableDetectionSource() && detectionFolderRestorePromise) {
+    await detectionFolderRestorePromise.catch(() => {});
+  }
+
+  if (!hasReusableDetectionSource()) {
+    showMissingReusableDetectionSource();
+    return;
+  }
+
+  const label = currentDetectionSource.label || currentDetectionSource.path || "current batch";
+  batchProgress.hidden = false;
+  batchProgress.textContent = `Re-detecting ${label}`;
+
+  try {
+    const files = await getCurrentDetectionSourceFiles();
+    if (files.length === 0) {
+      batchProgress.textContent = "No image files in selected folder";
+      return;
+    }
+
+    await replaceDetectionResults(files);
+  } catch (error) {
+    showDetectionFolderError(error);
+  }
+}
+
+function showMissingReusableDetectionSource() {
+  if (!detectionFolderMeta?.path) return;
+
+  batchProgress.hidden = false;
+  batchProgress.textContent = `Choose ${detectionFolderMeta.path} again to detect from that folder`;
+  renderDetectionFolderPath();
+}
+
+async function getCurrentDetectionSourceFiles() {
+  if (currentDetectionSource?.type === "directory-handle") {
+    const hasPermission = await ensureDirectoryReadPermission(currentDetectionSource.handle);
+    if (!hasPermission) {
+      throw new Error("Allow folder access to detect from the same folder");
+    }
+    return readFilesFromDirectoryHandle(currentDetectionSource.handle);
+  }
+
+  return Array.from(currentDetectionSource?.files || []).filter(isProcessableDetectionFile);
+}
+
+async function replaceDetectionResults(files) {
+  await cancelDetectionUpload();
+  releaseDetectionResultMedia();
+  results.replaceChildren();
+  resultsEmpty.hidden = true;
+  updateResultCount();
+  await handleFiles(files);
+}
+
+function releaseDetectionResultMedia() {
+  results.querySelectorAll("video").forEach((video) => {
+    if (video.src.startsWith("blob:")) {
+      URL.revokeObjectURL(video.src);
+    }
+  });
+}
+
+async function cancelDetectionUpload() {
+  processingGeneration += 1;
+  detectionUploadQueue = [];
+
+  const activeUpload = detectionUploadPromise;
+  if (activeUpload) {
+    await activeUpload.catch(() => {});
+  }
+
+  uploadInProgress = false;
+  detectionUploadPromise = null;
+  detectionUploadQueue = [];
+  detectionUploadProcessedCount = 0;
+  detectionUploadTotalCount = 0;
+  dropzone.classList.remove("processing");
+  renderDetectionStartButton();
+}
+
+function updateUploadProgressText() {
+  batchProgress.textContent = `Processing ${detectionUploadProcessedCount} of ${detectionUploadTotalCount}`;
 }
 
 function createResultNode(file) {
@@ -668,11 +1022,9 @@ function createResultNode(file) {
   const videoStage = fragment.querySelector(".videoStage");
   const video = fragment.querySelector("video");
   const videoOverlay = fragment.querySelector(".videoOverlay");
-  const raw = fragment.querySelector("pre");
 
   title.textContent = getFileDisplayPath(file);
   summary.textContent = "Queued";
-  raw.textContent = "";
   article.dataset.resultState = "queued";
   article.dataset.kind = file.type.startsWith("video/") ? "video" : "image";
 
@@ -684,9 +1036,7 @@ function createResultNode(file) {
     videoStage,
     video,
     videoOverlay,
-    raw,
     imageAnalysis: null,
-    imagePayload: null,
     videoAnalysis: null,
     renderVideoOverlay: null,
   };
@@ -696,18 +1046,16 @@ function createResultNode(file) {
 
 async function detectFile(file, node) {
   node.summary.textContent = "Detecting";
-  node.imagePayload = null;
   let image;
   try {
     image = await loadImage(file);
   } catch (error) {
     node.summary.classList.add("error");
     node.summary.textContent = error.message;
-    node.raw.textContent = "";
     return "error";
   }
   node.imageAnalysis = { image, faces: [] };
-  drawImage(node.canvas, image, []);
+  drawImage(node.canvas, image);
 
   try {
     const needsMatching = hasSearchableTargets();
@@ -717,20 +1065,11 @@ async function detectFile(file, node) {
     const faces = Array.isArray(payload.result)
       ? payload.result.map((face) => (needsMatching ? normalizeFastDetectionFace(face) : face))
       : [];
-    const matchDiagnostics = needsMatching
-      ? [{ backend: BACKEND_FAST, verification: "reference-facenet" }]
-      : [];
     const matchedFaces = needsMatching ? faces.map(addRealtimeTargetMatch) : faces;
     node.imageAnalysis = { image, faces: matchedFaces };
-    node.imagePayload = { ...payload, match_candidates: matchDiagnostics };
-    drawImage(node.canvas, image, matchedFaces);
+    drawImage(node.canvas, image);
     node.summary.classList.remove("error");
     node.summary.textContent = createDetectionSummary(matchedFaces);
-    node.raw.textContent = JSON.stringify(
-      addMatchDiagnostics(node.imagePayload, matchedFaces),
-      null,
-      2,
-    );
     return needsMatching && matchedFaces.some((face) => face.match?.isMatch)
       ? "match"
       : needsMatching ? "no-match" : "detected";
@@ -740,23 +1079,19 @@ async function detectFile(file, node) {
         const payload = await findFaces(file, FACE_DETECTION_PLUGINS, true, BACKEND_FAST);
         const faces = Array.isArray(payload.result) ? payload.result : [];
         node.imageAnalysis = { image, faces };
-        node.imagePayload = payload;
-        drawImage(node.canvas, image, faces);
+        drawImage(node.canvas, image);
         node.summary.classList.add("error");
         node.summary.textContent = `${createDetectionSummary(faces)} · target matching unavailable`;
-        node.raw.textContent = JSON.stringify(payload, null, 2);
         return "error";
       } catch (fallbackError) {
         node.summary.classList.add("error");
         node.summary.textContent = fallbackError.message;
-        node.raw.textContent = "";
         return "error";
       }
     }
 
     node.summary.classList.add("error");
     node.summary.textContent = error.message;
-    node.raw.textContent = "";
     return "error";
   }
 }
@@ -1011,8 +1346,7 @@ async function detectVideo(file, node, generation) {
 
     if (generation !== processingGeneration) return;
 
-    const { confirmedTracks, playbackSamples, discardedTracks } =
-      createConfirmedVideoAnalysis(samples, tracks);
+    const { confirmedTracks, playbackSamples } = createConfirmedVideoAnalysis(samples, tracks);
     playbackSamples.forEach((sample) => {
       sample.faces.forEach(refreshFaceTargetMatch);
     });
@@ -1027,30 +1361,15 @@ async function detectVideo(file, node, generation) {
       sampleInterval,
     );
     node.videoAnalysis = {
-      file,
-      duration,
       playbackSamples,
       confirmedTracks,
       sampleInterval,
-      discardedTracks,
     };
     node.summary.classList.remove("error");
     node.summary.textContent = createVideoSummary(
       playbackSamples,
       confirmedTracks,
       sampleInterval,
-    );
-    node.raw.textContent = JSON.stringify(
-      createVideoDiagnostics(
-        file,
-        duration,
-        playbackSamples,
-        confirmedTracks,
-        sampleInterval,
-        discardedTracks,
-      ),
-      null,
-      2,
     );
     return confirmedTracks.some((track) => track.targetId)
       ? "match"
@@ -1059,7 +1378,6 @@ async function detectVideo(file, node, generation) {
     node.video.controls = true;
     node.summary.classList.add("error");
     node.summary.textContent = error.message;
-    node.raw.textContent = "";
     return "error";
   } finally {
     decoder.pause();
@@ -1189,10 +1507,14 @@ async function handleTargetFiles(fileList) {
   if (files.length > 0) {
     closeTargetDrawPanel();
   }
+  const addedEntries = [];
   for (const file of files) {
-    await addTargetFaceFile(file);
+    addedEntries.push(...await addTargetFaceFile(file));
   }
   targetFileInput.value = "";
+  if (addedEntries.some(hasTargetEmbedding)) {
+    requestCurrentDetectionSourceRefresh();
+  }
 }
 
 async function addTargetFaceFile(file, options = {}) {
@@ -1453,6 +1775,7 @@ async function addDrawnTargetFace() {
 
     if (searchableCount > 0) {
       closeTargetDrawPanel();
+      requestCurrentDetectionSourceRefresh();
     } else {
       targetDrawStatus.textContent = entries[0]?.status || "No searchable face found";
       addDrawnTargetButton.disabled = false;
@@ -1522,7 +1845,7 @@ async function startFaceCaptureCamera() {
 
   closeTargetAddMenu();
   closeTargetDrawPanel();
-  faceCapturePanel.hidden = false;
+  showFaceCapturePopup();
   faceCaptureStartPromise = openFaceCaptureCamera();
   try {
     await faceCaptureStartPromise;
@@ -1531,10 +1854,35 @@ async function startFaceCaptureCamera() {
   }
 }
 
+function showFaceCapturePopup() {
+  faceCaptureBackdrop.hidden = false;
+  faceCaptureShell.hidden = false;
+  document.body.classList.add("modalOpen");
+  window.requestAnimationFrame(() => {
+    faceCaptureShell.focus({ preventScroll: true });
+  });
+}
+
+function hideFaceCapturePopup() {
+  const wasOpen = !faceCaptureShell.hidden;
+  faceCaptureBackdrop.hidden = true;
+  faceCaptureShell.hidden = true;
+  document.body.classList.remove("modalOpen");
+  if (wasOpen) {
+    openFaceCaptureButton.focus({ preventScroll: true });
+  }
+}
+
+function closeFaceCapturePopup() {
+  if (faceCaptureShell.hidden || faceCaptureStartPromise || faceCaptureAddInProgress) return;
+  stopFaceCaptureCamera({ hidePanel: true });
+}
+
 async function openFaceCaptureCamera() {
   openFaceCaptureButton.disabled = true;
   captureFaceButton.disabled = true;
-  stopFaceCaptureButton.disabled = true;
+  retakeFaceCaptureButton.disabled = true;
+  latestFaceCaptureIds = [];
   faceCaptureStatus.textContent = "Requesting camera access";
   faceCaptureIdle.hidden = false;
   faceCaptureIdle.querySelector("strong").textContent = "[ OPENING CAMERA ]";
@@ -1580,10 +1928,10 @@ async function openFaceCaptureCamera() {
     faceCaptureIdle.querySelector("p").textContent = getCameraErrorMessage(error);
     openFaceCaptureButton.textContent = "Retry camera";
     captureFaceButton.disabled = true;
+    retakeFaceCaptureButton.disabled = true;
     faceCaptureStatus.textContent = "Camera unavailable";
   } finally {
     openFaceCaptureButton.disabled = Boolean(faceCaptureStream?.active);
-    stopFaceCaptureButton.disabled = false;
   }
 }
 
@@ -1597,12 +1945,13 @@ function stopFaceCaptureCamera({ hidePanel = false } = {}) {
   openFaceCaptureButton.textContent = "Capture with camera";
   captureFaceButton.disabled = true;
   captureFaceButton.textContent = "Capture face";
-  stopFaceCaptureButton.disabled = false;
+  retakeFaceCaptureButton.disabled = true;
   faceCaptureStatus.textContent = "Camera idle";
   faceCaptureAddInProgress = false;
+  latestFaceCaptureIds = [];
 
   if (hidePanel) {
-    faceCapturePanel.hidden = true;
+    hideFaceCapturePopup();
   }
 }
 
@@ -1619,6 +1968,7 @@ async function addCurrentFaceCapture() {
   faceCaptureAddInProgress = true;
   faceCapturePanel.classList.add("processing");
   captureFaceButton.disabled = true;
+  retakeFaceCaptureButton.disabled = true;
   openFaceCaptureButton.disabled = true;
   targetFileInput.disabled = true;
   targetAddMenuButton.disabled = true;
@@ -1628,12 +1978,19 @@ async function addCurrentFaceCapture() {
     const file = await captureFaceFrame();
     faceCaptureStatus.textContent = "Analyzing captured face";
     const entries = await addTargetFaceFile(file);
+    latestFaceCaptureIds = entries.map((entry) => entry.id).filter(Boolean);
     const searchableCount = entries.filter(hasTargetEmbedding).length;
     faceCaptureStatus.textContent = searchableCount > 0
       ? `${searchableCount} target face${searchableCount === 1 ? "" : "s"} captured`
       : entries[0]?.status || "No searchable face captured";
+    retakeFaceCaptureButton.disabled = latestFaceCaptureIds.length === 0;
+    if (searchableCount > 0) {
+      requestCurrentDetectionSourceRefresh();
+    }
   } catch (error) {
+    latestFaceCaptureIds = [];
     faceCaptureStatus.textContent = error?.message || "Could not capture face";
+    retakeFaceCaptureButton.disabled = true;
   } finally {
     faceCaptureAddInProgress = false;
     faceCapturePanel.classList.remove("processing");
@@ -1642,6 +1999,31 @@ async function addCurrentFaceCapture() {
     targetFileInput.disabled = false;
     targetAddMenuButton.disabled = false;
   }
+}
+
+function retakeLatestFaceCapture() {
+  if (faceCaptureAddInProgress || latestFaceCaptureIds.length === 0) return;
+
+  const idsToRemove = new Set(latestFaceCaptureIds);
+  const removedTargetIds = new Set();
+  for (let index = targetFaces.length - 1; index >= 0; index -= 1) {
+    if (!idsToRemove.has(targetFaces[index].id)) continue;
+    const [removedFace] = targetFaces.splice(index, 1);
+    removedTargetIds.add(removedFace.id);
+  }
+
+  latestFaceCaptureIds = [];
+  retakeFaceCaptureButton.disabled = true;
+
+  if (removedTargetIds.size > 0) {
+    refreshCachedTargetMatches(removedTargetIds);
+    renderTargetFaces();
+  }
+
+  captureFaceButton.disabled = !faceCaptureStream?.active;
+  faceCaptureStatus.textContent = faceCaptureStream?.active
+    ? "Ready for retake"
+    : "Camera idle";
 }
 
 function captureFaceFrame() {
@@ -1910,20 +2292,13 @@ function refreshImageTargetMatches(node) {
     node.summary.classList.remove("error");
     node.summary.textContent = createDetectionSummary(faces);
   }
-
-  if (node.imagePayload) {
-    node.raw.textContent = JSON.stringify(addMatchDiagnostics(node.imagePayload, faces), null, 2);
-  }
 }
 
 function refreshVideoTargetMatches(node) {
   const {
-    file,
-    duration,
     playbackSamples,
     confirmedTracks,
     sampleInterval,
-    discardedTracks,
   } = node.videoAnalysis;
 
   playbackSamples.forEach((sample) => {
@@ -1941,19 +2316,6 @@ function refreshVideoTargetMatches(node) {
     node.summary.classList.remove("error");
     node.summary.textContent = createVideoSummary(playbackSamples, confirmedTracks, sampleInterval);
   }
-
-  node.raw.textContent = JSON.stringify(
-    createVideoDiagnostics(
-      file,
-      duration,
-      playbackSamples,
-      confirmedTracks,
-      sampleInterval,
-      discardedTracks,
-    ),
-    null,
-    2,
-  );
 }
 
 function refreshFaceTargetMatch(face) {
@@ -2219,47 +2581,6 @@ function createDetectionSummary(faces) {
   return `${faceText} · ${matchCount} target match${matchCount === 1 ? "" : "es"}`;
 }
 
-function addMatchDiagnostics(payload, faces) {
-  const match_debug = faces.map((face, index) => {
-    const match = face.match;
-    const fastMatch = face.fastMatch;
-    return {
-      face: index + 1,
-      name: match?.target?.name || null,
-      matched: Boolean(match?.isMatch),
-      candidate: Boolean(match?.isCandidate),
-      match_threshold: MATCH_SIMILARITY_THRESHOLD,
-      candidate_threshold: CANDIDATE_SIMILARITY_THRESHOLD,
-      margin_threshold: MATCH_MARGIN_THRESHOLD,
-      similarity: match ? Number(match.similarity.toFixed(4)) : null,
-      second_similarity: match && Number.isFinite(match.secondSimilarity)
-        ? Number(match.secondSimilarity.toFixed(4))
-        : null,
-      margin: match && Number.isFinite(match.margin) ? Number(match.margin.toFixed(4)) : null,
-      distance: match && Number.isFinite(match.distance) ? Number(match.distance.toFixed(4)) : null,
-      matchable: match ? Boolean(match.isMatchable) : null,
-      quality: match?.quality || null,
-      fast_name: fastMatch?.target?.name || null,
-      fast_similarity: fastMatch ? Number(fastMatch.similarity.toFixed(4)) : null,
-      fast_candidate: Boolean(fastMatch?.isCandidate),
-      accurate_embedded: Array.isArray(getFaceAccurateEmbedding(face)),
-    };
-  });
-
-  return {
-    ...payload,
-    fdx_thresholds: {
-      detection_probability: Number(getApiThreshold()),
-      target_detection_probability: Number(TARGET_DETECTION_THRESHOLD),
-      target_similarity: MATCH_SIMILARITY_THRESHOLD,
-      candidate_similarity: CANDIDATE_SIMILARITY_THRESHOLD,
-      match_margin: MATCH_MARGIN_THRESHOLD,
-      min_match_face_size_px: MIN_MATCH_FACE_SIZE_PX,
-    },
-    match_debug,
-  };
-}
-
 function assignFaceTracks(faces, tracks, timestamp, sampleInterval, nextTrackId) {
   const maxGap = Math.max(3, sampleInterval * 4);
   const candidates = [];
@@ -2379,9 +2700,8 @@ function installVideoOverlayPlayback(video, overlay, samples, sampleInterval) {
   let scheduledFrame = null;
   let scheduledWithVideoCallback = false;
 
-  const render = (timestamp = video.currentTime) => {
-    const faces = interpolateVideoFaces(samples, timestamp, sampleInterval);
-    drawVideoOverlay(overlay, faces);
+  const render = () => {
+    drawVideoOverlay(overlay);
   };
 
   const cancelScheduledFrame = () => {
@@ -2516,7 +2836,6 @@ function createConfirmedVideoAnalysis(samples, tracks) {
   return {
     confirmedTracks,
     playbackSamples,
-    discardedTracks: tracks.length - confirmedTracks.length,
   };
 }
 
@@ -2526,31 +2845,6 @@ function createVideoSummary(samples, tracks, sampleInterval) {
   const fps = formatFps(1 / sampleInterval);
   const named = namedTracks > 0 ? ` · ${namedTracks} named` : "";
   return `${tracks.length} face track${tracks.length === 1 ? "" : "s"} · ${detections} detections · ${fps} fps${named}`;
-}
-
-function createVideoDiagnostics(
-  file,
-  duration,
-  samples,
-  tracks,
-  sampleInterval,
-  discardedTracks,
-) {
-  return {
-    file: file.name,
-    duration_seconds: Number(duration.toFixed(3)),
-    detection_fps: Number((1 / sampleInterval).toFixed(2)),
-    analyzed_frames: samples.length,
-    discarded_transient_tracks: discardedTracks,
-    tracks: tracks.map((track) => ({
-      id: track.id,
-      name: track.name,
-      first_seen_seconds: Number(track.firstSeen.toFixed(3)),
-      last_seen_seconds: Number(track.lastSeen.toFixed(3)),
-      appearances: track.appearances,
-      max_confidence: Number(track.maxConfidence.toFixed(4)),
-    })),
-  };
 }
 
 function formatFps(fps) {
@@ -2577,14 +2871,6 @@ function hasFastSearchableTargets() {
 }
 
 function syncMatchFilter() {
-  const canMatch = hasSearchableTargets();
-  const wasDisabled = matchesOnly.disabled;
-  matchesOnly.disabled = !canMatch;
-  if (!canMatch) {
-    matchesOnly.checked = false;
-  } else if (wasDisabled) {
-    matchesOnly.checked = true;
-  }
   updateResultCount();
   redrawDetectionOverlays();
 }
@@ -2597,7 +2883,7 @@ function setResultState(node, state) {
 
 function updateResultCount() {
   const items = Array.from(results.querySelectorAll(".result"));
-  const filterMatches = matchesOnly.checked && hasSearchableTargets();
+  const filterMatches = isTargetMatchesOnlyActive();
   let matchCount = 0;
   let completedCount = 0;
   let pendingCount = 0;
@@ -2627,14 +2913,8 @@ function updateResultCount() {
   );
 }
 
-function shouldShowTargetMatchBoxesOnly() {
-  return matchesOnly.checked && hasSearchableTargets();
-}
-
-function getVisibleOverlayFaces(faces) {
-  return shouldShowTargetMatchBoxesOnly()
-    ? faces.filter((face) => face.match?.isMatch)
-    : faces;
+function isTargetMatchesOnlyActive() {
+  return hasSearchableTargets();
 }
 
 function redrawDetectionOverlays() {
@@ -2643,7 +2923,7 @@ function redrawDetectionOverlays() {
     if (!node) return;
 
     if (node.imageAnalysis) {
-      drawImage(node.canvas, node.imageAnalysis.image, node.imageAnalysis.faces);
+      drawImage(node.canvas, node.imageAnalysis.image);
     }
 
     if (typeof node.renderVideoOverlay === "function") {
@@ -2652,7 +2932,7 @@ function redrawDetectionOverlays() {
   });
 }
 
-function drawImage(canvas, image, faces) {
+function drawImage(canvas, image) {
   const maxWidth = 920;
   const scale = Math.min(1, maxWidth / image.naturalWidth);
   const width = Math.round(image.naturalWidth * scale);
@@ -2662,39 +2942,11 @@ function drawImage(canvas, image, faces) {
   canvas.width = width;
   canvas.height = height;
   context.drawImage(image, 0, 0, width, height);
-  drawFaceBoxes(context, getVisibleOverlayFaces(faces), scale);
 }
 
-function drawVideoOverlay(canvas, faces) {
+function drawVideoOverlay(canvas) {
   const context = canvas.getContext("2d");
   context.clearRect(0, 0, canvas.width, canvas.height);
-  drawFaceBoxes(context, getVisibleOverlayFaces(faces), 1);
-}
-
-function drawFaceBoxes(context, faces, scale) {
-  context.lineWidth = Math.max(2, Math.round(3 * scale));
-  context.font = `${Math.max(12, Math.round(14 * scale))}px system-ui`;
-
-  faces.forEach((face) => {
-    const box = face.box || {};
-    const x = Number(box.x_min || 0) * scale;
-    const y = Number(box.y_min || 0) * scale;
-    const w = (Number(box.x_max || 0) - Number(box.x_min || 0)) * scale;
-    const h = (Number(box.y_max || 0) - Number(box.y_min || 0)) * scale;
-    const match = face.match;
-    const hasMatch = Boolean(match?.isMatch);
-    const color = hasMatch ? MATCH_BOX_COLOR : FACE_BOX_COLOR;
-    const label = createBoxLabel(face);
-
-    context.globalAlpha = clamp(Number(face.overlayAlpha ?? 1), 0, 1);
-    context.strokeStyle = color;
-    context.fillStyle = color;
-    context.strokeRect(x, y, w, h);
-    if (label) {
-      drawCanvasLabel(context, label, x, y, color);
-    }
-  });
-  context.globalAlpha = 1;
 }
 
 function createBoxLabel(face, options = {}) {
@@ -3147,7 +3399,10 @@ function createScanVisualizer() {
 
 showPage(getPageFromHash(), false);
 renderDetectionFolderPath();
-void restoreStoredDetectionFolderHandle();
+detectionFolderRestorePromise = restoreStoredDetectionFolderHandle()
+  .finally(() => {
+    detectionFolderRestorePromise = null;
+  });
 updateResultCount();
 renderTargetFaces();
 loadStatus();

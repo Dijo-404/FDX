@@ -2,15 +2,13 @@ const fileInput = document.querySelector("#fileInput");
 const folderInput = document.querySelector("#folderInput");
 const detectionUploadButton = document.querySelector("#detectionUploadButton");
 const startDetectionButton = document.querySelector("#startDetectionButton");
-const dropzone = document.querySelector("#dropzone");
 const targetFileInput = document.querySelector("#targetFileInput");
-const targetDrawFileInput = document.querySelector("#targetDrawFileInput");
-const targetAddMenuButton = document.querySelector("#targetAddMenuButton");
-const targetAddMenu = document.querySelector("#targetAddMenu");
+const targetAddButton = document.querySelector("#targetAddButton");
 const targetDropzone = document.querySelector("#targetDropzone");
 const targetDrawPanel = document.querySelector("#targetDrawPanel");
 const targetDrawCanvas = document.querySelector("#targetDrawCanvas");
 const targetDrawStatus = document.querySelector("#targetDrawStatus");
+const addTargetImageButton = document.querySelector("#addTargetImage");
 const addDrawnTargetButton = document.querySelector("#addDrawnTarget");
 const cancelDrawTargetButton = document.querySelector("#cancelDrawTarget");
 const openFaceCaptureButton = document.querySelector("#openFaceCapture");
@@ -31,6 +29,9 @@ const statusDot = document.querySelector("#statusDot");
 const clearFacesButton = document.querySelector("#clearFaces");
 const resultCount = document.querySelector("#resultCount");
 const batchProgress = document.querySelector("#batchProgress");
+const detectionProgress = document.querySelector("#detectionProgress");
+const detectionProgressBar = document.querySelector("#detectionProgressBar");
+const detectionProgressText = document.querySelector("#detectionProgressText");
 const pageTabs = document.querySelectorAll("[data-page-target]");
 const pages = document.querySelectorAll("[data-page]");
 const facesGrid = document.querySelector("#facesGrid");
@@ -94,12 +95,14 @@ let fastSimilarityCoefficients = [0, 1];
 let processingGeneration = 0;
 let uploadInProgress = false;
 let detectionUploadQueue = [];
+let detectionUploadResultNodes = [];
 let detectionUploadPromise = null;
 let detectionSourceRefreshPromise = null;
 let detectionFolderRestorePromise = null;
 let pendingDetectionSourceRefresh = false;
 let detectionUploadProcessedCount = 0;
 let detectionUploadTotalCount = 0;
+let detectionResultsHaveRun = false;
 let faceCaptureStream = null;
 let faceCaptureStartPromise = null;
 let faceCaptureAddInProgress = false;
@@ -141,47 +144,17 @@ startDetectionButton.addEventListener("click", () => {
 });
 
 targetFileInput.addEventListener("change", () => {
-  closeTargetAddMenu();
-  handleTargetFiles(targetFileInput.files);
+  void handleTargetPickerSelection(targetFileInput.files);
 });
 
-targetDrawFileInput.addEventListener("change", () => {
-  closeTargetAddMenu();
-  const [file] = Array.from(targetDrawFileInput.files).filter((item) => item.type.startsWith("image/"));
-  targetDrawFileInput.value = "";
-  if (file) void openTargetDrawPanel(file);
-});
-
-targetAddMenuButton.addEventListener("click", () => {
-  toggleTargetAddMenu();
-});
-
-targetAddMenu.addEventListener("click", (event) => {
-  if (event.target.closest("[data-target-add-action]")) {
-    window.setTimeout(closeTargetAddMenu, 0);
-  }
-});
-
-targetAddMenu.addEventListener("keydown", (event) => {
-  const action = event.target.closest("[data-target-add-action]");
-  if (!action || (event.key !== "Enter" && event.key !== " ")) return;
-  event.preventDefault();
-  action.click();
-});
-
-document.addEventListener("click", (event) => {
-  if (
-    !targetAddMenu.hidden
-    && !targetAddMenu.contains(event.target)
-    && !targetAddMenuButton.contains(event.target)
-  ) {
-    closeTargetAddMenu();
-  }
+targetAddButton.addEventListener("click", () => {
+  if (targetFileInput.disabled) return;
+  targetFileInput.value = "";
+  targetFileInput.click();
 });
 
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
-    closeTargetAddMenu();
     closeFaceCapturePopup();
   }
 });
@@ -193,6 +166,10 @@ targetDrawCanvas.addEventListener("pointercancel", finishTargetDrawSelection);
 
 addDrawnTargetButton.addEventListener("click", () => {
   void addDrawnTargetFace();
+});
+
+addTargetImageButton.addEventListener("click", () => {
+  void addTargetImageFace();
 });
 
 cancelDrawTargetButton.addEventListener("click", () => {
@@ -215,21 +192,6 @@ retakeFaceCaptureButton.addEventListener("click", () => {
   retakeLatestFaceCapture();
 });
 
-dropzone.addEventListener("dragover", (event) => {
-  event.preventDefault();
-  dropzone.classList.add("dragover");
-});
-
-dropzone.addEventListener("dragleave", () => {
-  dropzone.classList.remove("dragover");
-});
-
-dropzone.addEventListener("drop", (event) => {
-  event.preventDefault();
-  dropzone.classList.remove("dragover");
-  void handleDroppedDetectionItems(event.dataTransfer);
-});
-
 targetDropzone.addEventListener("dragover", (event) => {
   event.preventDefault();
   targetDropzone.classList.add("dragover");
@@ -242,7 +204,6 @@ targetDropzone.addEventListener("dragleave", () => {
 targetDropzone.addEventListener("drop", (event) => {
   event.preventDefault();
   targetDropzone.classList.remove("dragover");
-  closeTargetAddMenu();
   handleTargetFiles(event.dataTransfer.files);
 });
 
@@ -420,7 +381,7 @@ async function startDetectionFromCurrentSource() {
 
   const label = currentDetectionSource.label || currentDetectionSource.path || "current batch";
   batchProgress.hidden = false;
-  batchProgress.textContent = `${results.children.length > 0 ? "Re-detecting" : "Starting detection for"} ${label}`;
+  batchProgress.textContent = `${detectionResultsHaveRun ? "Re-detecting" : "Starting detection for"} ${label}`;
 
   try {
     const files = await getCurrentDetectionSourceFiles();
@@ -484,7 +445,7 @@ async function useDetectionDirectoryHandle(handle, { autoRestore = false } = {})
     label: path,
   });
 
-  if (autoRestore && (uploadInProgress || results.children.length > 0)) return;
+  if (autoRestore && (uploadInProgress || detectionResultsHaveRun)) return;
 
   const files = await readFilesFromDirectoryHandle(handle);
   await writeStoredDetectionFolderHandle(handle);
@@ -572,102 +533,6 @@ async function readFilesFromDirectoryHandle(directoryHandle, basePath = director
   return files.sort((first, second) => getFileDisplayPath(first).localeCompare(getFileDisplayPath(second)));
 }
 
-async function handleDroppedDetectionItems(dataTransfer) {
-  const files = await readDroppedDetectionFiles(dataTransfer);
-  const processableFiles = files.filter(isProcessableDetectionFile);
-  if (processableFiles.length === 0) return;
-
-  const label = getDroppedDetectionSourceLabel(processableFiles);
-  const isDroppedFolder = Boolean(label) && processableFiles.every(isFolderDetectionFile);
-  if (isDroppedFolder) {
-    saveDetectionFolderMeta({
-      path: label,
-      source: "drop",
-    });
-  } else {
-    clearDetectionFolderMeta();
-  }
-
-  setCurrentDetectionSource({
-    type: isDroppedFolder ? "folder-files" : "dropped-files",
-    files: processableFiles,
-    path: label || null,
-    label: label || `${processableFiles.length} dropped file${processableFiles.length === 1 ? "" : "s"}`,
-  });
-  await handleFiles(files);
-}
-
-async function readDroppedDetectionFiles(dataTransfer) {
-  const items = Array.from(dataTransfer.items || []);
-  const hasEntries = items.some((item) => typeof item.webkitGetAsEntry === "function");
-  if (!hasEntries) return Array.from(dataTransfer.files || []);
-
-  const files = [];
-  for (const item of items) {
-    if (item.kind !== "file") continue;
-
-    const entry = item.webkitGetAsEntry();
-    if (!entry) {
-      const file = item.getAsFile();
-      if (file) files.push(file);
-      continue;
-    }
-
-    files.push(...await readFilesFromDroppedEntry(entry, entry.name, entry.isFile));
-  }
-
-  return files.sort((first, second) => getFileDisplayPath(first).localeCompare(getFileDisplayPath(second)));
-}
-
-async function readFilesFromDroppedEntry(entry, relativePath, allowVideos) {
-  if (entry.isFile) {
-    const file = await readFileFromDroppedEntry(entry);
-    if (!file) return [];
-
-    const isAllowed = allowVideos ? isProcessableDetectionFile(file) : isFolderDetectionFile(file);
-    return isAllowed ? [attachDetectionRelativePath(file, relativePath)] : [];
-  }
-
-  if (!entry.isDirectory) return [];
-
-  const files = [];
-  const entries = await readDroppedDirectoryEntries(entry);
-  for (const childEntry of entries) {
-    files.push(...await readFilesFromDroppedEntry(
-      childEntry,
-      `${relativePath}/${childEntry.name}`,
-      false,
-    ));
-  }
-  return files;
-}
-
-function readFileFromDroppedEntry(entry) {
-  return new Promise((resolve) => {
-    entry.file(resolve, () => resolve(null));
-  });
-}
-
-function readDroppedDirectoryEntries(entry) {
-  const reader = entry.createReader();
-  const entries = [];
-
-  return new Promise((resolve, reject) => {
-    const readBatch = () => {
-      reader.readEntries((batch) => {
-        if (batch.length === 0) {
-          resolve(entries);
-          return;
-        }
-        entries.push(...batch);
-        readBatch();
-      }, reject);
-    };
-
-    readBatch();
-  }).catch(() => []);
-}
-
 function attachDetectionRelativePath(file, relativePath) {
   try {
     Object.defineProperty(file, "fdxRelativePath", {
@@ -699,12 +564,6 @@ function getFolderPathFromFiles(files) {
   const firstPath = files.find((file) => file.webkitRelativePath)?.webkitRelativePath;
   if (!firstPath) return "Selected folder";
   return firstPath.split("/").filter(Boolean)[0] || "Selected folder";
-}
-
-function getDroppedDetectionSourceLabel(files) {
-  const firstPath = files.find((file) => getFileDisplayPath(file).includes("/"));
-  if (!firstPath) return null;
-  return getFileDisplayPath(firstPath).split("/").filter(Boolean)[0] || null;
 }
 
 function showDetectionFolderError(error) {
@@ -754,12 +613,12 @@ function renderDetectionFolderPath() {
   const sourceType = currentDetectionSource?.type || detectionFolderMeta?.source;
 
   if (sourceLabel) {
-    const prefix = sourceType === "files" || sourceType === "dropped-files" ? "Batch" : "Folder";
+    const prefix = sourceType === "files" ? "Batch" : "Folder";
     detectionUploadButton.textContent = `${prefix}: ${sourceLabel}`;
     detectionUploadButton.title = "Choose another file batch or folder";
   } else {
     detectionUploadButton.textContent = "Choose files or folder";
-    detectionUploadButton.title = "Choose an image folder, or drop files into the detection area";
+    detectionUploadButton.title = "Choose an image folder or file batch";
   }
 
   renderDetectionStartButton(sourceLabel);
@@ -767,14 +626,16 @@ function renderDetectionFolderPath() {
 
 function renderDetectionStartButton(sourceLabel = currentDetectionSource?.label || detectionFolderMeta?.path) {
   if (uploadInProgress) {
-    startDetectionButton.textContent = "Detecting";
+    startDetectionButton.hidden = true;
+    batchProgress.hidden = true;
     startDetectionButton.title = "Detection is already running";
     startDetectionButton.disabled = true;
     return;
   }
 
+  startDetectionButton.hidden = false;
   startDetectionButton.disabled = false;
-  startDetectionButton.textContent = results.children.length > 0 && hasReusableDetectionSource()
+  startDetectionButton.textContent = detectionResultsHaveRun && hasReusableDetectionSource()
     ? "Re-detect"
     : "Start detection";
   startDetectionButton.title = sourceLabel
@@ -843,15 +704,11 @@ async function handleFiles(fileList) {
 
   const generation = processingGeneration;
   const nodes = files.map((file) => ({ file, node: createResultNode(file) }));
-  const fragment = document.createDocumentFragment();
-  nodes.forEach(({ node }) => fragment.append(node.article));
-  results.prepend(fragment);
 
+  detectionUploadResultNodes.push(...nodes.map(({ node }) => node));
   detectionUploadQueue.push(...nodes);
   detectionUploadTotalCount += nodes.length;
-  batchProgress.hidden = false;
   updateUploadProgressText();
-  updateResultCount();
 
   if (!detectionUploadPromise) {
     detectionUploadPromise = processDetectionUploadQueue(generation);
@@ -862,8 +719,8 @@ async function handleFiles(fileList) {
 
 async function processDetectionUploadQueue(generation) {
   uploadInProgress = true;
-  dropzone.classList.add("processing");
   renderDetectionStartButton();
+  updateUploadProgressText();
 
   try {
     while (detectionUploadQueue.length > 0) {
@@ -881,18 +738,110 @@ async function processDetectionUploadQueue(generation) {
     }
   } finally {
     const processedCount = detectionUploadProcessedCount;
+    const totalCount = detectionUploadTotalCount;
+    let visibleResultCount = 0;
+
+    if (generation === processingGeneration) {
+      visibleResultCount = revealCompletedDetectionResults();
+      detectionResultsHaveRun = true;
+    } else {
+      releaseDetectionResultNodes(detectionUploadResultNodes);
+    }
+
     uploadInProgress = false;
     detectionUploadPromise = null;
     detectionUploadQueue = [];
+    detectionUploadResultNodes = [];
     detectionUploadProcessedCount = 0;
     detectionUploadTotalCount = 0;
-    dropzone.classList.remove("processing");
+    hideDetectionProgress();
     renderDetectionStartButton();
     if (generation === processingGeneration) {
-      batchProgress.textContent = `${processedCount} file${processedCount === 1 ? "" : "s"} processed`;
+      batchProgress.textContent = createDetectionCompleteText(
+        processedCount,
+        totalCount,
+        visibleResultCount,
+      );
       updateResultCount();
     }
   }
+}
+
+function revealCompletedDetectionResults() {
+  const fragment = document.createDocumentFragment();
+  const visibleNodes = [];
+
+  detectionUploadResultNodes.forEach((node) => {
+    if (shouldShowCompletedDetectionResult(node)) {
+      visibleNodes.push(node);
+      fragment.append(node.article);
+    } else {
+      releaseDetectionResultNode(node);
+    }
+  });
+
+  if (visibleNodes.length > 0) {
+    results.prepend(fragment);
+  }
+
+  return visibleNodes.length;
+}
+
+function shouldShowCompletedDetectionResult(node) {
+  const state = node.article.dataset.resultState;
+  if (state === "queued" || state === "processing" || state === "cancelled") return false;
+  if (hasSearchableTargets()) return state === "match";
+  return hasDetectedFaces(node);
+}
+
+function hasDetectedFaces(node) {
+  if (node.imageAnalysis) {
+    return node.imageAnalysis.faces.length > 0;
+  }
+
+  if (node.videoAnalysis) {
+    return node.videoAnalysis.confirmedTracks.length > 0;
+  }
+
+  return false;
+}
+
+function releaseDetectionResultNodes(nodes) {
+  nodes.forEach(releaseDetectionResultNode);
+}
+
+function releaseDetectionResultNode(node) {
+  if (node.video?.src?.startsWith("blob:")) {
+    URL.revokeObjectURL(node.video.src);
+  }
+
+  if (node.video) {
+    node.video.removeAttribute("src");
+    node.video.load();
+  }
+
+  if (node.canvas) {
+    node.canvas.width = 0;
+    node.canvas.height = 0;
+  }
+
+  if (node.videoOverlay) {
+    node.videoOverlay.width = 0;
+    node.videoOverlay.height = 0;
+  }
+
+  node.imageAnalysis = null;
+  node.videoAnalysis = null;
+  node.renderVideoOverlay = null;
+}
+
+function createDetectionCompleteText(processedCount, totalCount, visibleResultCount) {
+  const processedText = `${processedCount} of ${totalCount} file${totalCount === 1 ? "" : "s"} scanned`;
+  const resultText = hasSearchableTargets()
+    ? `${visibleResultCount} target match${visibleResultCount === 1 ? "" : "es"}`
+    : `${visibleResultCount} with visible face${visibleResultCount === 1 ? "" : "s"}`;
+
+  return `${processedText} · ${resultText}`;
 }
 
 function requestCurrentDetectionSourceRefresh() {
@@ -977,6 +926,7 @@ async function replaceDetectionResults(files) {
   await cancelDetectionUpload();
   releaseDetectionResultMedia();
   results.replaceChildren();
+  detectionResultsHaveRun = false;
   resultsEmpty.hidden = true;
   updateResultCount();
   await handleFiles(files);
@@ -1002,14 +952,32 @@ async function cancelDetectionUpload() {
   uploadInProgress = false;
   detectionUploadPromise = null;
   detectionUploadQueue = [];
+  releaseDetectionResultNodes(detectionUploadResultNodes);
+  detectionUploadResultNodes = [];
   detectionUploadProcessedCount = 0;
   detectionUploadTotalCount = 0;
-  dropzone.classList.remove("processing");
+  hideDetectionProgress();
   renderDetectionStartButton();
 }
 
 function updateUploadProgressText() {
-  batchProgress.textContent = `Processing ${detectionUploadProcessedCount} of ${detectionUploadTotalCount}`;
+  const total = detectionUploadTotalCount;
+  const processed = Math.min(detectionUploadProcessedCount, total);
+  const label = `Processing ${processed} of ${total}`;
+
+  batchProgress.hidden = true;
+  resultCount.textContent = "Detection in progress";
+  detectionProgress.hidden = false;
+  detectionProgressBar.max = total || 1;
+  detectionProgressBar.value = processed;
+  detectionProgressText.textContent = label;
+}
+
+function hideDetectionProgress() {
+  detectionProgress.hidden = true;
+  detectionProgressBar.max = 1;
+  detectionProgressBar.value = 0;
+  detectionProgressText.textContent = "Processing 0 of 0";
 }
 
 function createResultNode(file) {
@@ -1489,17 +1457,17 @@ function createSampleTimestamps(duration, interval) {
   return Array.from({ length: count }, (_, index) => Math.min(index * interval, duration - 0.001));
 }
 
-function setTargetAddMenuOpen(isOpen) {
-  targetAddMenu.hidden = !isOpen;
-  targetAddMenuButton.setAttribute("aria-expanded", String(isOpen));
-}
+async function handleTargetPickerSelection(fileList) {
+  const files = Array.from(fileList).filter((file) => file.type.startsWith("image/"));
+  targetFileInput.value = "";
 
-function toggleTargetAddMenu() {
-  setTargetAddMenuOpen(targetAddMenu.hidden);
-}
+  if (files.length === 0) return;
+  if (files.length === 1) {
+    await openTargetDrawPanel(files[0]);
+    return;
+  }
 
-function closeTargetAddMenu() {
-  setTargetAddMenuOpen(false);
+  await handleTargetFiles(files);
 }
 
 async function handleTargetFiles(fileList) {
@@ -1590,16 +1558,16 @@ function selectPrimaryTargetFace(faces, image) {
 
 async function openTargetDrawPanel(file) {
   stopFaceCaptureCamera({ hidePanel: true });
-  closeTargetAddMenu();
   targetDrawState = null;
   targetDrawPanel.hidden = false;
   targetDrawCanvas.width = 0;
   targetDrawCanvas.height = 0;
   targetDrawStatus.textContent = "Loading image";
+  addTargetImageButton.disabled = true;
   addDrawnTargetButton.disabled = true;
   cancelDrawTargetButton.disabled = false;
-  targetDrawFileInput.disabled = true;
-  targetAddMenuButton.disabled = true;
+  targetFileInput.disabled = true;
+  targetAddButton.disabled = true;
 
   try {
     const image = await loadImage(file);
@@ -1611,13 +1579,14 @@ async function openTargetDrawPanel(file) {
       selection: null,
     };
     renderTargetDrawCanvas();
-    targetDrawStatus.textContent = "Draw around one face";
+    targetDrawStatus.textContent = "Image ready";
+    addTargetImageButton.disabled = false;
   } catch (error) {
     targetDrawState = null;
     targetDrawStatus.textContent = error?.message || "Could not read image";
   } finally {
-    targetDrawFileInput.disabled = false;
-    targetAddMenuButton.disabled = false;
+    targetFileInput.disabled = false;
+    targetAddButton.disabled = false;
   }
 }
 
@@ -1627,10 +1596,11 @@ function closeTargetDrawPanel() {
   targetDrawCanvas.width = 0;
   targetDrawCanvas.height = 0;
   targetDrawStatus.textContent = "Draw target face";
+  addTargetImageButton.disabled = true;
   addDrawnTargetButton.disabled = true;
   cancelDrawTargetButton.disabled = false;
-  targetDrawFileInput.disabled = false;
-  targetAddMenuButton.disabled = false;
+  targetFileInput.disabled = false;
+  targetAddButton.disabled = false;
 }
 
 function renderTargetDrawCanvas() {
@@ -1751,16 +1721,49 @@ function isUsableTargetSelection(selection) {
   return selection && selection.width >= 16 && selection.height >= 16;
 }
 
+async function addTargetImageFace() {
+  if (!targetDrawState?.file) return;
+
+  const { file } = targetDrawState;
+  targetDrawStatus.textContent = "Analyzing image";
+  addTargetImageButton.disabled = true;
+  addDrawnTargetButton.disabled = true;
+  cancelDrawTargetButton.disabled = true;
+  targetFileInput.disabled = true;
+  targetAddButton.disabled = true;
+  openFaceCaptureButton.disabled = true;
+
+  try {
+    const entries = await addTargetFaceFile(file);
+    if (entries.some(hasTargetEmbedding)) {
+      requestCurrentDetectionSourceRefresh();
+    }
+    closeTargetDrawPanel();
+  } catch (error) {
+    targetDrawStatus.textContent = error?.message || "Could not add image";
+  } finally {
+    cancelDrawTargetButton.disabled = false;
+    targetFileInput.disabled = false;
+    targetAddButton.disabled = false;
+    openFaceCaptureButton.disabled = Boolean(faceCaptureStream?.active);
+
+    if (targetDrawState) {
+      addTargetImageButton.disabled = false;
+      addDrawnTargetButton.disabled = !isUsableTargetSelection(targetDrawState.selection);
+    }
+  }
+}
+
 async function addDrawnTargetFace() {
   if (!targetDrawState || !isUsableTargetSelection(targetDrawState.selection)) return;
 
   const { file, image } = targetDrawState;
   targetDrawStatus.textContent = "Analyzing drawn face";
+  addTargetImageButton.disabled = true;
   addDrawnTargetButton.disabled = true;
   cancelDrawTargetButton.disabled = true;
-  targetDrawFileInput.disabled = true;
   targetFileInput.disabled = true;
-  targetAddMenuButton.disabled = true;
+  targetAddButton.disabled = true;
   openFaceCaptureButton.disabled = true;
 
   try {
@@ -1785,10 +1788,14 @@ async function addDrawnTargetFace() {
     addDrawnTargetButton.disabled = false;
   } finally {
     cancelDrawTargetButton.disabled = false;
-    targetDrawFileInput.disabled = false;
     targetFileInput.disabled = false;
-    targetAddMenuButton.disabled = false;
+    targetAddButton.disabled = false;
     openFaceCaptureButton.disabled = Boolean(faceCaptureStream?.active);
+
+    if (targetDrawState) {
+      addTargetImageButton.disabled = false;
+      addDrawnTargetButton.disabled = !isUsableTargetSelection(targetDrawState.selection);
+    }
   }
 }
 
@@ -1971,7 +1978,7 @@ async function addCurrentFaceCapture() {
   retakeFaceCaptureButton.disabled = true;
   openFaceCaptureButton.disabled = true;
   targetFileInput.disabled = true;
-  targetAddMenuButton.disabled = true;
+  targetAddButton.disabled = true;
   faceCaptureStatus.textContent = "Capturing face";
 
   try {
@@ -1997,7 +2004,7 @@ async function addCurrentFaceCapture() {
     captureFaceButton.disabled = !faceCaptureStream?.active;
     openFaceCaptureButton.disabled = Boolean(faceCaptureStream?.active);
     targetFileInput.disabled = false;
-    targetAddMenuButton.disabled = false;
+    targetAddButton.disabled = false;
   }
 }
 
@@ -2878,7 +2885,11 @@ function syncMatchFilter() {
 function setResultState(node, state) {
   node.article.dataset.resultState = state;
   node.article.classList.toggle("targetMatch", state === "match");
-  updateResultCount();
+  if (node.article.isConnected) {
+    updateResultCount();
+  } else if (uploadInProgress) {
+    updateUploadProgressText();
+  }
 }
 
 function updateResultCount() {
@@ -2905,12 +2916,33 @@ function updateResultCount() {
     resultCount.textContent = `${items.length} detection result${items.length === 1 ? "" : "s"}`;
   }
 
+  updateResultsEmptyCopy(filterMatches);
   resultsEmpty.hidden = !(
-    filterMatches
-    && items.length > 0
-    && pendingCount === 0
-    && matchCount === 0
+    detectionResultsHaveRun
+    && !uploadInProgress
+    && (
+      items.length === 0
+      || (
+        filterMatches
+        && pendingCount === 0
+        && matchCount === 0
+      )
+    )
   );
+}
+
+function updateResultsEmptyCopy(filterMatches) {
+  const title = resultsEmpty.querySelector("h3");
+  const detail = resultsEmpty.querySelector("p");
+  if (!title || !detail) return;
+
+  if (filterMatches) {
+    title.textContent = "No target matches found";
+    detail.textContent = "No scanned images contained a saved target face";
+  } else {
+    title.textContent = "No faces found";
+    detail.textContent = "No scanned images contained visible detected faces";
+  }
 }
 
 function isTargetMatchesOnlyActive() {

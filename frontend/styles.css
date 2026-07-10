@@ -297,6 +297,14 @@ button:disabled:hover {
   pointer-events: none;
 }
 
+.hiddenFileInput {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
 .dropzoneContent {
   display: grid;
   gap: 10px;
@@ -407,17 +415,6 @@ button:disabled:hover {
   background: var(--control-hover);
 }
 
-.dropzone.processing {
-  opacity: 0.65;
-}
-
-.dropzone.processing .uploadChoices label,
-.dropzone.processing .uploadChoiceButton,
-.dropzone.processing .uploadMenuItem {
-  cursor: wait;
-  pointer-events: none;
-}
-
 .detectionActions {
   display: flex;
   align-items: center;
@@ -438,6 +435,50 @@ button:disabled:hover {
 .batchProgress {
   color: var(--accent);
   font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.detectionProgress {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0 2px;
+}
+
+.detectionProgress[hidden] {
+  display: none;
+}
+
+.detectionProgressBar {
+  width: 100%;
+  height: 18px;
+  border: 3px solid var(--line);
+  border-radius: 0;
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+  appearance: none;
+}
+
+.detectionProgressBar::-webkit-progress-bar {
+  background: var(--panel);
+}
+
+.detectionProgressBar::-webkit-progress-value {
+  background: var(--accent);
+}
+
+.detectionProgressBar::-moz-progress-bar {
+  background: var(--accent);
+}
+
+.detectionProgressText {
+  min-width: 150px;
+  color: var(--accent);
+  font-size: 11px;
+  text-align: right;
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
@@ -1015,6 +1056,16 @@ canvas {
 
   .detectionActions {
     justify-content: stretch;
+  }
+
+  .detectionProgress {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .detectionProgressText {
+    min-width: 0;
+    text-align: left;
   }
 
   .detectionActions button,

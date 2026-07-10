@@ -54,6 +54,8 @@
             </div>
             <div class="topbarUploadActions">
               <button id="detectionUploadButton" class="uploadChoiceButton sourceChoiceButton" type="button">Choose files or folder</button>
+              <input id="fileInput" class="hiddenFileInput" type="file" accept="image/*,video/*" multiple>
+              <input id="folderInput" class="hiddenFileInput" type="file" accept="image/*" webkitdirectory directory multiple>
             </div>
           </header>
 
@@ -68,17 +70,10 @@
 
             <section id="targetDropzone" class="dropzone compact">
               <input id="targetFileInput" type="file" accept="image/*" multiple>
-              <input id="targetDrawFileInput" type="file" accept="image/*">
               <div class="dropzoneContent">
                 <span>Add the face images you want to find</span>
                 <div class="uploadChoices">
-                  <div class="uploadMenuWrap">
-                    <button id="targetAddMenuButton" class="uploadChoiceButton" type="button" aria-expanded="false" aria-controls="targetAddMenu">Add target faces</button>
-                    <div id="targetAddMenu" class="uploadMenu" role="menu" hidden>
-                      <label class="uploadMenuItem" for="targetFileInput" role="menuitem" tabindex="0" data-target-add-action>Upload images</label>
-                      <label class="uploadMenuItem" for="targetDrawFileInput" role="menuitem" tabindex="0" data-target-add-action>Draw from image</label>
-                    </div>
-                  </div>
+                  <button id="targetAddButton" class="uploadChoiceButton" type="button">Add target faces</button>
                   <button id="openFaceCapture" class="uploadChoiceButton" type="button">Capture with camera</button>
                 </div>
               </div>
@@ -90,6 +85,7 @@
               </div>
               <div class="targetDrawControls">
                 <span id="targetDrawStatus" class="captureStatus">Draw target face</span>
+                <button id="addTargetImage" type="button" disabled>Add image</button>
                 <button id="addDrawnTarget" type="button" disabled>Add drawn face</button>
                 <button id="cancelDrawTarget" type="button">Cancel</button>
               </div>
@@ -132,21 +128,18 @@
               </div>
             </div>
 
-            <section id="dropzone" class="dropzone">
-              <input id="fileInput" type="file" accept="image/*,video/*" multiple>
-              <input id="folderInput" type="file" accept="image/*" webkitdirectory directory multiple>
-              <div class="dropzoneContent">
-                <span>Drop a batch of images or videos here</span>
-              </div>
+            <div id="detectionProgress" class="detectionProgress" hidden>
+              <progress id="detectionProgressBar" class="detectionProgressBar" max="1" value="0"></progress>
+              <span id="detectionProgressText">Processing 0 of 0</span>
+            </div>
+
+            <section id="resultsEmpty" class="emptyState" hidden>
+              <h3>No faces found</h3>
+              <p>No scanned images contained visible detected faces</p>
             </section>
+            <section id="results" class="results" aria-live="polite"></section>
           </section>
         </div>
-
-        <section id="resultsEmpty" class="emptyState" hidden>
-          <h3>No target matches found</h3>
-          <p>None of the processed photos contain a saved target face</p>
-        </section>
-        <section id="results" class="results" aria-live="polite"></section>
       </section>
     </main>
 

@@ -1850,7 +1850,6 @@ async function startFaceCaptureCamera() {
   if (faceCaptureStream?.active) return;
   if (faceCaptureStartPromise) return faceCaptureStartPromise;
 
-  closeTargetAddMenu();
   closeTargetDrawPanel();
   showFaceCapturePopup();
   faceCaptureStartPromise = openFaceCaptureCamera();
@@ -1906,15 +1905,7 @@ async function openFaceCaptureCamera() {
       stopScanCamera();
     }
 
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        facingMode: { ideal: "user" },
-        width: { ideal: 1280 },
-        height: { ideal: 720 },
-        frameRate: { ideal: CAMERA_IDEAL_FPS, max: CAMERA_IDEAL_FPS },
-      },
-      audio: false,
-    });
+    const stream = await openCameraStream();
 
     faceCaptureStream = stream;
     faceCaptureVideo.srcObject = stream;
@@ -3074,15 +3065,7 @@ async function openScanCamera() {
       throw new Error("This browser does not support camera access");
     }
 
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        facingMode: { ideal: "user" },
-        width: { ideal: 1280 },
-        height: { ideal: 720 },
-        frameRate: { ideal: CAMERA_IDEAL_FPS, max: CAMERA_IDEAL_FPS },
-      },
-      audio: false,
-    });
+    const stream = await openCameraStream();
     scanStream = stream;
     scanVideo.srcObject = stream;
     await scanVideo.play();
@@ -3150,6 +3133,27 @@ function getCameraErrorMessage(error) {
     return "The camera is already in use by another application.";
   }
   return error?.message || "Could not open the camera.";
+}
+
+async function openCameraStream() {
+  try {
+    return await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: { ideal: "user" },
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+        frameRate: { ideal: CAMERA_IDEAL_FPS, max: CAMERA_IDEAL_FPS },
+      },
+      audio: false,
+    });
+  } catch (error) {
+    if (!isConstraintCameraError(error)) throw error;
+    return navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+  }
+}
+
+function isConstraintCameraError(error) {
+  return error?.name === "OverconstrainedError" || error?.name === "ConstraintNotSatisfiedError";
 }
 
 function startLiveScanning() {

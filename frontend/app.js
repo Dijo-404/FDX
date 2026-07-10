@@ -214,7 +214,7 @@ async function checkBackend() {
     statusText.textContent = "Detector ready";
     statusDot.classList.add("ready");
   } catch (error) {
-    statusText.textContent = "Detector backend is still starting";
+    statusText.textContent = "Detector is starting";
     statusDot.classList.remove("ready");
   }
 }
@@ -617,8 +617,8 @@ function renderDetectionFolderPath() {
     detectionUploadButton.textContent = `${prefix}: ${sourceLabel}`;
     detectionUploadButton.title = "Choose another file batch or folder";
   } else {
-    detectionUploadButton.textContent = "Choose files or folder";
-    detectionUploadButton.title = "Choose an image folder or file batch";
+    detectionUploadButton.textContent = "Choose source";
+    detectionUploadButton.title = "Choose files or a folder";
   }
 
   renderDetectionStartButton(sourceLabel);
@@ -640,7 +640,7 @@ function renderDetectionStartButton(sourceLabel = currentDetectionSource?.label 
     : "Start detection";
   startDetectionButton.title = sourceLabel
     ? `Start detection from ${sourceLabel}`
-    : "Choose files or a folder, then start detection";
+    : "Choose a source, then start detection";
 }
 
 function openDetectionFolderDb() {
@@ -1595,7 +1595,7 @@ function closeTargetDrawPanel() {
   targetDrawPanel.hidden = true;
   targetDrawCanvas.width = 0;
   targetDrawCanvas.height = 0;
-  targetDrawStatus.textContent = "Draw target face";
+  targetDrawStatus.textContent = "Select a face area";
   addTargetImageButton.disabled = true;
   addDrawnTargetButton.disabled = true;
   cancelDrawTargetButton.disabled = false;
@@ -1891,7 +1891,7 @@ async function openFaceCaptureCamera() {
   latestFaceCaptureIds = [];
   faceCaptureStatus.textContent = "Requesting camera access";
   faceCaptureIdle.hidden = false;
-  faceCaptureIdle.querySelector("strong").textContent = "[ OPENING CAMERA ]";
+  faceCaptureIdle.querySelector("strong").textContent = "Opening camera";
   faceCaptureIdle.querySelector("p").textContent = "Allow camera access when prompted.";
 
   try {
@@ -1922,7 +1922,7 @@ async function openFaceCaptureCamera() {
     releaseFaceCaptureCamera();
     faceCapturePanel.classList.remove("cameraReady");
     faceCaptureIdle.hidden = false;
-    faceCaptureIdle.querySelector("strong").textContent = "[ CAMERA ACCESS NEEDED ]";
+    faceCaptureIdle.querySelector("strong").textContent = "Camera access needed";
     faceCaptureIdle.querySelector("p").textContent = getCameraErrorMessage(error);
     openFaceCaptureButton.textContent = "Retry camera";
     captureFaceButton.disabled = true;
@@ -1937,10 +1937,10 @@ function stopFaceCaptureCamera({ hidePanel = false } = {}) {
   releaseFaceCaptureCamera();
   faceCapturePanel.classList.remove("cameraReady", "processing");
   faceCaptureIdle.hidden = false;
-  faceCaptureIdle.querySelector("strong").textContent = "[ CAMERA STANDBY ]";
+  faceCaptureIdle.querySelector("strong").textContent = "Camera standby";
   faceCaptureIdle.querySelector("p").textContent = "Open the camera and center your face.";
   openFaceCaptureButton.disabled = false;
-  openFaceCaptureButton.textContent = "Capture with camera";
+  openFaceCaptureButton.textContent = "Use camera";
   captureFaceButton.disabled = true;
   captureFaceButton.textContent = "Capture face";
   retakeFaceCaptureButton.disabled = true;
@@ -2929,10 +2929,10 @@ function updateResultsEmptyCopy(filterMatches) {
 
   if (filterMatches) {
     title.textContent = "No target matches found";
-    detail.textContent = "No scanned images contained a saved target face";
+    detail.textContent = "No scanned images contained a saved target face.";
   } else {
     title.textContent = "No faces found";
-    detail.textContent = "No scanned images contained visible detected faces";
+    detail.textContent = "Try another source with clearer face images.";
   }
 }
 
@@ -3085,7 +3085,7 @@ async function openScanCamera() {
     releaseScanCamera();
     scanStage.classList.remove("cameraReady");
     scanIdle.hidden = false;
-    scanIdle.querySelector("strong").textContent = "[ CAMERA ACCESS NEEDED ]";
+    scanIdle.querySelector("strong").textContent = "Camera access needed";
     scanIdle.querySelector("p").textContent = getCameraErrorMessage(error);
     scanStatusText.textContent = "Camera unavailable";
     liveDot.classList.remove("ready");
@@ -3101,7 +3101,7 @@ function stopScanCamera() {
 
   scanStage.classList.remove("cameraReady");
   scanIdle.hidden = false;
-  scanIdle.querySelector("strong").textContent = "[ CAMERA STOPPED ]";
+  scanIdle.querySelector("strong").textContent = "Camera stopped";
   scanIdle.querySelector("p").textContent = "Select Start camera to reconnect the live feed.";
   scanHudCorners.hidden = true;
   scanToggle.textContent = "Start camera";
@@ -3124,7 +3124,7 @@ function releaseScanCamera() {
 
 function getCameraErrorMessage(error) {
   if (error?.name === "NotAllowedError") {
-    return "Camera permission was blocked. Allow it in your browser settings, then select Retry camera.";
+    return "Camera permission was blocked. Allow it in your browser settings, then try again.";
   }
   if (error?.name === "NotFoundError") {
     return "No camera was found on this device.";

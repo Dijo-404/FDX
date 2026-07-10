@@ -7,7 +7,6 @@ const results = document.querySelector("#results");
 const template = document.querySelector("#resultTemplate");
 const faceTemplate = document.querySelector("#faceTemplate");
 const statusText = document.querySelector("#status");
-const statusDot = document.querySelector("#statusDot");
 const clearButton = document.querySelector("#clear");
 const clearFacesButton = document.querySelector("#clearFaces");
 const threshold = document.querySelector("#threshold");
@@ -18,22 +17,12 @@ const pages = document.querySelectorAll("[data-page]");
 const facesGrid = document.querySelector("#facesGrid");
 const facesEmpty = document.querySelector("#facesEmpty");
 const faceCount = document.querySelector("#faceCount");
-
-const scanVideo = document.querySelector("#scanVideo");
-const scanOverlay = document.querySelector("#scanOverlay");
-const scanStage = document.querySelector("#scanStage");
-const scanIdle = document.querySelector("#scanIdle");
-const scanHudCorners = document.querySelector("#scanHudCorners");
-const scanReadout = document.querySelector("#scanReadout");
-const scanReadoutLine1 = document.querySelector("#scanReadoutLine1");
-const scanReadoutLine2 = document.querySelector("#scanReadoutLine2");
-const scanToggle = document.querySelector("#scanToggle");
-const scanCapture = document.querySelector("#scanCapture");
-const scanStatusText = document.querySelector("#scanStatusText");
-const scanThreshold = document.querySelector("#scanThreshold");
-const scanThresholdValue = document.querySelector("#scanThresholdValue");
-const liveDot = document.querySelector("#liveDot");
-const liveTagText = document.querySelector("#liveTagText");
+const scanFaceBtn = document.querySelector("#scanFaceBtn");
+const cameraModal = document.querySelector("#cameraModal");
+const cameraVideo = document.querySelector("#cameraVideo");
+const cameraCancelBtn = document.querySelector("#cameraCancelBtn");
+const cameraCaptureBtn = document.querySelector("#cameraCaptureBtn");
+let cameraStream = null;
 
 const MATCH_SIMILARITY_THRESHOLD = 0.8;
 const TARGET_DETECTION_THRESHOLD = "0.55";
@@ -105,15 +94,58 @@ targetDropzone.addEventListener("drop", (event) => {
   handleTargetFiles(event.dataTransfer.files);
 });
 
+scanFaceBtn.addEventListener("click", openCameraModal);
+cameraCancelBtn.addEventListener("click", closeCameraModal);
+cameraCaptureBtn.addEventListener("click", async () => {
+  const file = await captureCameraFile();
+  closeCameraModal();
+  if (file) await addTargetFaceFile(file);
+});
+
+async function openCameraModal() {
+  try {
+    cameraStream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 720 }, height: { ideal: 540 } },
+      audio: false,
+    });
+    cameraVideo.srcObject = cameraStream;
+    await cameraVideo.play();
+    cameraModal.hidden = false;
+  } catch (error) {
+    window.alert("Could not access the camera. Please upload a photo instead.");
+  }
+}
+
+function closeCameraModal() {
+  if (cameraStream) cameraStream.getTracks().forEach((track) => track.stop());
+  cameraStream = null;
+  cameraVideo.srcObject = null;
+  cameraModal.hidden = true;
+}
+
+function captureCameraFile() {
+  const canvas = document.createElement("canvas");
+  canvas.width = cameraVideo.videoWidth;
+  canvas.height = cameraVideo.videoHeight;
+  canvas.getContext("2d").drawImage(cameraVideo, 0, 0, canvas.width, canvas.height);
+  return new Promise((resolve) => {
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        resolve(null);
+        return;
+      }
+      resolve(new File([blob], `scan-${Date.now()}.jpg`, { type: "image/jpeg" }));
+    }, "image/jpeg", 0.92);
+  });
+}
+
 async function checkBackend() {
   try {
     const response = await fetch("/health");
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     statusText.textContent = "Detector ready";
-    statusDot.classList.add("ready");
   } catch (error) {
     statusText.textContent = "Detector backend is still starting";
-    statusDot.classList.remove("ready");
   }
 }
 
@@ -130,15 +162,13 @@ async function loadStatus() {
   }
 }
 
-const PAGE_NAMES = ["scan", "detection", "faces"];
-
 function getPageFromHash() {
   const page = window.location.hash.replace("#", "");
-  return PAGE_NAMES.includes(page) ? page : "scan";
+  return page === "faces" ? "faces" : "detection";
 }
 
 function showPage(pageName, updateHash = true) {
-  const normalizedPage = PAGE_NAMES.includes(pageName) ? pageName : "scan";
+  const normalizedPage = pageName === "faces" ? "faces" : "detection";
 
   pages.forEach((page) => {
     const isActive = page.dataset.page === normalizedPage;
@@ -514,7 +544,7 @@ function drawImage(canvas, image, faces) {
     const probability = Number(box.probability || 0);
     const match = face.match;
     const hasMatch = Boolean(match?.isMatch);
-    const color = hasMatch ? "#ff2ea6" : "#39ff6a";
+    const color = hasMatch ? "#13795b" : "#2563eb";
     const label = createBoxLabel(index, probability, match);
 
     context.strokeStyle = color;
@@ -523,7 +553,7 @@ function drawImage(canvas, image, faces) {
     if (label) {
       const labelWidth = context.measureText(label).width + 10;
       context.fillRect(x, Math.max(0, y - 22), labelWidth, 22);
-      context.fillStyle = "#05070a";
+      context.fillStyle = "#ffffff";
       context.fillText(label, x + 5, Math.max(14, y - 7));
     }
   });
@@ -539,300 +569,6 @@ function createBoxLabel(index, probability, match) {
 function getTargetLabel(target, fallbackIndex = targetFaces.indexOf(target)) {
   const index = fallbackIndex >= 0 ? fallbackIndex + 1 : target.index;
   return `Target ${index}`;
-}
-
-/* --- Live scan (webcam) --- */
-
-let scanStream = null;
-let scanBusy = false;
-let scanThree = null;
-
-scanThreshold.addEventListener("input", () => {
-  scanThresholdValue.value = Number(scanThreshold.value).toFixed(2);
-});
-
-scanToggle.addEventListener("click", () => {
-  if (scanStream) {
-    stopScanCamera();
-  } else {
-    startScanCamera();
-  }
-});
-
-scanCapture.addEventListener("click", () => {
-  runScan();
-});
-
-async function startScanCamera() {
-  try {
-    scanStream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 960 }, height: { ideal: 720 } },
-      audio: false,
-    });
-    scanVideo.srcObject = scanStream;
-    await scanVideo.play();
-
-    scanIdle.hidden = true;
-    scanHudCorners.hidden = false;
-    scanCapture.disabled = false;
-    scanToggle.textContent = "Stop camera";
-    scanStatusText.textContent = "Camera live — targeting acquired";
-    liveDot.classList.add("ready");
-    liveTagText.textContent = "Camera live";
-
-    getThree().start();
-  } catch (error) {
-    scanStatusText.textContent = `Camera unavailable: ${error.message}`;
-  }
-}
-
-function stopScanCamera() {
-  if (scanStream) {
-    scanStream.getTracks().forEach((track) => track.stop());
-  }
-  scanStream = null;
-  scanVideo.srcObject = null;
-
-  scanIdle.hidden = false;
-  scanHudCorners.hidden = true;
-  scanCapture.disabled = true;
-  scanToggle.textContent = "Start camera";
-  scanStatusText.textContent = "Camera idle";
-  liveDot.classList.remove("ready");
-  liveTagText.textContent = "Offline";
-  scanReadout.hidden = true;
-  scanStage.classList.remove("scanning");
-  clearScanOverlay();
-  getThree().stop();
-}
-
-async function runScan() {
-  if (!scanStream || scanBusy) return;
-  scanBusy = true;
-  scanCapture.disabled = true;
-  scanStage.classList.add("scanning");
-  scanReadout.hidden = false;
-  scanReadoutLine1.textContent = "ANALYZING TARGET";
-  scanReadoutLine2.textContent = "FACES: --";
-  getThree().setIntensity(1);
-
-  try {
-    const blob = await captureScanFrame();
-    const apiThreshold = Math.min(0.99, Math.max(0.01, Number(scanThreshold.value) || 0.8)).toFixed(2);
-    const url = `/api/find_faces?face_plugins=calculator&limit=0&det_prob_threshold=${apiThreshold}`;
-    const data = new FormData();
-    data.append("file", blob, "scan.jpg");
-
-    const response = await fetch(url, { method: "POST", body: data });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.message || `HTTP ${response.status}`);
-
-    const faces = Array.isArray(payload.result) ? payload.result : [];
-    const matchedFaces = faces.map(addBestTargetMatch);
-    drawScanOverlay(matchedFaces);
-
-    const matchCount = matchedFaces.filter((face) => face.match?.isMatch).length;
-    scanReadoutLine1.textContent = faces.length ? "TARGET LOCKED" : "NO FACE DETECTED";
-    scanReadoutLine2.textContent = `FACES: ${faces.length}${targetFaces.length ? ` / NAMED: ${matchCount}` : ""}`;
-  } catch (error) {
-    scanReadoutLine1.textContent = "SCAN FAILED";
-    scanReadoutLine2.textContent = error.message;
-    clearScanOverlay();
-  } finally {
-    scanBusy = false;
-    scanCapture.disabled = false;
-    scanStage.classList.remove("scanning");
-    getThree().setIntensity(0.35);
-  }
-}
-
-function captureScanFrame() {
-  const canvas = document.createElement("canvas");
-  canvas.width = scanVideo.videoWidth;
-  canvas.height = scanVideo.videoHeight;
-  const context = canvas.getContext("2d");
-  context.drawImage(scanVideo, 0, 0, canvas.width, canvas.height);
-  return new Promise((resolve, reject) => {
-    canvas.toBlob((blob) => {
-      if (blob) resolve(blob);
-      else reject(new Error("Could not read camera frame"));
-    }, "image/jpeg", 0.9);
-  });
-}
-
-function coverTransform(nativeWidth, nativeHeight, displayWidth, displayHeight) {
-  const scale = Math.max(displayWidth / nativeWidth, displayHeight / nativeHeight);
-  const offsetX = (nativeWidth * scale - displayWidth) / 2;
-  const offsetY = (nativeHeight * scale - displayHeight) / 2;
-  return { scale, offsetX, offsetY };
-}
-
-function drawScanOverlay(faces) {
-  const displayWidth = scanStage.clientWidth;
-  const displayHeight = scanStage.clientHeight;
-  scanOverlay.width = displayWidth;
-  scanOverlay.height = displayHeight;
-  const context = scanOverlay.getContext("2d");
-  context.clearRect(0, 0, displayWidth, displayHeight);
-
-  if (!scanVideo.videoWidth || faces.length === 0) return;
-
-  const { scale, offsetX, offsetY } = coverTransform(
-    scanVideo.videoWidth,
-    scanVideo.videoHeight,
-    displayWidth,
-    displayHeight,
-  );
-
-  context.lineWidth = 3;
-  context.font = "bold 13px 'JetBrains Mono', monospace";
-
-  faces.forEach((face) => {
-    const box = face.box || {};
-    const x = Number(box.x_min || 0) * scale - offsetX;
-    const y = Number(box.y_min || 0) * scale - offsetY;
-    const w = (Number(box.x_max || 0) - Number(box.x_min || 0)) * scale;
-    const h = (Number(box.y_max || 0) - Number(box.y_min || 0)) * scale;
-    const hasMatch = Boolean(face.match?.isMatch);
-    const color = hasMatch ? "#ff2ea6" : "#39ff6a";
-    const label = hasMatch
-      ? (face.match.target.name || getTargetLabel(face.match.target))
-      : `${Math.round(Number(box.probability || 0) * 100)}%`;
-
-    drawReticle(context, x, y, w, h, color);
-
-    const labelWidth = context.measureText(label).width + 12;
-    context.fillStyle = color;
-    context.fillRect(x, Math.max(0, y - 22), labelWidth, 20);
-    context.fillStyle = "#05070a";
-    context.fillText(label, x + 6, Math.max(15, y - 7));
-  });
-}
-
-function drawReticle(context, x, y, w, h, color) {
-  const tick = Math.min(18, w * 0.3, h * 0.3);
-  context.strokeStyle = color;
-  context.shadowColor = color;
-  context.shadowBlur = 8;
-
-  const corners = [
-    [x, y, tick, 0, 0, tick],
-    [x + w, y, -tick, 0, 0, tick],
-    [x, y + h, tick, 0, 0, -tick],
-    [x + w, y + h, -tick, 0, 0, -tick],
-  ];
-
-  corners.forEach(([cx, cy, dx1, dy1, dx2, dy2]) => {
-    context.beginPath();
-    context.moveTo(cx + dx1, cy + dy1);
-    context.lineTo(cx, cy);
-    context.lineTo(cx + dx2, cy + dy2);
-    context.stroke();
-  });
-
-  context.shadowBlur = 0;
-}
-
-function clearScanOverlay() {
-  const context = scanOverlay.getContext("2d");
-  context.clearRect(0, 0, scanOverlay.width, scanOverlay.height);
-}
-
-function getThree() {
-  if (scanThree) return scanThree;
-  scanThree = createScanVisualizer();
-  return scanThree;
-}
-
-function createScanVisualizer() {
-  if (typeof THREE === "undefined") {
-    return { start() {}, stop() {}, setIntensity() {} };
-  }
-
-  const canvas = document.querySelector("#scanThree");
-  const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-
-  const scene = new THREE.Scene();
-  const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
-  camera.position.z = 6;
-
-  const group = new THREE.Group();
-  scene.add(group);
-
-  const pointCount = 900;
-  const positions = new Float32Array(pointCount * 3);
-  for (let i = 0; i < pointCount; i += 1) {
-    const phi = Math.acos(-1 + (2 * i) / pointCount);
-    const theta = Math.sqrt(pointCount * Math.PI) * phi;
-    const radius = 2.6;
-    positions[i * 3] = radius * Math.cos(theta) * Math.sin(phi);
-    positions[i * 3 + 1] = radius * Math.sin(theta) * Math.sin(phi);
-    positions[i * 3 + 2] = radius * Math.cos(phi);
-  }
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-  const material = new THREE.PointsMaterial({
-    color: 0x39ff6a,
-    size: 0.035,
-    transparent: true,
-    opacity: 0.35,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
-  });
-  const points = new THREE.Points(geometry, material);
-  group.add(points);
-
-  const ringGeometry = new THREE.RingGeometry(2.75, 2.8, 64);
-  const ringMaterial = new THREE.MeshBasicMaterial({
-    color: 0x39ff6a,
-    transparent: true,
-    opacity: 0.2,
-    side: THREE.DoubleSide,
-  });
-  const ring = new THREE.Mesh(ringGeometry, ringMaterial);
-  group.add(ring);
-
-  let running = false;
-  let frameId = null;
-  let intensity = 0.35;
-  let lastSize = { width: 0, height: 0 };
-
-  function resize() {
-    const width = canvas.clientWidth || 1;
-    const height = canvas.clientHeight || 1;
-    if (width === lastSize.width && height === lastSize.height) return;
-    lastSize = { width, height };
-    renderer.setSize(width, height, false);
-    camera.aspect = width / height;
-    camera.updateProjectionMatrix();
-  }
-
-  function tick() {
-    if (!running) return;
-    resize();
-    group.rotation.y += 0.0025 + intensity * 0.01;
-    group.rotation.x = Math.sin(Date.now() * 0.0004) * 0.15;
-    material.opacity = 0.2 + intensity * 0.35;
-    ringMaterial.opacity = 0.12 + intensity * 0.25;
-    renderer.render(scene, camera);
-    frameId = requestAnimationFrame(tick);
-  }
-
-  return {
-    start() {
-      if (running) return;
-      running = true;
-      tick();
-    },
-    stop() {
-      running = false;
-      if (frameId) cancelAnimationFrame(frameId);
-    },
-    setIntensity(value) {
-      intensity = value;
-    },
-  };
 }
 
 showPage(getPageFromHash(), false);

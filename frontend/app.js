@@ -37,6 +37,10 @@ const pages = document.querySelectorAll("[data-page]");
 const facesGrid = document.querySelector("#facesGrid");
 const facesEmpty = document.querySelector("#facesEmpty");
 const faceCount = document.querySelector("#faceCount");
+const resultImagePreviewBackdrop = document.querySelector("#resultImagePreviewBackdrop");
+const resultImagePreviewShell = document.querySelector("#resultImagePreviewShell");
+const resultImagePreviewCanvas = document.querySelector("#resultImagePreviewCanvas");
+const closeResultImagePreviewButton = document.querySelector("#closeResultImagePreview");
 
 const scanVideo = document.querySelector("#scanVideo");
 const scanOverlay = document.querySelector("#scanOverlay");
@@ -97,6 +101,8 @@ let uploadInProgress = false;
 let detectionUploadQueue = [];
 let detectionUploadResultNodes = [];
 let detectionUploadPromise = null;
+let detectionUploadAbortController = null;
+let detectionStopInProgress = false;
 let detectionSourceRefreshPromise = null;
 let detectionFolderRestorePromise = null;
 let pendingDetectionSourceRefresh = false;
@@ -108,6 +114,7 @@ let faceCaptureStartPromise = null;
 let faceCaptureAddInProgress = false;
 let latestFaceCaptureIds = [];
 let targetDrawState = null;
+let resultImagePreviewOpener = null;
 
 pageTabs.forEach((tab) => {
   tab.addEventListener("click", () => {
@@ -140,6 +147,10 @@ detectionUploadButton.addEventListener("click", () => {
 });
 
 startDetectionButton.addEventListener("click", () => {
+  if (uploadInProgress) {
+    void stopDetectionUpload();
+    return;
+  }
   void startDetectionFromCurrentSource();
 });
 
@@ -156,8 +167,12 @@ targetAddButton.addEventListener("click", () => {
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     closeFaceCapturePopup();
+    closeResultImagePreview();
   }
 });
+
+resultImagePreviewBackdrop.addEventListener("click", closeResultImagePreview);
+closeResultImagePreviewButton.addEventListener("click", closeResultImagePreview);
 
 targetDrawCanvas.addEventListener("pointerdown", startTargetDrawSelection);
 targetDrawCanvas.addEventListener("pointermove", updateTargetDrawSelection);
@@ -373,15 +388,16 @@ async function startDetectionFromCurrentSource() {
   if (!hasReusableDetectionSource()) {
     if (detectionFolderMeta?.path) {
       batchProgress.hidden = false;
-      batchProgress.textContent = `Choose ${detectionFolderMeta.path} again to start detection`;
+      batchProgress.textContent = "Choose the source again to start detection";
     }
     await openDetectionSourcePicker();
     return;
   }
 
-  const label = currentDetectionSource.label || currentDetectionSource.path || "current batch";
   batchProgress.hidden = false;
-  batchProgress.textContent = `${detectionResultsHaveRun ? "Re-detecting" : "Starting detection for"} ${label}`;
+  batchProgress.textContent = detectionResultsHaveRun
+    ? "Re-detecting selected source"
+    : "Starting detection";
 
   try {
     const files = await getCurrentDetectionSourceFiles();
@@ -482,11 +498,7 @@ async function restoreStoredDetectionFolderHandle() {
   const hasPermission = await hasDirectoryReadPermission(handle);
   if (hasPermission) {
     try {
-      if (hasSearchableTargets()) {
-        await useDetectionDirectoryHandle(handle, { autoRestore: true });
-      } else {
-        await writeStoredDetectionFolderHandle(handle);
-      }
+      await useDetectionDirectoryHandle(handle, { autoRestore: true });
     } catch (error) {
       showDetectionFolderError(error);
     }
@@ -626,20 +638,24 @@ function renderDetectionFolderPath() {
 
 function renderDetectionStartButton(sourceLabel = currentDetectionSource?.label || detectionFolderMeta?.path) {
   if (uploadInProgress) {
-    startDetectionButton.hidden = true;
-    batchProgress.hidden = true;
-    startDetectionButton.title = "Detection is already running";
-    startDetectionButton.disabled = true;
+    startDetectionButton.hidden = false;
+    startDetectionButton.disabled = detectionStopInProgress;
+    startDetectionButton.classList.add("stopDetectionButton");
+    startDetectionButton.textContent = detectionStopInProgress ? "Stopping..." : "Stop detection";
+    startDetectionButton.title = detectionStopInProgress
+      ? "Stopping detection"
+      : "Stop the current detection run";
     return;
   }
 
   startDetectionButton.hidden = false;
   startDetectionButton.disabled = false;
+  startDetectionButton.classList.remove("stopDetectionButton");
   startDetectionButton.textContent = detectionResultsHaveRun && hasReusableDetectionSource()
     ? "Re-detect"
     : "Start detection";
   startDetectionButton.title = sourceLabel
-    ? `Start detection from ${sourceLabel}`
+    ? "Start detection from the selected source"
     : "Choose a source, then start detection";
 }
 
@@ -719,6 +735,8 @@ async function handleFiles(fileList) {
 
 async function processDetectionUploadQueue(generation) {
   uploadInProgress = true;
+  const abortController = new AbortController();
+  detectionUploadAbortController = abortController;
   renderDetectionStartButton();
   updateUploadProgressText();
 
@@ -728,8 +746,8 @@ async function processDetectionUploadQueue(generation) {
       const { file, node } = detectionUploadQueue.shift();
       setResultState(node, "processing");
       const state = file.type.startsWith("video/")
-        ? await detectVideo(file, node, generation)
-        : await detectFile(file, node);
+        ? await detectVideo(file, node, generation, abortController.signal)
+        : await detectFile(file, node, abortController.signal);
 
       if (generation !== processingGeneration) break;
       setResultState(node, state);
@@ -749,6 +767,9 @@ async function processDetectionUploadQueue(generation) {
     }
 
     uploadInProgress = false;
+    if (detectionUploadAbortController === abortController) {
+      detectionUploadAbortController = null;
+    }
     detectionUploadPromise = null;
     detectionUploadQueue = [];
     detectionUploadResultNodes = [];
@@ -885,9 +906,8 @@ async function refreshCurrentDetectionSource() {
     return;
   }
 
-  const label = currentDetectionSource.label || currentDetectionSource.path || "current batch";
   batchProgress.hidden = false;
-  batchProgress.textContent = `Re-detecting ${label}`;
+  batchProgress.textContent = "Re-detecting selected source";
 
   try {
     const files = await getCurrentDetectionSourceFiles();
@@ -906,7 +926,7 @@ function showMissingReusableDetectionSource() {
   if (!detectionFolderMeta?.path) return;
 
   batchProgress.hidden = false;
-  batchProgress.textContent = `Choose ${detectionFolderMeta.path} again to detect from that folder`;
+  batchProgress.textContent = "Choose the source again to start detection";
   renderDetectionFolderPath();
 }
 
@@ -943,6 +963,7 @@ function releaseDetectionResultMedia() {
 async function cancelDetectionUpload() {
   processingGeneration += 1;
   detectionUploadQueue = [];
+  detectionUploadAbortController?.abort();
 
   const activeUpload = detectionUploadPromise;
   if (activeUpload) {
@@ -958,6 +979,25 @@ async function cancelDetectionUpload() {
   detectionUploadTotalCount = 0;
   hideDetectionProgress();
   renderDetectionStartButton();
+}
+
+async function stopDetectionUpload() {
+  if (!uploadInProgress || detectionStopInProgress) return;
+
+  detectionStopInProgress = true;
+  const processedCount = detectionUploadProcessedCount;
+  const totalCount = detectionUploadTotalCount;
+  renderDetectionStartButton();
+
+  try {
+    await cancelDetectionUpload();
+    batchProgress.hidden = false;
+    batchProgress.textContent = `Detection stopped · ${processedCount} of ${totalCount} file${totalCount === 1 ? "" : "s"} scanned`;
+    updateResultCount();
+  } finally {
+    detectionStopInProgress = false;
+    renderDetectionStartButton();
+  }
 }
 
 function updateUploadProgressText() {
@@ -991,10 +1031,25 @@ function createResultNode(file) {
   const video = fragment.querySelector("video");
   const videoOverlay = fragment.querySelector(".videoOverlay");
 
-  title.textContent = getFileDisplayPath(file);
+  const displayPath = getFileDisplayPath(file);
+  title.textContent = displayPath;
   summary.textContent = "Queued";
   article.dataset.resultState = "queued";
   article.dataset.kind = file.type.startsWith("video/") ? "video" : "image";
+
+  if (!file.type.startsWith("video/")) {
+    canvas.tabIndex = 0;
+    canvas.setAttribute("role", "button");
+    canvas.setAttribute("aria-label", `Open ${displayPath} image preview`);
+    canvas.addEventListener("click", () => {
+      openResultImagePreview(canvas, displayPath);
+    });
+    canvas.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      openResultImagePreview(canvas, displayPath);
+    });
+  }
 
   const node = {
     article,
@@ -1012,7 +1067,39 @@ function createResultNode(file) {
   return node;
 }
 
-async function detectFile(file, node) {
+function openResultImagePreview(sourceCanvas, label) {
+  if (!sourceCanvas.width || !sourceCanvas.height) return;
+
+  resultImagePreviewCanvas.width = sourceCanvas.width;
+  resultImagePreviewCanvas.height = sourceCanvas.height;
+  resultImagePreviewCanvas.getContext("2d").drawImage(sourceCanvas, 0, 0);
+  resultImagePreviewCanvas.setAttribute("aria-label", `Expanded preview of ${label}`);
+  resultImagePreviewOpener = sourceCanvas;
+  resultImagePreviewBackdrop.hidden = false;
+  resultImagePreviewShell.hidden = false;
+  document.body.classList.add("modalOpen");
+
+  window.requestAnimationFrame(() => {
+    closeResultImagePreviewButton.focus({ preventScroll: true });
+  });
+}
+
+function closeResultImagePreview() {
+  if (resultImagePreviewShell.hidden) return;
+
+  resultImagePreviewBackdrop.hidden = true;
+  resultImagePreviewShell.hidden = true;
+  resultImagePreviewCanvas.width = 0;
+  resultImagePreviewCanvas.height = 0;
+  document.body.classList.remove("modalOpen");
+
+  if (resultImagePreviewOpener?.isConnected) {
+    resultImagePreviewOpener.focus({ preventScroll: true });
+  }
+  resultImagePreviewOpener = null;
+}
+
+async function detectFile(file, node, signal) {
   node.summary.textContent = "Detecting";
   let image;
   try {
@@ -1028,8 +1115,8 @@ async function detectFile(file, node) {
   try {
     const needsMatching = hasSearchableTargets();
     const payload = needsMatching
-      ? await findFaces(file, FACE_MATCH_PLUGINS, true, BACKEND_FAST)
-      : await findFaces(file, FACE_DETECTION_PLUGINS, true, BACKEND_FAST);
+      ? await findFaces(file, FACE_MATCH_PLUGINS, true, BACKEND_FAST, getApiThreshold(), signal)
+      : await findFaces(file, FACE_DETECTION_PLUGINS, true, BACKEND_FAST, getApiThreshold(), signal);
     const faces = Array.isArray(payload.result)
       ? payload.result.map((face) => (needsMatching ? normalizeFastDetectionFace(face) : face))
       : [];
@@ -1042,9 +1129,17 @@ async function detectFile(file, node) {
       ? "match"
       : needsMatching ? "no-match" : "detected";
   } catch (error) {
+    if (error?.name === "AbortError") return "cancelled";
     if (hasSearchableTargets()) {
       try {
-        const payload = await findFaces(file, FACE_DETECTION_PLUGINS, true, BACKEND_FAST);
+        const payload = await findFaces(
+          file,
+          FACE_DETECTION_PLUGINS,
+          true,
+          BACKEND_FAST,
+          getApiThreshold(),
+          signal,
+        );
         const faces = Array.isArray(payload.result) ? payload.result : [];
         node.imageAnalysis = { image, faces };
         drawImage(node.canvas, image);
@@ -1052,6 +1147,7 @@ async function detectFile(file, node) {
         node.summary.textContent = `${createDetectionSummary(faces)} · target matching unavailable`;
         return "error";
       } catch (fallbackError) {
+        if (fallbackError?.name === "AbortError") return "cancelled";
         node.summary.classList.add("error");
         node.summary.textContent = fallbackError.message;
         return "error";
@@ -1217,11 +1313,12 @@ async function findFaces(
   allowNoFaces = false,
   backend = BACKEND_FAST,
   threshold = getApiThreshold(),
+  signal,
 ) {
   const data = new FormData();
   data.append("file", file, file.name);
   const url = `${getFindFacesPath(backend)}?face_plugins=${encodeURIComponent(facePlugins)}&limit=0&det_prob_threshold=${threshold}`;
-  const { response, payload } = await fetchDetectorJson(url, { method: "POST", body: data });
+  const { response, payload } = await fetchDetectorJson(url, { method: "POST", body: data, signal });
 
   if (!response.ok) {
     const message = payload.message || `HTTP ${response.status}`;
@@ -1238,7 +1335,7 @@ function getFindFacesPath(backend) {
   return backend === BACKEND_FAST ? "/api/fast/find_faces" : "/api/accurate/find_faces";
 }
 
-async function detectVideo(file, node, generation) {
+async function detectVideo(file, node, generation, signal) {
   node.imageStage.hidden = true;
   node.videoStage.hidden = false;
   node.summary.textContent = "Loading video";
@@ -1291,11 +1388,21 @@ async function detectVideo(file, node, generation) {
           useEmbeddings ? FACE_MATCH_PLUGINS : FACE_DETECTION_PLUGINS,
           true,
           BACKEND_FAST,
+          getApiThreshold(),
+          signal,
         );
       } catch (error) {
+        if (error?.name === "AbortError") throw error;
         if (!useEmbeddings) throw error;
         useEmbeddings = false;
-        payload = await findFaces(frameFile, FACE_DETECTION_PLUGINS, true, BACKEND_FAST);
+        payload = await findFaces(
+          frameFile,
+          FACE_DETECTION_PLUGINS,
+          true,
+          BACKEND_FAST,
+          getApiThreshold(),
+          signal,
+        );
       }
 
       const detectedFaces = Array.isArray(payload.result)
@@ -1343,6 +1450,7 @@ async function detectVideo(file, node, generation) {
       ? "match"
       : hasSearchableTargets() ? "no-match" : "detected";
   } catch (error) {
+    if (error?.name === "AbortError") return "cancelled";
     node.video.controls = true;
     node.summary.classList.add("error");
     node.summary.textContent = error.message;

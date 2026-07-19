@@ -95,9 +95,10 @@ The UI has three pages:
 
 - `Live Scan` opens the webcam, captures frames, sends them to the local
   detector, tracks faces, and draws a live overlay.
-- `Detection` accepts images and videos. Images are detected once. Videos are
-  analyzed at 30 fps by default, then the UI interpolates tracked boxes during
-  playback.
+- `Detection` accepts images and videos and starts scanning as soon as a source
+  is selected. The Results control can stop the active scan and restart it
+  later. Images are detected once. Videos are analyzed at 30 fps by default,
+  then the UI interpolates tracked boxes during playback.
 - `Faces` lets you add target face images. The UI stores target previews and
   embeddings in browser `localStorage`, then uses them to name matching tracks.
 

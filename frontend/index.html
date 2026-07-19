@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>FDX Face Detection</title>
-    <link rel="stylesheet" href="/styles.css?v=46">
+    <link rel="stylesheet" href="/styles.css?v=50">
   </head>
   <body>
     <main class="shell">
@@ -124,11 +124,11 @@
               </div>
               <div class="detectionActions">
                 <button id="startDetectionButton" class="startDetectionButton" type="button">Start detection</button>
-                <span id="batchProgress" class="batchProgress" hidden></span>
+                <span id="batchProgress" class="batchProgress" aria-live="polite" hidden></span>
               </div>
             </div>
 
-            <div id="detectionProgress" class="detectionProgress" hidden>
+            <div id="detectionProgress" class="detectionProgress" aria-live="polite" hidden>
               <progress id="detectionProgressBar" class="detectionProgressBar" max="1" value="0"></progress>
               <span id="detectionProgressText">Processing 0 of 0</span>
             </div>
@@ -142,6 +142,20 @@
         </div>
       </section>
     </main>
+
+    <div id="resultImagePreviewBackdrop" class="imagePreviewBackdrop" hidden></div>
+    <div
+      id="resultImagePreviewShell"
+      class="imagePreviewPopup"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Expanded detection image"
+      tabindex="-1"
+      hidden
+    >
+      <button id="closeResultImagePreview" class="imagePreviewClose" type="button" aria-label="Close image preview">Close</button>
+      <canvas id="resultImagePreviewCanvas" class="imagePreviewCanvas"></canvas>
+    </div>
 
     <template id="resultTemplate">
       <article class="result">
@@ -185,6 +199,6 @@
     </template>
 
     <script src="/vendor/three.min.js?v=149"></script>
-    <script src="/app.js?v=31"></script>
+    <script src="/app.js?v=34"></script>
   </body>
 </html>

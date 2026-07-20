@@ -20,8 +20,11 @@ const faceCount = document.querySelector("#faceCount");
 const scanFaceBtn = document.querySelector("#scanFaceBtn");
 const cameraModal = document.querySelector("#cameraModal");
 const cameraVideo = document.querySelector("#cameraVideo");
+const cameraPreview = document.querySelector("#cameraPreview");
 const cameraCancelBtn = document.querySelector("#cameraCancelBtn");
 const cameraCaptureBtn = document.querySelector("#cameraCaptureBtn");
+const cameraRetakeBtn = document.querySelector("#cameraRetakeBtn");
+const cameraConfirmBtn = document.querySelector("#cameraConfirmBtn");
 let cameraStream = null;
 
 const MATCH_SIMILARITY_THRESHOLD = 0.8;
@@ -96,11 +99,9 @@ targetDropzone.addEventListener("drop", (event) => {
 
 scanFaceBtn.addEventListener("click", openCameraModal);
 cameraCancelBtn.addEventListener("click", closeCameraModal);
-cameraCaptureBtn.addEventListener("click", async () => {
-  const file = await captureCameraFile();
-  closeCameraModal();
-  if (file) await addTargetFaceFile(file);
-});
+cameraCaptureBtn.addEventListener("click", captureCameraPhoto);
+cameraRetakeBtn.addEventListener("click", () => setCameraStage("live"));
+cameraConfirmBtn.addEventListener("click", confirmCameraPhoto);
 
 async function openCameraModal() {
   try {
@@ -110,6 +111,7 @@ async function openCameraModal() {
     });
     cameraVideo.srcObject = cameraStream;
     await cameraVideo.play();
+    setCameraStage("live");
     cameraModal.hidden = false;
   } catch (error) {
     window.alert("Could not access the camera. Please upload a photo instead.");
@@ -123,18 +125,33 @@ function closeCameraModal() {
   cameraModal.hidden = true;
 }
 
-function captureCameraFile() {
-  const canvas = document.createElement("canvas");
-  canvas.width = cameraVideo.videoWidth;
-  canvas.height = cameraVideo.videoHeight;
-  canvas.getContext("2d").drawImage(cameraVideo, 0, 0, canvas.width, canvas.height);
+function captureCameraPhoto() {
+  cameraPreview.width = cameraVideo.videoWidth;
+  cameraPreview.height = cameraVideo.videoHeight;
+  cameraPreview.getContext("2d").drawImage(cameraVideo, 0, 0, cameraPreview.width, cameraPreview.height);
+  setCameraStage("preview");
+}
+
+async function confirmCameraPhoto() {
+  const file = await canvasToFile(cameraPreview);
+  closeCameraModal();
+  if (file) await addTargetFaceFile(file);
+}
+
+function setCameraStage(stage) {
+  const isPreview = stage === "preview";
+  cameraVideo.hidden = isPreview;
+  cameraPreview.hidden = !isPreview;
+  cameraCancelBtn.hidden = isPreview;
+  cameraCaptureBtn.hidden = isPreview;
+  cameraRetakeBtn.hidden = !isPreview;
+  cameraConfirmBtn.hidden = !isPreview;
+}
+
+function canvasToFile(canvas) {
   return new Promise((resolve) => {
     canvas.toBlob((blob) => {
-      if (!blob) {
-        resolve(null);
-        return;
-      }
-      resolve(new File([blob], `scan-${Date.now()}.jpg`, { type: "image/jpeg" }));
+      resolve(blob ? new File([blob], `scan-${Date.now()}.jpg`, { type: "image/jpeg" }) : null);
     }, "image/jpeg", 0.92);
   });
 }
@@ -189,12 +206,16 @@ function showPage(pageName, updateHash = true) {
 
 async function handleFiles(fileList) {
   const files = Array.from(fileList).filter((file) => file.type.startsWith("image/"));
-  for (const file of files) {
+  const total = files.length;
+
+  for (const [index, file] of files.entries()) {
     const node = createResultNode(file);
     results.prepend(node.article);
-    updateResultCount();
+    updateResultCount(index + 1, total);
     await detectFile(file, node);
   }
+
+  updateResultCount();
 }
 
 function createResultNode(file) {
@@ -516,7 +537,11 @@ function getApiThreshold() {
   return Math.min(0.99, Math.max(0.01, Number.isFinite(value) ? value : 0.8)).toFixed(2);
 }
 
-function updateResultCount() {
+function updateResultCount(processed, total) {
+  if (total && processed < total) {
+    resultCount.textContent = `Processing image ${processed} of ${total}...`;
+    return;
+  }
   const count = results.children.length;
   resultCount.textContent = `${count} detection result${count === 1 ? "" : "s"}`;
 }

@@ -386,7 +386,8 @@ pre {
   background: #05070a;
 }
 
-.cameraStage video {
+.cameraStage video,
+.cameraStage canvas {
   position: absolute;
   inset: 0;
   width: 100%;

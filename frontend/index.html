@@ -87,10 +87,13 @@
       <div class="cameraModalInner">
         <div class="cameraStage">
           <video id="cameraVideo" autoplay playsinline muted></video>
+          <canvas id="cameraPreview" hidden></canvas>
         </div>
         <div class="cameraModalActions">
           <button id="cameraCancelBtn" type="button">Cancel</button>
           <button id="cameraCaptureBtn" type="button" class="primaryBtn">Capture</button>
+          <button id="cameraRetakeBtn" type="button" hidden>Retake</button>
+          <button id="cameraConfirmBtn" type="button" class="primaryBtn" hidden>Done, press to continue</button>
         </div>
       </div>
     </div>

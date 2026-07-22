@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>FDX Face Detection</title>
-    <link rel="stylesheet" href="/styles.css?v=55">
+    <link rel="stylesheet" href="/styles.css?v=65">
   </head>
   <body>
     <main class="shell">
@@ -123,6 +123,7 @@
                 <p id="resultCount">0 detection results</p>
               </div>
               <div class="detectionActions">
+                <button id="downloadSelectedButton" class="downloadSelectedButton" type="button" disabled>Download selected (0)</button>
                 <button id="startDetectionButton" class="startDetectionButton" type="button">Start detection</button>
                 <span id="batchProgress" class="batchProgress" aria-live="polite" hidden></span>
               </div>
@@ -173,6 +174,9 @@
               <path d="M12 3v11m0 0 4-4m-4 4-4-4M5 17v2h14v-2"></path>
             </svg>
           </a>
+          <label class="resultSelect" title="Select image for bulk download">
+            <input class="resultSelectCheckbox" type="checkbox">
+          </label>
         </div>
         <div class="videoStage" hidden>
           <video controls preload="metadata"></video>
@@ -189,14 +193,10 @@
       <article class="faceCard">
         <button class="faceDelete" type="button" title="Delete target face" aria-label="Delete target face">X</button>
         <img alt="">
-        <div>
-          <h3></h3>
+        <div class="faceIdentity">
+          <input class="faceName faceNameHeading" type="text" aria-label="Target name">
           <p></p>
         </div>
-        <label class="faceNameField">
-          Name
-          <input class="faceName" type="text">
-        </label>
         <dl>
           <div>
             <dt>Status</dt>
@@ -211,6 +211,6 @@
     </template>
 
     <script src="/vendor/three.min.js?v=149"></script>
-    <script src="/app.js?v=42"></script>
+    <script src="/app.js?v=48"></script>
   </body>
 </html>

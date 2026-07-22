@@ -124,6 +124,9 @@ database, or external model download is used at runtime.
 - Gallery images with the same name are fused into a feature-norm-weighted
   identity centroid. Samples below 0.35 cosine agreement with the identity
   medoid are excluded from that centroid.
+- Detection and target-enrollment results are cached by file fingerprint.
+  Adding another accepted photo of an existing identity updates matches from
+  cached face embeddings without running detection over the source again.
 - AdaFace embeddings are L2-normalized and compared directly with cosine
   similarity. Failure to clear every gate leaves the face unknown.
 

@@ -498,7 +498,7 @@ h1 {
 
 .results {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   align-content: start;
   gap: 10px;
 }
@@ -550,17 +550,17 @@ h1 {
 
 .resultDownload {
   position: absolute;
-  top: 8px;
-  left: 8px;
+  top: 6px;
+  left: 6px;
   z-index: 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 38px;
-  min-width: 38px;
-  height: 38px;
-  min-height: 38px;
-  padding: 7px;
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  min-height: 32px;
+  padding: 6px;
   border: 1px solid var(--surface);
   border-radius: var(--radius);
   background: rgb(24 24 24 / 84%);
@@ -570,8 +570,8 @@ h1 {
 
 .downloadIcon {
   display: block;
-  width: 21px;
-  height: 21px;
+  width: 17px;
+  height: 17px;
   fill: none;
   stroke: currentColor;
   stroke-linecap: round;
@@ -584,6 +584,40 @@ h1 {
   border-color: var(--accent);
   background: rgb(24 24 24 / 94%);
   color: var(--ink-inverse);
+}
+
+.resultSelect {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--surface);
+  border-radius: var(--radius);
+  background: rgb(24 24 24 / 84%);
+  cursor: pointer;
+}
+
+.resultSelect:hover,
+.resultSelect:focus-within {
+  border-color: var(--accent);
+  background: rgb(24 24 24 / 94%);
+}
+
+.resultSelectCheckbox {
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.result.selectedForDownload .imageStage {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 2px var(--accent);
 }
 
 .imageCanvas[role="button"] {
@@ -610,7 +644,8 @@ h1 {
   display: grid;
   place-items: center;
   width: min(1200px, calc(100vw - 32px));
-  max-height: calc(100dvh - 32px);
+  height: min(900px, calc(100dvh - 32px));
+  grid-template-rows: minmax(0, 1fr);
   padding: 52px 12px 12px;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius);
@@ -623,10 +658,11 @@ h1 {
 }
 
 .imagePreviewCanvas {
-  width: auto;
-  max-width: 100%;
-  height: auto;
-  max-height: calc(100dvh - 108px);
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  object-fit: contain;
   border-radius: calc(var(--radius) - 2px);
 }
 
@@ -717,10 +753,11 @@ canvas {
 
 .facesGrid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(160px, 180px));
   grid-auto-rows: max-content;
   align-content: start;
-  gap: 14px;
+  justify-content: start;
+  gap: 10px;
 }
 
 .capturePanel,
@@ -851,10 +888,10 @@ canvas {
   position: relative;
   display: grid;
   align-content: start;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
   overflow: hidden;
-  padding: 12px;
+  padding: 10px;
 }
 
 .faceDelete {
@@ -864,9 +901,9 @@ canvas {
   z-index: 1;
   display: inline-grid;
   place-items: center;
-  width: 32px;
+  width: 28px;
   min-width: 0;
-  height: 32px;
+  height: 28px;
   min-height: 0;
   aspect-ratio: 1 / 1;
   padding: 0;
@@ -892,38 +929,52 @@ canvas {
   background: var(--stage);
 }
 
-.faceCard h3 {
+.faceCard .faceNameHeading {
+  min-width: 0;
+  min-height: 30px;
   margin: 0;
+  padding: 3px 5px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--ink);
   font-size: 14px;
+  font-weight: 700;
   line-height: 1.25;
 }
 
-.faceCard p {
-  margin: 2px 0 0;
-  color: var(--muted);
-  font-size: 13px;
+.faceCard .faceNameHeading:hover,
+.faceCard .faceNameHeading:focus {
+  border-color: var(--line-strong);
+  background: var(--surface);
 }
 
-.faceNameField {
+.faceIdentity {
   display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
   gap: 6px;
+}
+
+.faceCard p {
+  margin: 0;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 11px;
+  white-space: nowrap;
 }
 
 .faceCard dl {
   display: grid;
-  gap: 6px;
+  gap: 4px;
   margin: 0;
-  padding-top: 10px;
+  padding-top: 6px;
   border-top: 1px solid var(--line-strong);
 }
 
 .faceCard dl div {
   display: grid;
-  grid-template-columns: 74px minmax(0, 1fr);
-  gap: 8px;
-  font-size: 13px;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 5px;
+  font-size: 11px;
 }
 
 .faceCard dt {

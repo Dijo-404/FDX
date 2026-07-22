@@ -2,6 +2,7 @@ const fileInput = document.querySelector("#fileInput");
 const folderInput = document.querySelector("#folderInput");
 const detectionUploadButton = document.querySelector("#detectionUploadButton");
 const startDetectionButton = document.querySelector("#startDetectionButton");
+const downloadSelectedButton = document.querySelector("#downloadSelectedButton");
 const targetFileInput = document.querySelector("#targetFileInput");
 const targetAddButton = document.querySelector("#targetAddButton");
 const targetDropzone = document.querySelector("#targetDropzone");
@@ -122,7 +123,10 @@ let pendingDetectionSourceRefresh = false;
 let detectionUploadProcessedCount = 0;
 let detectionUploadTotalCount = 0;
 let detectionUploadCacheHitCount = 0;
+let detectionUploadInsertionAnchor = null;
 let detectionResultsHaveRun = false;
+let selectedDownloadInProgress = false;
+let zipCrc32Table = null;
 let faceCaptureStream = null;
 let faceCaptureStartPromise = null;
 let faceCaptureAddInProgress = false;
@@ -131,6 +135,7 @@ let targetDrawState = null;
 let resultImagePreviewOpener = null;
 const detectionFileFingerprintPromises = new WeakMap();
 const detectionMemoryCache = new Map();
+const targetEntriesReusingIdentity = new WeakSet();
 let detectionCacheDbPromise = null;
 
 pageTabs.forEach((tab) => {
@@ -169,6 +174,10 @@ startDetectionButton.addEventListener("click", () => {
     return;
   }
   void startDetectionFromCurrentSource();
+});
+
+downloadSelectedButton.addEventListener("click", () => {
+  void downloadSelectedResults();
 });
 
 targetFileInput.addEventListener("change", () => {
@@ -904,6 +913,7 @@ async function findFacesWithSourceCache(file, kind, options, signal) {
     options.backend,
     options.threshold,
     signal,
+    options.requestOptions || {},
   );
   const faces = Array.isArray(payload.result) ? payload.result : [];
   await writeDetectionCacheEntry(cacheKey, { kind, faces });
@@ -919,6 +929,7 @@ async function handleFiles(fileList) {
   const generation = processingGeneration;
   const nodes = files.map((file) => ({ file, node: createResultNode(file) }));
 
+  ensureDetectionUploadInsertionAnchor();
   detectionUploadResultNodes.push(...nodes.map(({ node }) => node));
   detectionUploadQueue.push(...nodes);
   detectionUploadTotalCount += nodes.length;
@@ -949,9 +960,13 @@ async function processDetectionUploadQueue(generation) {
 
       if (generation !== processingGeneration) break;
       setResultState(node, state);
+      const published = publishCompletedDetectionResult(node);
       if (node.cacheHit) detectionUploadCacheHitCount += 1;
       detectionUploadProcessedCount += 1;
       updateDetectionProgress();
+      if (published) {
+        await yieldToBrowser();
+      }
     }
   } finally {
     const processedCount = detectionUploadProcessedCount;
@@ -960,11 +975,13 @@ async function processDetectionUploadQueue(generation) {
     let visibleResultCount = 0;
 
     if (generation === processingGeneration) {
-      visibleResultCount = revealCompletedDetectionResults();
+      visibleResultCount = countPublishedDetectionResults(detectionUploadResultNodes);
+      releaseUnpublishedDetectionResultNodes(detectionUploadResultNodes);
       detectionResultsHaveRun = true;
     } else {
-      releaseDetectionResultNodes(detectionUploadResultNodes);
+      releaseUnpublishedDetectionResultNodes(detectionUploadResultNodes);
     }
+    removeDetectionUploadInsertionAnchor();
 
     uploadInProgress = false;
     if (detectionUploadAbortController === abortController) {
@@ -990,24 +1007,37 @@ async function processDetectionUploadQueue(generation) {
   }
 }
 
-function revealCompletedDetectionResults() {
-  const fragment = document.createDocumentFragment();
-  const visibleNodes = [];
+function ensureDetectionUploadInsertionAnchor() {
+  if (detectionUploadInsertionAnchor?.isConnected) return;
+  detectionUploadInsertionAnchor = document.createComment("current detection results");
+  results.insertBefore(detectionUploadInsertionAnchor, results.firstChild);
+}
 
-  detectionUploadResultNodes.forEach((node) => {
-    if (shouldShowCompletedDetectionResult(node)) {
-      visibleNodes.push(node);
-      fragment.append(node.article);
-    } else {
-      releaseDetectionResultNode(node);
-    }
-  });
+function removeDetectionUploadInsertionAnchor() {
+  detectionUploadInsertionAnchor?.remove();
+  detectionUploadInsertionAnchor = null;
+}
 
-  if (visibleNodes.length > 0) {
-    results.prepend(fragment);
+function publishCompletedDetectionResult(node) {
+  if (!shouldShowCompletedDetectionResult(node)) {
+    releaseDetectionResultNode(node);
+    return false;
   }
 
-  return visibleNodes.length;
+  ensureDetectionUploadInsertionAnchor();
+  results.insertBefore(node.article, detectionUploadInsertionAnchor);
+  updateResultCount();
+  return true;
+}
+
+function countPublishedDetectionResults(nodes) {
+  return nodes.reduce((count, node) => count + Number(node.article.isConnected), 0);
+}
+
+function releaseUnpublishedDetectionResultNodes(nodes) {
+  nodes.forEach((node) => {
+    if (!node.article.isConnected) releaseDetectionResultNode(node);
+  });
 }
 
 function shouldShowCompletedDetectionResult(node) {
@@ -1029,11 +1059,10 @@ function hasDetectedFaces(node) {
   return false;
 }
 
-function releaseDetectionResultNodes(nodes) {
-  nodes.forEach(releaseDetectionResultNode);
-}
-
 function releaseDetectionResultNode(node) {
+  if (node.released) return;
+  node.released = true;
+
   if (node.video?.src?.startsWith("blob:")) {
     URL.revokeObjectURL(node.video.src);
   }
@@ -1187,11 +1216,13 @@ async function cancelDetectionUpload() {
   uploadInProgress = false;
   detectionUploadPromise = null;
   detectionUploadQueue = [];
-  releaseDetectionResultNodes(detectionUploadResultNodes);
+  releaseUnpublishedDetectionResultNodes(detectionUploadResultNodes);
+  removeDetectionUploadInsertionAnchor();
   detectionUploadResultNodes = [];
   detectionUploadProcessedCount = 0;
   detectionUploadTotalCount = 0;
   detectionUploadCacheHitCount = 0;
+  detectionResultsHaveRun = detectionResultsHaveRun || Boolean(results.querySelector(".result"));
   hideDetectionProgress();
   renderDetectionStartButton();
 }
@@ -1220,7 +1251,13 @@ function updateDetectionProgress() {
   const processed = Math.min(detectionUploadProcessedCount, total);
 
   batchProgress.hidden = true;
-  resultCount.textContent = "Detection in progress";
+  const visibleResultCount = results.querySelectorAll(".result:not([hidden])").length;
+  const visibleResultLabel = hasSearchableTargets()
+    ? `target match${visibleResultCount === 1 ? "" : "es"}`
+    : `confirmed detection result${visibleResultCount === 1 ? "" : "s"}`;
+  resultCount.textContent = visibleResultCount > 0
+    ? `${visibleResultCount} ${visibleResultLabel} · processing`
+    : "Detection in progress";
   detectionProgress.hidden = false;
   detectionProgressBar.max = total || 1;
   detectionProgressBar.value = processed;
@@ -1242,6 +1279,8 @@ function createResultNode(file) {
   const imageStage = fragment.querySelector(".imageStage");
   const canvas = fragment.querySelector(".imageCanvas");
   const downloadButton = fragment.querySelector(".resultDownload");
+  const selectionControl = fragment.querySelector(".resultSelect");
+  const selectionCheckbox = fragment.querySelector(".resultSelectCheckbox");
   const videoStage = fragment.querySelector(".videoStage");
   const video = fragment.querySelector("video");
   const videoOverlay = fragment.querySelector(".videoOverlay");
@@ -1261,6 +1300,11 @@ function createResultNode(file) {
     downloadButton.download = getDownloadFileName(displayPath, file);
     downloadButton.hidden = false;
     downloadButton.setAttribute("aria-label", `Download ${displayPath}`);
+    selectionCheckbox.setAttribute("aria-label", `Select ${displayPath} for bulk download`);
+    selectionCheckbox.addEventListener("change", () => {
+      article.classList.toggle("selectedForDownload", selectionCheckbox.checked);
+      updateSelectedDownloadButton();
+    });
     canvas.tabIndex = -1;
     canvas.setAttribute("role", "button");
     canvas.setAttribute("aria-label", `Open ${displayPath} image preview`);
@@ -1268,10 +1312,13 @@ function createResultNode(file) {
       openResultImagePreview(canvas, displayPath);
     });
     article.addEventListener("keydown", (event) => {
+      if (event.target !== article) return;
       if (event.key !== "Enter" && event.key !== " ") return;
       event.preventDefault();
       openResultImagePreview(canvas, displayPath);
     });
+  } else {
+    selectionControl.hidden = true;
   }
 
   const node = {
@@ -1280,6 +1327,7 @@ function createResultNode(file) {
     imageStage,
     canvas,
     downloadButton,
+    selectionCheckbox,
     videoStage,
     video,
     videoOverlay,
@@ -1287,11 +1335,211 @@ function createResultNode(file) {
     videoAnalysis: null,
     renderVideoOverlay: null,
     cacheHit: false,
+    released: false,
+    file,
     displayPath,
     downloadUrl: file.type.startsWith("video/") ? null : downloadButton.href,
   };
   article.fdxResultNode = node;
   return node;
+}
+
+function getSelectedDownloadNodes() {
+  return Array.from(results.querySelectorAll(".resultSelectCheckbox:checked"))
+    .map((checkbox) => checkbox.closest(".result")?.fdxResultNode)
+    .filter((node) => node?.downloadUrl && !node.released);
+}
+
+function updateSelectedDownloadButton() {
+  if (selectedDownloadInProgress) {
+    downloadSelectedButton.disabled = true;
+    return;
+  }
+
+  const selectedCount = getSelectedDownloadNodes().length;
+  downloadSelectedButton.disabled = selectedCount === 0;
+  downloadSelectedButton.textContent = `Download selected (${selectedCount})`;
+}
+
+async function downloadSelectedResults() {
+  const selectedNodes = getSelectedDownloadNodes();
+  if (selectedNodes.length === 0) return;
+
+  selectedDownloadInProgress = true;
+  downloadSelectedButton.disabled = true;
+  downloadSelectedButton.textContent = `Preparing 0 of ${selectedNodes.length}`;
+
+  try {
+    const archive = await createSelectedImagesZip(selectedNodes, (completed) => {
+      downloadSelectedButton.textContent = `Preparing ${completed} of ${selectedNodes.length}`;
+    });
+    triggerBlobDownload(archive, createSelectedImagesZipName());
+  } catch (error) {
+    batchProgress.hidden = false;
+    batchProgress.textContent = error?.message || "Could not prepare selected images";
+  } finally {
+    selectedDownloadInProgress = false;
+    updateSelectedDownloadButton();
+  }
+}
+
+async function createSelectedImagesZip(nodes, onProgress = () => {}) {
+  const encoder = new TextEncoder();
+  const names = createUniqueZipEntryNames(nodes);
+  const entries = [];
+
+  for (let index = 0; index < nodes.length; index += 1) {
+    const node = nodes[index];
+    const data = new Uint8Array(await node.file.arrayBuffer());
+    if (data.byteLength > 0xffffffff) {
+      throw new Error(`${names[index]} is too large for a ZIP download`);
+    }
+    const { dosDate, dosTime } = getZipDosDateTime(node.file.lastModified);
+    entries.push({
+      data,
+      nameBytes: encoder.encode(names[index]),
+      crc32: calculateZipCrc32(data),
+      dosDate,
+      dosTime,
+    });
+    onProgress(index + 1);
+    await yieldToBrowser();
+  }
+
+  if (entries.length > 0xffff) {
+    throw new Error("Too many images selected for one ZIP download");
+  }
+
+  const localParts = [];
+  const centralParts = [];
+  let localOffset = 0;
+  let centralSize = 0;
+
+  entries.forEach((entry) => {
+    const localHeader = createZipLocalHeader(entry);
+    localParts.push(localHeader, entry.nameBytes, entry.data);
+
+    const centralHeader = createZipCentralHeader(entry, localOffset);
+    centralParts.push(centralHeader, entry.nameBytes);
+
+    localOffset += localHeader.byteLength + entry.nameBytes.byteLength + entry.data.byteLength;
+    centralSize += centralHeader.byteLength + entry.nameBytes.byteLength;
+  });
+
+  if (localOffset > 0xffffffff || centralSize > 0xffffffff) {
+    throw new Error("Selected images are too large for one ZIP download");
+  }
+
+  const endRecord = createZipEndRecord(entries.length, centralSize, localOffset);
+  return new Blob([...localParts, ...centralParts, endRecord], { type: "application/zip" });
+}
+
+function createUniqueZipEntryNames(nodes) {
+  const usedNames = new Set();
+
+  return nodes.map((node) => {
+    const originalName = getDownloadFileName(node.displayPath, node.file).replace(/[\\/]/g, "_");
+    const extensionIndex = originalName.lastIndexOf(".");
+    const baseName = extensionIndex > 0 ? originalName.slice(0, extensionIndex) : originalName;
+    const extension = extensionIndex > 0 ? originalName.slice(extensionIndex) : "";
+    let candidate = originalName;
+    let suffix = 2;
+
+    while (usedNames.has(candidate.toLocaleLowerCase())) {
+      candidate = `${baseName} (${suffix})${extension}`;
+      suffix += 1;
+    }
+    usedNames.add(candidate.toLocaleLowerCase());
+    return candidate;
+  });
+}
+
+function getZipDosDateTime(timestamp) {
+  const date = new Date(Number(timestamp) || Date.now());
+  const year = Math.min(2107, Math.max(1980, date.getFullYear()));
+  return {
+    dosDate: ((year - 1980) << 9) | ((date.getMonth() + 1) << 5) | date.getDate(),
+    dosTime: (date.getHours() << 11) | (date.getMinutes() << 5) | Math.floor(date.getSeconds() / 2),
+  };
+}
+
+function createZipLocalHeader(entry) {
+  const header = new Uint8Array(30);
+  const view = new DataView(header.buffer);
+  view.setUint32(0, 0x04034b50, true);
+  view.setUint16(4, 20, true);
+  view.setUint16(6, 0x0800, true);
+  view.setUint16(8, 0, true);
+  view.setUint16(10, entry.dosTime, true);
+  view.setUint16(12, entry.dosDate, true);
+  view.setUint32(14, entry.crc32, true);
+  view.setUint32(18, entry.data.byteLength, true);
+  view.setUint32(22, entry.data.byteLength, true);
+  view.setUint16(26, entry.nameBytes.byteLength, true);
+  return header;
+}
+
+function createZipCentralHeader(entry, localOffset) {
+  const header = new Uint8Array(46);
+  const view = new DataView(header.buffer);
+  view.setUint32(0, 0x02014b50, true);
+  view.setUint16(4, 20, true);
+  view.setUint16(6, 20, true);
+  view.setUint16(8, 0x0800, true);
+  view.setUint16(10, 0, true);
+  view.setUint16(12, entry.dosTime, true);
+  view.setUint16(14, entry.dosDate, true);
+  view.setUint32(16, entry.crc32, true);
+  view.setUint32(20, entry.data.byteLength, true);
+  view.setUint32(24, entry.data.byteLength, true);
+  view.setUint16(28, entry.nameBytes.byteLength, true);
+  view.setUint32(42, localOffset, true);
+  return header;
+}
+
+function createZipEndRecord(entryCount, centralSize, centralOffset) {
+  const record = new Uint8Array(22);
+  const view = new DataView(record.buffer);
+  view.setUint32(0, 0x06054b50, true);
+  view.setUint16(8, entryCount, true);
+  view.setUint16(10, entryCount, true);
+  view.setUint32(12, centralSize, true);
+  view.setUint32(16, centralOffset, true);
+  return record;
+}
+
+function calculateZipCrc32(bytes) {
+  if (!zipCrc32Table) {
+    zipCrc32Table = Array.from({ length: 256 }, (_, index) => {
+      let value = index;
+      for (let bit = 0; bit < 8; bit += 1) {
+        value = (value & 1) ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+      }
+      return value >>> 0;
+    });
+  }
+
+  let crc = 0xffffffff;
+  bytes.forEach((byte) => {
+    crc = zipCrc32Table[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  });
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function createSelectedImagesZipName() {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  return `fdx-selected-images-${timestamp}.zip`;
+}
+
+function triggerBlobDownload(blob, fileName) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function getDownloadFileName(displayPath, file) {
@@ -1981,9 +2229,7 @@ async function handleTargetFiles(fileList) {
     addedEntries.push(...await addTargetFaceFile(file));
   }
   targetFileInput.value = "";
-  if (addedEntries.some(hasTargetEmbedding)) {
-    requestCurrentDetectionSourceRefresh();
-  }
+  updateDetectionsAfterTargetEnrollment(addedEntries);
 }
 
 async function addTargetFaceFile(file, options = {}) {
@@ -1997,18 +2243,13 @@ async function addTargetFaceFile(file, options = {}) {
   const baseName = defaultName || getDefaultTargetName(file.name);
 
   try {
-    const accuratePayload = await findFaces(
-      file,
-      FACE_MATCH_PLUGINS,
-      true,
-      BACKEND_ACCURATE,
-      croppedFace ? CROPPED_TARGET_DETECTION_THRESHOLD : TARGET_DETECTION_THRESHOLD,
-      undefined,
-      croppedFace ? { inputMode: "cropped" } : {},
-    );
-    const accurateFaces = Array.isArray(accuratePayload.result)
-      ? accuratePayload.result.map(normalizeAccurateDetectionFace)
-      : [];
+    const targetDetection = await findFacesWithSourceCache(file, "target", {
+      backend: BACKEND_ACCURATE,
+      facePlugins: FACE_MATCH_PLUGINS,
+      threshold: croppedFace ? CROPPED_TARGET_DETECTION_THRESHOLD : TARGET_DETECTION_THRESHOLD,
+      requestOptions: croppedFace ? { inputMode: "cropped" } : {},
+    });
+    const accurateFaces = targetDetection.faces.map(normalizeAccurateDetectionFace);
     const selectedFaces = singleFace ? selectPrimaryTargetFace(accurateFaces, image) : accurateFaces;
     const candidateEntries = selectedFaces
       .map((face, index) => createFaceEntry(
@@ -2030,6 +2271,7 @@ async function addTargetFaceFile(file, options = {}) {
       );
     }
 
+    entries.forEach(reuseExistingTargetIdentity);
     targetFaces.unshift(...entries);
     renderTargetFaces();
     return entries;
@@ -2039,6 +2281,38 @@ async function addTargetFaceFile(file, options = {}) {
     renderTargetFaces();
     return [fallback];
   }
+}
+
+function reuseExistingTargetIdentity(entry) {
+  const accurateEmbedding = getTargetAccurateEmbedding(entry);
+  const fastEmbedding = accurateEmbedding ? null : getTargetFastEmbedding(entry);
+  const bestMatch = accurateEmbedding
+    ? getBestTargetMatchForEmbedding(accurateEmbedding, getTargetAccurateEmbedding)
+    : getBestTargetMatchForEmbedding(fastEmbedding, getTargetFastEmbedding);
+  if (!bestMatch || !isAcceptedMatch(bestMatch, entry.quality)) return;
+
+  const identityName = String(bestMatch.target.displayName || bestMatch.target.name || "").trim()
+    || getTargetLabel(bestMatch.target);
+  entry.name = identityName;
+  entry.displayName = identityName;
+  targetEntriesReusingIdentity.add(entry);
+}
+
+function updateDetectionsAfterTargetEnrollment(entries) {
+  const searchableEntries = entries.filter(hasTargetEmbedding);
+  if (searchableEntries.length === 0) return;
+
+  const reusedExistingIdentity = searchableEntries.every((entry) => (
+    targetEntriesReusingIdentity.has(entry)
+  ));
+  if (!reusedExistingIdentity) {
+    requestCurrentDetectionSourceRefresh();
+    return;
+  }
+
+  refreshCachedTargetMatches();
+  batchProgress.hidden = false;
+  batchProgress.textContent = "Same target updated · reused cached detections";
 }
 
 function selectPrimaryTargetFace(faces, image) {
@@ -2251,9 +2525,7 @@ async function addTargetImageFace() {
 
   try {
     const entries = await addTargetFaceFile(file);
-    if (entries.some(hasTargetEmbedding)) {
-      requestCurrentDetectionSourceRefresh();
-    }
+    updateDetectionsAfterTargetEnrollment(entries);
     closeTargetDrawPanel();
   } catch (error) {
     targetDrawStatus.textContent = error?.message || "Could not add image";
@@ -2295,7 +2567,7 @@ async function addDrawnTargetFace() {
 
     if (searchableCount > 0) {
       closeTargetDrawPanel();
-      requestCurrentDetectionSourceRefresh();
+      updateDetectionsAfterTargetEnrollment(entries);
     } else {
       targetDrawStatus.textContent = entries[0]?.status || "No searchable face found";
       addDrawnTargetButton.disabled = false;
@@ -2524,9 +2796,7 @@ async function addCurrentFaceCapture() {
       : entries[0]?.status || "No searchable face captured";
     captureFaceButton.textContent = "Done – Press to Continue";
     retakeFaceCaptureButton.disabled = latestFaceCaptureIds.length === 0;
-    if (searchableCount > 0) {
-      requestCurrentDetectionSourceRefresh();
-    }
+    if (searchableCount > 0) updateDetectionsAfterTargetEnrollment(entries);
   } catch (error) {
     latestFaceCaptureIds = [];
     faceCaptureStatus.textContent = error?.message || "Could not capture face";
@@ -2789,7 +3059,6 @@ function renderTargetFaces() {
     const fragment = faceTemplate.content.cloneNode(true);
     const article = fragment.querySelector(".faceCard");
     const image = fragment.querySelector("img");
-    const title = fragment.querySelector("h3");
     const dimensions = fragment.querySelector("p");
     const nameInput = fragment.querySelector(".faceName");
     const deleteButton = fragment.querySelector(".faceDelete");
@@ -2798,29 +3067,51 @@ function renderTargetFaces() {
 
     image.src = face.preview;
     image.alt = `Target face ${face.index} from ${face.source}`;
-    title.textContent = getTargetLabel(face, index);
     dimensions.textContent = `${face.width} x ${face.height}px`;
-    nameInput.value = face.name || getDefaultTargetName(face.source);
+    const fallbackName = getTargetLabel(face, index);
+    const initialName = getEditableTargetName(face, index);
+    face.name = initialName;
+    nameInput.value = initialName;
     nameInput.addEventListener("input", () => {
-      face.name = nameInput.value.trim() || getDefaultTargetName(face.source);
+      const editedName = nameInput.value.trim() || fallbackName;
+      face.displayName = editedName;
+      face.name = editedName;
+      deleteButton.setAttribute("aria-label", `Delete ${editedName}`);
+      article.setAttribute("aria-label", `${editedName} from ${face.source}`);
       saveTargetFaces();
     });
-    nameInput.addEventListener("change", () => refreshCachedTargetMatches());
-    deleteButton.setAttribute("aria-label", `Delete ${getTargetLabel(face, index)}`);
+    nameInput.addEventListener("change", () => {
+      if (!nameInput.value.trim()) nameInput.value = face.name;
+      refreshCachedTargetMatches();
+    });
+    deleteButton.setAttribute("aria-label", `Delete ${initialName}`);
     deleteButton.addEventListener("click", () => {
       deleteTargetFace(face.id);
     });
-    confidence.textContent = hasTargetEmbedding(face) ? face.status : face.status || "n/a";
+    confidence.textContent = hasTargetEmbedding(face) ? "Ready" : face.status || "n/a";
     source.textContent = face.source;
     article.dataset.faceId = face.id;
     article.tabIndex = 0;
-    article.setAttribute("aria-label", `${getTargetLabel(face, index)} from ${face.source}`);
+    article.setAttribute("aria-label", `${initialName} from ${face.source}`);
     article.setAttribute("aria-keyshortcuts", "ArrowLeft ArrowRight ArrowUp ArrowDown");
     facesGrid.append(article);
   });
 
   saveTargetFaces();
   syncMatchFilter();
+}
+
+function getEditableTargetName(face, index) {
+  const savedDisplayName = String(face.displayName || "").trim();
+  if (savedDisplayName) return savedDisplayName;
+
+  const currentName = String(face.name || "").trim();
+  const defaultName = getDefaultTargetName(face.source);
+  const numberedDefault = currentName.startsWith(`${defaultName} `)
+    && /^\d+$/.test(currentName.slice(defaultName.length + 1));
+  if (currentName && currentName !== defaultName && !numberedDefault) return currentName;
+
+  return getTargetLabel(face, index);
 }
 
 function deleteTargetFace(faceId) {
@@ -3587,6 +3878,7 @@ function updateResultCount() {
       )
     )
   );
+  updateSelectedDownloadButton();
 }
 
 function updateResultsEmptyCopy(filterMatches) {

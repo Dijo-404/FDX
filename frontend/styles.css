@@ -513,6 +513,12 @@ h1 {
   padding: 6px;
 }
 
+.result:focus-visible,
+.faceCard:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .canvasWrap,
 .videoStage,
 .targetDrawStage,
@@ -540,6 +546,44 @@ h1 {
   width: 100%;
   height: 100%;
   object-fit: contain;
+}
+
+.resultDownload {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  min-width: 38px;
+  height: 38px;
+  min-height: 38px;
+  padding: 7px;
+  border: 1px solid var(--surface);
+  border-radius: var(--radius);
+  background: rgb(24 24 24 / 84%);
+  color: var(--ink-inverse);
+  text-decoration: none;
+}
+
+.downloadIcon {
+  display: block;
+  width: 21px;
+  height: 21px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.resultDownload:hover,
+.resultDownload:focus-visible {
+  border-color: var(--accent);
+  background: rgb(24 24 24 / 94%);
+  color: var(--ink-inverse);
 }
 
 .imageCanvas[role="button"] {
@@ -589,7 +633,7 @@ h1 {
 .imagePreviewClose {
   position: absolute;
   top: 8px;
-  right: 8px;
+  left: 8px;
   min-width: 72px;
   min-height: 34px;
   padding: 5px 12px;

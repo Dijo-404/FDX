@@ -1,8 +1,9 @@
 models/
 .venv/
-.fdx-backend.pid
-.fdx-backend.log
-.fdx-fast-backend.pid
-.fdx-fast-backend.log
+.fdx-native-backend.pid
+.fdx-native-proxy.pid
+.fdx-native-runner.pid
+.fdx-native-backend.log
 __pycache__/
 *.py[cod]
+gpu-version.zip

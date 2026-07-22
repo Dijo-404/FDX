@@ -56,23 +56,38 @@ const liveDot = document.querySelector("#liveDot");
 const liveTagText = document.querySelector("#liveTagText");
 
 const DEFAULT_DETECTION_THRESHOLD = "0.60";
-const MATCH_SIMILARITY_THRESHOLD = 0.98;
+const MATCH_COSINE_THRESHOLD = 0.60;
+const LOW_QUALITY_MATCH_COSINE_THRESHOLD = 0.65;
 const TARGET_DETECTION_THRESHOLD = "0.98";
-const CANDIDATE_SIMILARITY_THRESHOLD = 0.98;
-const MATCH_MARGIN_THRESHOLD = 0.00001;
-const MIN_MATCH_FACE_SIZE_PX = 10;
+const CROPPED_TARGET_DETECTION_THRESHOLD = "0.80";
+const CANDIDATE_COSINE_THRESHOLD = 0.40;
+const MATCH_COSINE_MARGIN = 0.10;
+const LOW_QUALITY_MATCH_COSINE_MARGIN = 0.12;
+const ENROLLMENT_CONSISTENCY_COSINE = 0.35;
+const MIN_MATCH_DETECTION_PROBABILITY = 0.80;
+const MIN_MATCH_FACE_SIZE_PX = 40;
+const GOOD_MATCH_FACE_SIZE_PX = 80;
+const MIN_TARGET_SELECTION_SIZE_PX = 24;
+const TARGET_CROP_PADDING = 0.30;
 const DETECTION_FOLDER_STORAGE_KEY = "fdx.detectionFolder";
 const DETECTION_FOLDER_DB_NAME = "fdx.detectionFolderHandles";
 const DETECTION_FOLDER_STORE_NAME = "handles";
 const DETECTION_FOLDER_HANDLE_KEY = "current";
-const TARGET_STORAGE_KEY = "fdx.targetFaces";
+const DETECTION_CACHE_DB_NAME = "fdx.detectionCache";
+const DETECTION_CACHE_STORE_NAME = "analyses";
+const DETECTION_CACHE_INDEX_NAME = "cachedAt";
+const DETECTION_CACHE_VERSION = 5;
+const DETECTION_CACHE_MAX_ENTRIES = 200;
+const DETECTION_CACHE_FULL_HASH_MAX_BYTES = 8 * 1024 * 1024;
+const DETECTION_CACHE_SAMPLE_BYTES = 64 * 1024;
+const TARGET_STORAGE_KEY = "fdx.targetFaces.adafaceIr101Ms1mv2.v1";
 const FACE_DETECTION_PLUGINS = "";
 const FACE_MATCH_PLUGINS = "calculator";
 const BACKEND_ACCURATE = "accurate";
 const BACKEND_FAST = "fast";
 const MATCH_CANDIDATE_LIMIT = 12;
 const MATCH_CANDIDATE_PADDING = 0.35;
-const FAST_PREFILTER_SIMILARITY_THRESHOLD = 0.45;
+const FAST_PREFILTER_SIMILARITY_THRESHOLD = 0.40;
 const DEFAULT_DETECTION_FPS = 30;
 const CAMERA_IDEAL_FPS = 60;
 const VIDEO_FRAME_INTERVAL_SECONDS = 1 / DEFAULT_DETECTION_FPS;
@@ -94,8 +109,6 @@ const detectorApiOrigin = getDetectorApiOrigin();
 const targetFaces = loadStoredTargetFaces();
 let detectionFolderMeta = loadStoredDetectionFolderMeta();
 let currentDetectionSource = null;
-let accurateSimilarityCoefficients = [0, 1];
-let fastSimilarityCoefficients = [0, 1];
 let processingGeneration = 0;
 let uploadInProgress = false;
 let detectionUploadQueue = [];
@@ -108,6 +121,7 @@ let detectionFolderRestorePromise = null;
 let pendingDetectionSourceRefresh = false;
 let detectionUploadProcessedCount = 0;
 let detectionUploadTotalCount = 0;
+let detectionUploadCacheHitCount = 0;
 let detectionResultsHaveRun = false;
 let faceCaptureStream = null;
 let faceCaptureStartPromise = null;
@@ -115,6 +129,9 @@ let faceCaptureAddInProgress = false;
 let latestFaceCaptureIds = [];
 let targetDrawState = null;
 let resultImagePreviewOpener = null;
+const detectionFileFingerprintPromises = new WeakMap();
+const detectionMemoryCache = new Map();
+let detectionCacheDbPromise = null;
 
 pageTabs.forEach((tab) => {
   tab.addEventListener("click", () => {
@@ -168,8 +185,18 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     closeFaceCapturePopup();
     closeResultImagePreview();
+    return;
+  }
+
+  if (!resultImagePreviewShell.hidden && event.key.startsWith("Arrow")) {
+    const direction = event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 1;
+    event.preventDefault();
+    navigateResultImagePreview(direction);
   }
 });
+
+results.addEventListener("keydown", handleDetectionResultsKeydown);
+facesGrid.addEventListener("keydown", handleTargetFacesKeydown);
 
 resultImagePreviewBackdrop.addEventListener("click", closeResultImagePreview);
 closeResultImagePreviewButton.addEventListener("click", closeResultImagePreview);
@@ -200,6 +227,10 @@ faceCaptureBackdrop.addEventListener("click", () => {
 });
 
 captureFaceButton.addEventListener("click", () => {
+  if (latestFaceCaptureIds.length > 0) {
+    closeFaceCapturePopup();
+    return;
+  }
   void addCurrentFaceCapture();
 });
 
@@ -232,28 +263,6 @@ async function checkBackend() {
     statusText.textContent = "Detector is starting";
     statusDot.classList.remove("ready");
   }
-}
-
-async function loadStatus() {
-  const [accurateCoefficients, fastCoefficients] = await Promise.all([
-    loadBackendSimilarityCoefficients("/status"),
-    loadBackendSimilarityCoefficients("/fast/status"),
-  ]);
-  accurateSimilarityCoefficients = accurateCoefficients;
-  fastSimilarityCoefficients = fastCoefficients;
-}
-
-async function loadBackendSimilarityCoefficients(path) {
-  try {
-    const { response, payload: status } = await fetchDetectorJson(path);
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    if (Array.isArray(status.similarity_coefficients)) {
-      return status.similarity_coefficients;
-    }
-  } catch (error) {
-    // Fall back to a neutral mapping until the backend finishes warming up.
-  }
-  return [0, 1];
 }
 
 function getDetectorApiOrigin() {
@@ -712,6 +721,195 @@ async function deleteStoredDetectionFolderHandle() {
   db.close();
 }
 
+function openDetectionCacheDb() {
+  if (!("indexedDB" in window)) return Promise.resolve(null);
+  if (detectionCacheDbPromise) return detectionCacheDbPromise;
+
+  detectionCacheDbPromise = new Promise((resolve, reject) => {
+    const request = indexedDB.open(DETECTION_CACHE_DB_NAME, 1);
+    request.onupgradeneeded = () => {
+      const database = request.result;
+      const store = database.objectStoreNames.contains(DETECTION_CACHE_STORE_NAME)
+        ? request.transaction.objectStore(DETECTION_CACHE_STORE_NAME)
+        : database.createObjectStore(DETECTION_CACHE_STORE_NAME, { keyPath: "key" });
+      if (!store.indexNames.contains(DETECTION_CACHE_INDEX_NAME)) {
+        store.createIndex(DETECTION_CACHE_INDEX_NAME, "cachedAt");
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  }).catch(() => null);
+
+  return detectionCacheDbPromise;
+}
+
+async function readDetectionCacheEntry(key) {
+  const memoryEntry = detectionMemoryCache.get(key);
+  if (memoryEntry) return cloneDetectionCacheValue(memoryEntry);
+
+  const db = await openDetectionCacheDb();
+  if (!db) return null;
+
+  const entry = await new Promise((resolve, reject) => {
+    const transaction = db.transaction(DETECTION_CACHE_STORE_NAME, "readonly");
+    const request = transaction.objectStore(DETECTION_CACHE_STORE_NAME).get(key);
+    request.onsuccess = () => resolve(request.result || null);
+    request.onerror = () => reject(request.error);
+  }).catch(() => null);
+
+  if (!entry?.value) return null;
+  rememberDetectionCacheEntry(key, entry.value);
+  return cloneDetectionCacheValue(entry.value);
+}
+
+async function writeDetectionCacheEntry(key, value) {
+  rememberDetectionCacheEntry(key, value);
+  const db = await openDetectionCacheDb();
+  if (!db) return;
+
+  await new Promise((resolve, reject) => {
+    const transaction = db.transaction(DETECTION_CACHE_STORE_NAME, "readwrite");
+    transaction.objectStore(DETECTION_CACHE_STORE_NAME).put({
+      key,
+      value,
+      cachedAt: Date.now(),
+    });
+    transaction.oncomplete = resolve;
+    transaction.onerror = () => reject(transaction.error);
+  }).catch(() => {});
+
+  void pruneDetectionCache(db);
+}
+
+function rememberDetectionCacheEntry(key, value) {
+  if (detectionMemoryCache.has(key)) detectionMemoryCache.delete(key);
+  detectionMemoryCache.set(key, cloneDetectionCacheValue(value));
+
+  while (detectionMemoryCache.size > DETECTION_CACHE_MAX_ENTRIES) {
+    detectionMemoryCache.delete(detectionMemoryCache.keys().next().value);
+  }
+}
+
+function cloneDetectionCacheValue(value) {
+  if (typeof structuredClone === "function") return structuredClone(value);
+  return JSON.parse(JSON.stringify(value));
+}
+
+async function pruneDetectionCache(db) {
+  const entryCount = await new Promise((resolve) => {
+    const transaction = db.transaction(DETECTION_CACHE_STORE_NAME, "readonly");
+    const request = transaction.objectStore(DETECTION_CACHE_STORE_NAME).count();
+    request.onsuccess = () => resolve(request.result || 0);
+    request.onerror = () => resolve(0);
+  });
+  let entriesToDelete = entryCount - DETECTION_CACHE_MAX_ENTRIES;
+  if (entriesToDelete <= 0) return;
+
+  await new Promise((resolve) => {
+    const transaction = db.transaction(DETECTION_CACHE_STORE_NAME, "readwrite");
+    const index = transaction.objectStore(DETECTION_CACHE_STORE_NAME).index(DETECTION_CACHE_INDEX_NAME);
+    const request = index.openCursor();
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor || entriesToDelete <= 0) return;
+      cursor.delete();
+      entriesToDelete -= 1;
+      cursor.continue();
+    };
+    transaction.oncomplete = resolve;
+    transaction.onerror = resolve;
+  });
+}
+
+async function createDetectionCacheKey(file, kind, settings) {
+  const fingerprint = await getDetectionFileFingerprint(file);
+  return JSON.stringify({
+    version: DETECTION_CACHE_VERSION,
+    kind,
+    fingerprint,
+    settings,
+  });
+}
+
+function getDetectionFileFingerprint(file) {
+  let fingerprintPromise = detectionFileFingerprintPromises.get(file);
+  if (!fingerprintPromise) {
+    fingerprintPromise = calculateDetectionFileFingerprint(file);
+    detectionFileFingerprintPromises.set(file, fingerprintPromise);
+  }
+  return fingerprintPromise;
+}
+
+async function calculateDetectionFileFingerprint(file) {
+  const metadata = `${file.size}:${file.lastModified || 0}:${file.type || "unknown"}`;
+  if (typeof crypto === "undefined" || !crypto.subtle || typeof file.arrayBuffer !== "function") {
+    return `${metadata}:${getFileDisplayPath(file)}`;
+  }
+
+  try {
+    const content = file.size <= DETECTION_CACHE_FULL_HASH_MAX_BYTES
+      ? new Uint8Array(await file.arrayBuffer())
+      : await readDetectionFileSamples(file);
+    const metadataBytes = new TextEncoder().encode(metadata);
+    const bytes = new Uint8Array(metadataBytes.length + content.length);
+    bytes.set(metadataBytes);
+    bytes.set(content, metadataBytes.length);
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  } catch (error) {
+    return `${metadata}:${getFileDisplayPath(file)}`;
+  }
+}
+
+async function readDetectionFileSamples(file) {
+  const firstEnd = Math.min(file.size, DETECTION_CACHE_SAMPLE_BYTES);
+  const middleStart = Math.max(
+    firstEnd,
+    Math.floor((file.size - DETECTION_CACHE_SAMPLE_BYTES) / 2),
+  );
+  const middleEnd = Math.min(file.size, middleStart + DETECTION_CACHE_SAMPLE_BYTES);
+  const lastStart = Math.max(firstEnd, file.size - DETECTION_CACHE_SAMPLE_BYTES);
+  const [first, middle, last] = await Promise.all([
+    file.slice(0, firstEnd).arrayBuffer(),
+    file.slice(middleStart, middleEnd).arrayBuffer(),
+    file.slice(lastStart).arrayBuffer(),
+  ]);
+  const bytes = new Uint8Array(first.byteLength + middle.byteLength + last.byteLength);
+  bytes.set(new Uint8Array(first));
+  bytes.set(new Uint8Array(middle), first.byteLength);
+  bytes.set(new Uint8Array(last), first.byteLength + middle.byteLength);
+  return bytes;
+}
+
+function throwIfDetectionAborted(signal) {
+  if (!signal?.aborted) return;
+  throw new DOMException("Detection was cancelled", "AbortError");
+}
+
+async function findFacesWithSourceCache(file, kind, options, signal) {
+  throwIfDetectionAborted(signal);
+  const cacheKey = await createDetectionCacheKey(file, kind, options);
+  throwIfDetectionAborted(signal);
+  const cached = await readDetectionCacheEntry(cacheKey);
+  throwIfDetectionAborted(signal);
+
+  if (cached?.kind === kind && Array.isArray(cached.faces)) {
+    return { faces: cached.faces, cacheHit: true, cacheKey };
+  }
+
+  const payload = await findFaces(
+    file,
+    options.facePlugins,
+    true,
+    options.backend,
+    options.threshold,
+    signal,
+  );
+  const faces = Array.isArray(payload.result) ? payload.result : [];
+  await writeDetectionCacheEntry(cacheKey, { kind, faces });
+  return { faces, cacheHit: false, cacheKey };
+}
+
 async function handleFiles(fileList) {
   const files = Array.from(fileList).filter(isProcessableDetectionFile);
   fileInput.value = "";
@@ -724,7 +922,7 @@ async function handleFiles(fileList) {
   detectionUploadResultNodes.push(...nodes.map(({ node }) => node));
   detectionUploadQueue.push(...nodes);
   detectionUploadTotalCount += nodes.length;
-  updateUploadProgressText();
+  updateDetectionProgress();
 
   if (!detectionUploadPromise) {
     detectionUploadPromise = processDetectionUploadQueue(generation);
@@ -738,7 +936,7 @@ async function processDetectionUploadQueue(generation) {
   const abortController = new AbortController();
   detectionUploadAbortController = abortController;
   renderDetectionStartButton();
-  updateUploadProgressText();
+  updateDetectionProgress();
 
   try {
     while (detectionUploadQueue.length > 0) {
@@ -751,12 +949,14 @@ async function processDetectionUploadQueue(generation) {
 
       if (generation !== processingGeneration) break;
       setResultState(node, state);
+      if (node.cacheHit) detectionUploadCacheHitCount += 1;
       detectionUploadProcessedCount += 1;
-      updateUploadProgressText();
+      updateDetectionProgress();
     }
   } finally {
     const processedCount = detectionUploadProcessedCount;
     const totalCount = detectionUploadTotalCount;
+    const cacheHitCount = detectionUploadCacheHitCount;
     let visibleResultCount = 0;
 
     if (generation === processingGeneration) {
@@ -775,6 +975,7 @@ async function processDetectionUploadQueue(generation) {
     detectionUploadResultNodes = [];
     detectionUploadProcessedCount = 0;
     detectionUploadTotalCount = 0;
+    detectionUploadCacheHitCount = 0;
     hideDetectionProgress();
     renderDetectionStartButton();
     if (generation === processingGeneration) {
@@ -782,6 +983,7 @@ async function processDetectionUploadQueue(generation) {
         processedCount,
         totalCount,
         visibleResultCount,
+        cacheHitCount,
       );
       updateResultCount();
     }
@@ -836,6 +1038,11 @@ function releaseDetectionResultNode(node) {
     URL.revokeObjectURL(node.video.src);
   }
 
+  if (node.downloadUrl) {
+    URL.revokeObjectURL(node.downloadUrl);
+    node.downloadUrl = null;
+  }
+
   if (node.video) {
     node.video.removeAttribute("src");
     node.video.load();
@@ -856,13 +1063,16 @@ function releaseDetectionResultNode(node) {
   node.renderVideoOverlay = null;
 }
 
-function createDetectionCompleteText(processedCount, totalCount, visibleResultCount) {
+function createDetectionCompleteText(processedCount, totalCount, visibleResultCount, cacheHitCount) {
   const processedText = `${processedCount} of ${totalCount} file${totalCount === 1 ? "" : "s"} scanned`;
   const resultText = hasSearchableTargets()
     ? `${visibleResultCount} target match${visibleResultCount === 1 ? "" : "es"}`
     : `${visibleResultCount} with visible face${visibleResultCount === 1 ? "" : "s"}`;
+  const cacheText = cacheHitCount > 0
+    ? ` · ${cacheHitCount} from cache`
+    : "";
 
-  return `${processedText} · ${resultText}`;
+  return `${processedText} · ${resultText}${cacheText}`;
 }
 
 function requestCurrentDetectionSourceRefresh() {
@@ -953,10 +1163,14 @@ async function replaceDetectionResults(files) {
 }
 
 function releaseDetectionResultMedia() {
-  results.querySelectorAll("video").forEach((video) => {
-    if (video.src.startsWith("blob:")) {
-      URL.revokeObjectURL(video.src);
+  results.querySelectorAll(".result").forEach((article) => {
+    if (article.fdxResultNode) {
+      releaseDetectionResultNode(article.fdxResultNode);
+      return;
     }
+
+    const video = article.querySelector("video");
+    if (video?.src?.startsWith("blob:")) URL.revokeObjectURL(video.src);
   });
 }
 
@@ -977,6 +1191,7 @@ async function cancelDetectionUpload() {
   detectionUploadResultNodes = [];
   detectionUploadProcessedCount = 0;
   detectionUploadTotalCount = 0;
+  detectionUploadCacheHitCount = 0;
   hideDetectionProgress();
   renderDetectionStartButton();
 }
@@ -1000,24 +1215,23 @@ async function stopDetectionUpload() {
   }
 }
 
-function updateUploadProgressText() {
+function updateDetectionProgress() {
   const total = detectionUploadTotalCount;
   const processed = Math.min(detectionUploadProcessedCount, total);
-  const label = `Processing ${processed} of ${total}`;
 
   batchProgress.hidden = true;
   resultCount.textContent = "Detection in progress";
   detectionProgress.hidden = false;
   detectionProgressBar.max = total || 1;
   detectionProgressBar.value = processed;
-  detectionProgressText.textContent = label;
+  detectionProgressText.textContent = `${processed} of ${total} images processed`;
 }
 
 function hideDetectionProgress() {
   detectionProgress.hidden = true;
   detectionProgressBar.max = 1;
   detectionProgressBar.value = 0;
-  detectionProgressText.textContent = "Processing 0 of 0";
+  detectionProgressText.textContent = "0 of 0 images processed";
 }
 
 function createResultNode(file) {
@@ -1027,6 +1241,7 @@ function createResultNode(file) {
   const summary = fragment.querySelector(".summary");
   const imageStage = fragment.querySelector(".imageStage");
   const canvas = fragment.querySelector(".imageCanvas");
+  const downloadButton = fragment.querySelector(".resultDownload");
   const videoStage = fragment.querySelector(".videoStage");
   const video = fragment.querySelector("video");
   const videoOverlay = fragment.querySelector(".videoOverlay");
@@ -1036,15 +1251,23 @@ function createResultNode(file) {
   summary.textContent = "Queued";
   article.dataset.resultState = "queued";
   article.dataset.kind = file.type.startsWith("video/") ? "video" : "image";
+  article.tabIndex = 0;
+  article.setAttribute("aria-label", `Detection result for ${displayPath}`);
+  article.setAttribute("aria-keyshortcuts", "ArrowLeft ArrowRight ArrowUp ArrowDown");
 
   if (!file.type.startsWith("video/")) {
-    canvas.tabIndex = 0;
+    const downloadUrl = URL.createObjectURL(file);
+    downloadButton.href = downloadUrl;
+    downloadButton.download = getDownloadFileName(displayPath, file);
+    downloadButton.hidden = false;
+    downloadButton.setAttribute("aria-label", `Download ${displayPath}`);
+    canvas.tabIndex = -1;
     canvas.setAttribute("role", "button");
     canvas.setAttribute("aria-label", `Open ${displayPath} image preview`);
     canvas.addEventListener("click", () => {
       openResultImagePreview(canvas, displayPath);
     });
-    canvas.addEventListener("keydown", (event) => {
+    article.addEventListener("keydown", (event) => {
       if (event.key !== "Enter" && event.key !== " ") return;
       event.preventDefault();
       openResultImagePreview(canvas, displayPath);
@@ -1056,15 +1279,28 @@ function createResultNode(file) {
     summary,
     imageStage,
     canvas,
+    downloadButton,
     videoStage,
     video,
     videoOverlay,
     imageAnalysis: null,
     videoAnalysis: null,
     renderVideoOverlay: null,
+    cacheHit: false,
+    displayPath,
+    downloadUrl: file.type.startsWith("video/") ? null : downloadButton.href,
   };
   article.fdxResultNode = node;
   return node;
+}
+
+function getDownloadFileName(displayPath, file) {
+  const sourceName = String(displayPath || file.name || "photo");
+  const baseName = sourceName.split(/[\\/]/).pop() || "photo";
+  if (/\.[a-z0-9]{1,8}$/i.test(baseName)) return baseName;
+
+  const extension = String(file.type || "image/jpeg").split("/")[1]?.split("+")[0] || "jpeg";
+  return `${baseName}.${extension === "jpeg" ? "jpg" : extension}`;
 }
 
 function openResultImagePreview(sourceCanvas, label) {
@@ -1094,9 +1330,66 @@ function closeResultImagePreview() {
   document.body.classList.remove("modalOpen");
 
   if (resultImagePreviewOpener?.isConnected) {
-    resultImagePreviewOpener.focus({ preventScroll: true });
+    const resultArticle = resultImagePreviewOpener.closest(".result");
+    (resultArticle || resultImagePreviewOpener).focus({ preventScroll: true });
   }
   resultImagePreviewOpener = null;
+}
+
+function navigateResultImagePreview(direction) {
+  const imageNodes = getVisibleDetectionResultNodes()
+    .filter((node) => node.article.dataset.kind === "image" && node.canvas.width > 0);
+  if (imageNodes.length < 2) return;
+
+  const currentIndex = imageNodes.findIndex((node) => node.canvas === resultImagePreviewOpener);
+  const nextIndex = currentIndex < 0
+    ? direction < 0 ? imageNodes.length - 1 : 0
+    : (currentIndex + direction + imageNodes.length) % imageNodes.length;
+  const nextNode = imageNodes[nextIndex];
+  openResultImagePreview(nextNode.canvas, nextNode.displayPath);
+}
+
+function handleDetectionResultsKeydown(event) {
+  const article = event.target.closest?.(".result");
+  if (!article || event.target !== article || !event.key.startsWith("Arrow")) return;
+  navigateGridWithArrowKey(event, results, article, ".result:not([hidden])");
+}
+
+function handleTargetFacesKeydown(event) {
+  const article = event.target.closest?.(".faceCard");
+  if (!article || event.target !== article || !event.key.startsWith("Arrow")) return;
+  navigateGridWithArrowKey(event, facesGrid, article, ".faceCard:not([hidden])");
+}
+
+function navigateGridWithArrowKey(event, container, currentItem, selector) {
+  const items = Array.from(container.querySelectorAll(selector));
+  const currentIndex = items.indexOf(currentItem);
+  if (currentIndex < 0 || items.length < 2) return;
+
+  const columns = getGridColumnCount(container);
+  const offsets = {
+    ArrowLeft: -1,
+    ArrowRight: 1,
+    ArrowUp: -columns,
+    ArrowDown: columns,
+  };
+  const nextIndex = currentIndex + offsets[event.key];
+  if (nextIndex < 0 || nextIndex >= items.length) return;
+
+  event.preventDefault();
+  items[nextIndex].focus({ preventScroll: true });
+  items[nextIndex].scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
+function getGridColumnCount(container) {
+  const columns = window.getComputedStyle(container).gridTemplateColumns;
+  return Math.max(1, columns.split(" ").filter(Boolean).length);
+}
+
+function getVisibleDetectionResultNodes() {
+  return Array.from(results.querySelectorAll(".result:not([hidden])"))
+    .map((article) => article.fdxResultNode)
+    .filter(Boolean);
 }
 
 async function detectFile(file, node, signal) {
@@ -1114,49 +1407,45 @@ async function detectFile(file, node, signal) {
 
   try {
     const needsMatching = hasSearchableTargets();
-    const payload = needsMatching
-      ? await findFaces(file, FACE_MATCH_PLUGINS, true, BACKEND_FAST, getApiThreshold(), signal)
-      : await findFaces(file, FACE_DETECTION_PLUGINS, true, BACKEND_FAST, getApiThreshold(), signal);
-    const faces = Array.isArray(payload.result)
-      ? payload.result.map((face) => (needsMatching ? normalizeFastDetectionFace(face) : face))
-      : [];
+    const detection = await findFacesWithSourceCache(file, "image", {
+      backend: BACKEND_ACCURATE,
+      facePlugins: FACE_MATCH_PLUGINS,
+      threshold: getApiThreshold(),
+    }, signal);
+    const faces = detection.faces.map(normalizeAccurateDetectionFace);
     const matchedFaces = needsMatching ? faces.map(addRealtimeTargetMatch) : faces;
+    node.cacheHit = detection.cacheHit;
     node.imageAnalysis = { image, faces: matchedFaces };
     drawImage(node.canvas, image);
     node.summary.classList.remove("error");
-    node.summary.textContent = createDetectionSummary(matchedFaces);
+    node.summary.textContent = `${createDetectionSummary(matchedFaces)}${detection.cacheHit ? " · cached" : ""}`;
     return needsMatching && matchedFaces.some((face) => face.match?.isMatch)
       ? "match"
       : needsMatching ? "no-match" : "detected";
   } catch (error) {
     if (error?.name === "AbortError") return "cancelled";
-    if (hasSearchableTargets()) {
-      try {
-        const payload = await findFaces(
-          file,
-          FACE_DETECTION_PLUGINS,
-          true,
-          BACKEND_FAST,
-          getApiThreshold(),
-          signal,
-        );
-        const faces = Array.isArray(payload.result) ? payload.result : [];
-        node.imageAnalysis = { image, faces };
-        drawImage(node.canvas, image);
-        node.summary.classList.add("error");
-        node.summary.textContent = `${createDetectionSummary(faces)} · target matching unavailable`;
-        return "error";
-      } catch (fallbackError) {
-        if (fallbackError?.name === "AbortError") return "cancelled";
-        node.summary.classList.add("error");
-        node.summary.textContent = fallbackError.message;
-        return "error";
-      }
+    try {
+      const detection = await findFacesWithSourceCache(file, "image", {
+        backend: BACKEND_ACCURATE,
+        facePlugins: FACE_DETECTION_PLUGINS,
+        threshold: getApiThreshold(),
+      }, signal);
+      const faces = detection.faces;
+      node.cacheHit = detection.cacheHit;
+      node.imageAnalysis = { image, faces };
+      drawImage(node.canvas, image);
+      node.summary.classList.add("error");
+      const unavailableText = hasSearchableTargets()
+        ? "target matching unavailable"
+        : "face embeddings unavailable";
+      node.summary.textContent = `${createDetectionSummary(faces)} · ${unavailableText}${detection.cacheHit ? " · cached" : ""}`;
+      return "error";
+    } catch (fallbackError) {
+      if (fallbackError?.name === "AbortError") return "cancelled";
+      node.summary.classList.add("error");
+      node.summary.textContent = fallbackError.message;
+      return "error";
     }
-
-    node.summary.classList.add("error");
-    node.summary.textContent = error.message;
-    return "error";
   }
 }
 
@@ -1167,13 +1456,24 @@ async function addCandidateEmbeddings(faces, image, sourceName) {
   for (const candidate of candidates) {
     try {
       const cropFile = await createFaceCandidateFile(image, candidate.face, sourceName, candidate.rank);
-      const payload = await findFaces(cropFile, FACE_MATCH_PLUGINS, true, BACKEND_ACCURATE);
+      const payload = await findFaces(
+        cropFile,
+        FACE_MATCH_PLUGINS,
+        true,
+        BACKEND_ACCURATE,
+        getApiThreshold(),
+        undefined,
+        { inputMode: "cropped" },
+      );
       const cropFaces = Array.isArray(payload.result) ? payload.result : [];
       const embeddedFace = selectBestEmbeddedFace(cropFaces);
 
       if (Array.isArray(embeddedFace?.embedding)) {
         candidate.face.accurateEmbedding = embeddedFace.embedding;
         candidate.face.embedding = embeddedFace.embedding;
+        candidate.face.embeddingNorm = Number.isFinite(Number(embeddedFace.embedding_norm))
+          ? Number(embeddedFace.embedding_norm)
+          : null;
       }
 
       diagnostics.push({
@@ -1264,7 +1564,7 @@ async function createFaceCandidateFile(image, face, sourceName, rank) {
   );
 
   const baseName = sourceName.replace(/\.[^.]+$/, "") || "face";
-  return canvasToJpegFile(canvas, `${baseName}-candidate-${rank + 1}.jpg`, 0.92);
+  return canvasToPngFile(canvas, `${baseName}-candidate-${rank + 1}.png`);
 }
 
 function getPaddedFaceBox(face, image) {
@@ -1311,13 +1611,20 @@ async function findFaces(
   file,
   facePlugins,
   allowNoFaces = false,
-  backend = BACKEND_FAST,
+  backend = BACKEND_ACCURATE,
   threshold = getApiThreshold(),
   signal,
+  requestOptions = {},
 ) {
   const data = new FormData();
   data.append("file", file, file.name);
-  const url = `${getFindFacesPath(backend)}?face_plugins=${encodeURIComponent(facePlugins)}&limit=0&det_prob_threshold=${threshold}`;
+  const query = new URLSearchParams({
+    face_plugins: facePlugins,
+    limit: "0",
+    det_prob_threshold: String(threshold),
+  });
+  if (requestOptions.inputMode) query.set("input_mode", requestOptions.inputMode);
+  const url = `${getFindFacesPath(backend)}?${query}`;
   const { response, payload } = await fetchDetectorJson(url, { method: "POST", body: data, signal });
 
   if (!response.ok) {
@@ -1372,6 +1679,29 @@ async function detectVideo(file, node, generation, signal) {
     node.videoOverlay.width = frameCanvas.width;
     node.videoOverlay.height = frameCanvas.height;
 
+    const cacheKey = await createDetectionCacheKey(file, "video", {
+      backend: BACKEND_ACCURATE,
+      facePlugins: FACE_MATCH_PLUGINS,
+      threshold: getApiThreshold(),
+      frameInterval: sampleInterval,
+      maxSide: VIDEO_MAX_SIDE,
+      trackMinIou: TRACK_MIN_IOU,
+      trackMinEmbeddingSimilarity: TRACK_MIN_EMBEDDING_SIMILARITY,
+    });
+    throwIfDetectionAborted(signal);
+    const cached = await readDetectionCacheEntry(cacheKey);
+    throwIfDetectionAborted(signal);
+    if (isUsableCachedVideoAnalysis(cached, sampleInterval)) {
+      node.cacheHit = true;
+      return installCompletedVideoAnalysis(
+        node,
+        cached.analysis.playbackSamples,
+        cached.analysis.confirmedTracks,
+        cached.analysis.sampleInterval,
+        true,
+      );
+    }
+
     for (let index = 0; index < timestamps.length; index += 1) {
       if (generation !== processingGeneration) return "cancelled";
 
@@ -1387,7 +1717,7 @@ async function detectVideo(file, node, generation, signal) {
           frameFile,
           useEmbeddings ? FACE_MATCH_PLUGINS : FACE_DETECTION_PLUGINS,
           true,
-          BACKEND_FAST,
+          BACKEND_ACCURATE,
           getApiThreshold(),
           signal,
         );
@@ -1399,56 +1729,46 @@ async function detectVideo(file, node, generation, signal) {
           frameFile,
           FACE_DETECTION_PLUGINS,
           true,
-          BACKEND_FAST,
+          BACKEND_ACCURATE,
           getApiThreshold(),
           signal,
         );
       }
 
       const detectedFaces = Array.isArray(payload.result)
-        ? payload.result.map((face) => (useEmbeddings ? normalizeFastDetectionFace(face) : face))
+        ? payload.result.map((face) => (useEmbeddings ? normalizeAccurateDetectionFace(face) : face))
         : [];
-      const faces = useEmbeddings ? detectedFaces.map(addRealtimeTargetMatch) : detectedFaces;
       nextTrackId = assignFaceTracks(
-        faces,
+        detectedFaces,
         tracks,
         timestamp,
         sampleInterval,
         nextTrackId,
       );
+      const faces = useEmbeddings ? detectedFaces.map(addRealtimeTargetMatch) : detectedFaces;
       samples.push({ timestamp, faces });
     }
 
-    if (generation !== processingGeneration) return;
+    if (generation !== processingGeneration) return "cancelled";
 
     const { confirmedTracks, playbackSamples } = createConfirmedVideoAnalysis(samples, tracks);
-    playbackSamples.forEach((sample) => {
-      sample.faces.forEach(refreshFaceTargetMatch);
+    const cacheableAnalysis = createCacheableVideoAnalysis(
+      playbackSamples,
+      confirmedTracks,
+      sampleInterval,
+      useEmbeddings,
+    );
+    await writeDetectionCacheEntry(cacheKey, {
+      kind: "video",
+      analysis: cacheableAnalysis,
     });
-    refreshTrackTargetLabels(confirmedTracks, playbackSamples);
-    await waitForVideoMetadata(node.video);
-    node.video.controls = true;
-    node.video.currentTime = 0;
-    node.renderVideoOverlay = installVideoOverlayPlayback(
-      node.video,
-      node.videoOverlay,
-      playbackSamples,
-      sampleInterval,
-    );
-    node.videoAnalysis = {
+    return installCompletedVideoAnalysis(
+      node,
       playbackSamples,
       confirmedTracks,
       sampleInterval,
-    };
-    node.summary.classList.remove("error");
-    node.summary.textContent = createVideoSummary(
-      playbackSamples,
-      confirmedTracks,
-      sampleInterval,
+      false,
     );
-    return confirmedTracks.some((track) => track.targetId)
-      ? "match"
-      : hasSearchableTargets() ? "no-match" : "detected";
   } catch (error) {
     if (error?.name === "AbortError") return "cancelled";
     node.video.controls = true;
@@ -1460,6 +1780,79 @@ async function detectVideo(file, node, generation, signal) {
     decoder.removeAttribute("src");
     decoder.load();
   }
+}
+
+function isUsableCachedVideoAnalysis(cached, sampleInterval) {
+  return cached?.kind === "video"
+    && Array.isArray(cached.analysis?.playbackSamples)
+    && Array.isArray(cached.analysis?.confirmedTracks)
+    && Number(cached.analysis?.sampleInterval) === Number(sampleInterval)
+    && (!hasSearchableTargets() || cached.analysis?.hasEmbeddings !== false);
+}
+
+function createCacheableVideoAnalysis(playbackSamples, confirmedTracks, sampleInterval, hasEmbeddings) {
+  return {
+    sampleInterval,
+    hasEmbeddings,
+    playbackSamples: playbackSamples.map((sample) => ({
+      timestamp: sample.timestamp,
+      faces: sample.faces.map(createCacheableDetectedFace),
+    })),
+    confirmedTracks: confirmedTracks.map((track) => ({
+      ...track,
+      name: null,
+      targetId: null,
+      box: track.box ? { ...track.box } : null,
+      embedding: Array.isArray(track.embedding) ? [...track.embedding] : null,
+    })),
+  };
+}
+
+function createCacheableDetectedFace(face) {
+  const cachedFace = {
+    ...face,
+    box: face.box ? { ...face.box } : face.box,
+    track: face.track ? { ...face.track } : face.track,
+  };
+  delete cachedFace.match;
+  delete cachedFace.fastMatch;
+  return cachedFace;
+}
+
+async function installCompletedVideoAnalysis(
+  node,
+  playbackSamples,
+  confirmedTracks,
+  sampleInterval,
+  cacheHit,
+) {
+  playbackSamples.forEach((sample) => {
+    sample.faces.forEach(refreshFaceTargetMatch);
+  });
+  refreshTrackTargetLabels(confirmedTracks, playbackSamples);
+  await waitForVideoMetadata(node.video);
+  node.video.controls = true;
+  node.video.currentTime = 0;
+  node.renderVideoOverlay = installVideoOverlayPlayback(
+    node.video,
+    node.videoOverlay,
+    playbackSamples,
+    sampleInterval,
+  );
+  node.videoAnalysis = {
+    playbackSamples,
+    confirmedTracks,
+    sampleInterval,
+  };
+  node.summary.classList.remove("error");
+  node.summary.textContent = `${createVideoSummary(
+    playbackSamples,
+    confirmedTracks,
+    sampleInterval,
+  )}${cacheHit ? " · cached" : ""}`;
+  return confirmedTracks.some((track) => track.targetId)
+    ? "match"
+    : hasSearchableTargets() ? "no-match" : "detected";
 }
 
 function waitForVideoMetadata(video) {
@@ -1596,6 +1989,7 @@ async function handleTargetFiles(fileList) {
 async function addTargetFaceFile(file, options = {}) {
   const {
     singleFace = false,
+    croppedFace = false,
     sourceName = file.name,
     defaultName = getDefaultTargetName(sourceName),
   } = options;
@@ -1603,12 +1997,20 @@ async function addTargetFaceFile(file, options = {}) {
   const baseName = defaultName || getDefaultTargetName(file.name);
 
   try {
-    const fastPayload = await findFaces(file, FACE_MATCH_PLUGINS, true, BACKEND_FAST, TARGET_DETECTION_THRESHOLD);
-    const fastFaces = Array.isArray(fastPayload.result)
-      ? fastPayload.result.map(normalizeFastDetectionFace)
+    const accuratePayload = await findFaces(
+      file,
+      FACE_MATCH_PLUGINS,
+      true,
+      BACKEND_ACCURATE,
+      croppedFace ? CROPPED_TARGET_DETECTION_THRESHOLD : TARGET_DETECTION_THRESHOLD,
+      undefined,
+      croppedFace ? { inputMode: "cropped" } : {},
+    );
+    const accurateFaces = Array.isArray(accuratePayload.result)
+      ? accuratePayload.result.map(normalizeAccurateDetectionFace)
       : [];
-    const selectedFaces = singleFace ? selectPrimaryTargetFace(fastFaces, image) : fastFaces;
-    const entries = selectedFaces
+    const selectedFaces = singleFace ? selectPrimaryTargetFace(accurateFaces, image) : accurateFaces;
+    const candidateEntries = selectedFaces
       .map((face, index) => createFaceEntry(
         file,
         image,
@@ -1616,12 +2018,16 @@ async function addTargetFaceFile(file, options = {}) {
         index,
         getEntryName(baseName, index, selectedFaces.length),
         sourceName,
-        face,
       ))
-      .filter((entry) => Array.isArray(entry?.fastEmbedding) || Array.isArray(entry?.accurateEmbedding));
+      .filter(Boolean);
+    const entries = candidateEntries
+      .filter((entry) => Array.isArray(entry.fastEmbedding) || Array.isArray(entry.accurateEmbedding));
 
     if (entries.length === 0) {
-      throw new Error(fastFaces.length > 0 ? "No searchable face found" : "No face found");
+      throw new Error(
+        candidateEntries[0]?.status
+        || (accurateFaces.length > 0 ? "No searchable face found" : "No face found"),
+      );
     }
 
     targetFaces.unshift(...entries);
@@ -1826,7 +2232,9 @@ function createTargetDrawSelection(start, end) {
 }
 
 function isUsableTargetSelection(selection) {
-  return selection && selection.width >= 16 && selection.height >= 16;
+  return selection
+    && selection.width >= MIN_TARGET_SELECTION_SIZE_PX
+    && selection.height >= MIN_TARGET_SELECTION_SIZE_PX;
 }
 
 async function addTargetImageFace() {
@@ -1879,6 +2287,7 @@ async function addDrawnTargetFace() {
     const cropFile = await createTargetSelectionFile(image, cropBox, file.name);
     const entries = await addTargetFaceFile(cropFile, {
       singleFace: true,
+      croppedFace: true,
       sourceName: file.name,
       defaultName: getDefaultTargetName(file.name),
     });
@@ -1920,17 +2329,20 @@ function getTargetDrawImageBox({ image, selection }) {
 }
 
 function createTargetSelectionFile(image, box, originalName) {
+  const paddedBox = getPaddedTargetSelectionBox(image, box);
   const canvas = document.createElement("canvas");
-  const width = Math.max(1, Math.min(image.naturalWidth - box.xMin, box.width));
-  const height = Math.max(1, Math.min(image.naturalHeight - box.yMin, box.height));
+  const width = paddedBox.width;
+  const height = paddedBox.height;
   const context = canvas.getContext("2d");
 
   canvas.width = width;
   canvas.height = height;
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
   context.drawImage(
     image,
-    box.xMin,
-    box.yMin,
+    paddedBox.xMin,
+    paddedBox.yMin,
     width,
     height,
     0,
@@ -1939,7 +2351,16 @@ function createTargetSelectionFile(image, box, originalName) {
     height,
   );
 
-  return canvasToJpegFile(canvas, `${getDefaultTargetName(originalName)}-drawn-face.jpg`, 0.92);
+  return canvasToPngFile(canvas, `${getDefaultTargetName(originalName)}-drawn-face.png`);
+}
+
+function getPaddedTargetSelectionBox(image, box) {
+  const padding = Math.round(Math.max(box.width, box.height) * TARGET_CROP_PADDING);
+  const xMin = clamp(Math.floor(box.xMin - padding), 0, image.naturalWidth - 1);
+  const yMin = clamp(Math.floor(box.yMin - padding), 0, image.naturalHeight - 1);
+  const xMax = clamp(Math.ceil(box.xMin + box.width + padding), xMin + 1, image.naturalWidth);
+  const yMax = clamp(Math.ceil(box.yMin + box.height + padding), yMin + 1, image.naturalHeight);
+  return { xMin, yMin, width: xMax - xMin, height: yMax - yMin };
 }
 
 function canvasToJpegFile(canvas, fileName, quality = 0.9) {
@@ -1951,6 +2372,18 @@ function canvasToJpegFile(canvas, fileName, quality = 0.9) {
       }
       resolve(new File([blob], fileName, { type: "image/jpeg" }));
     }, "image/jpeg", quality);
+  });
+}
+
+function canvasToPngFile(canvas, fileName) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        reject(new Error("Could not encode selected face"));
+        return;
+      }
+      resolve(new File([blob], fileName, { type: "image/png" }));
+    }, "image/png");
   });
 }
 
@@ -2089,6 +2522,7 @@ async function addCurrentFaceCapture() {
     faceCaptureStatus.textContent = searchableCount > 0
       ? `${searchableCount} target face${searchableCount === 1 ? "" : "s"} captured`
       : entries[0]?.status || "No searchable face captured";
+    captureFaceButton.textContent = "Done – Press to Continue";
     retakeFaceCaptureButton.disabled = latestFaceCaptureIds.length === 0;
     if (searchableCount > 0) {
       requestCurrentDetectionSourceRefresh();
@@ -2119,6 +2553,7 @@ function retakeLatestFaceCapture() {
   }
 
   latestFaceCaptureIds = [];
+  captureFaceButton.textContent = "Capture face";
   retakeFaceCaptureButton.disabled = true;
 
   if (removedTargetIds.size > 0) {
@@ -2170,20 +2605,26 @@ function loadImage(file) {
   });
 }
 
-function createFaceEntry(file, image, face, index, name, sourceName = file.name, fastFace = null) {
+function createFaceEntry(file, image, face, index, name, sourceName = file.name) {
   const box = normalizeBox(face.box, image.naturalWidth, image.naturalHeight);
   if (!box) return null;
 
   const preview = createFacePreview(image, box);
   const probability = Number(face.box?.probability || 0);
-  const accurateEmbedding = Array.isArray(face.accurateEmbedding)
-    ? face.accurateEmbedding
-    : Array.isArray(face.embedding) ? face.embedding : null;
-  const fastEmbedding = getFaceFastEmbedding(fastFace);
-  const searchableEmbedding = accurateEmbedding || fastEmbedding;
-  const status = accurateEmbedding && fastEmbedding
-    ? "Ready"
-    : fastEmbedding ? "Ready" : accurateEmbedding ? "Ready · accurate only" : "No embedding";
+  const matchQuality = getFaceMatchQuality(face);
+  const accurateEmbedding = matchQuality.isMatchable ? getFaceAccurateEmbedding(face) : null;
+  const fastEmbedding = null;
+  const searchableEmbedding = accurateEmbedding;
+  let status = "No embedding";
+  if (!matchQuality.isMatchable) {
+    status = matchQuality.quality.reason === "face too small"
+      ? `Face too small · ${matchQuality.quality.width} x ${matchQuality.quality.height}px`
+      : `Not enrolled · ${matchQuality.quality.reason}`;
+  } else if (accurateEmbedding && matchQuality.quality.level === "low") {
+    status = "Ready · AdaFace IR101 · low-resolution";
+  } else if (accurateEmbedding) {
+    status = "Ready · AdaFace IR101";
+  }
 
   return {
     id: `${Date.now()}-${file.name}-${index}`,
@@ -2196,7 +2637,11 @@ function createFaceEntry(file, image, face, index, name, sourceName = file.name,
     preview,
     embedding: searchableEmbedding,
     accurateEmbedding,
+    embeddingNorm: Number.isFinite(Number(face?.embeddingNorm ?? face?.embedding_norm))
+      ? Number(face.embeddingNorm ?? face.embedding_norm)
+      : null,
     fastEmbedding,
+    quality: matchQuality.quality,
     status,
   };
 }
@@ -2253,6 +2698,21 @@ function normalizeFastDetectionFace(face) {
     fastEmbedding,
     accurateEmbedding: null,
     embedding: null,
+  };
+}
+
+function normalizeAccurateDetectionFace(face) {
+  const accurateEmbedding = Array.isArray(face?.accurateEmbedding)
+    ? face.accurateEmbedding
+    : Array.isArray(face?.embedding) ? face.embedding : null;
+  return {
+    ...face,
+    accurateEmbedding,
+    embeddingNorm: Number.isFinite(Number(face?.embedding_norm))
+      ? Number(face.embedding_norm)
+      : null,
+    fastEmbedding: null,
+    embedding: accurateEmbedding,
   };
 }
 
@@ -2345,6 +2805,7 @@ function renderTargetFaces() {
       face.name = nameInput.value.trim() || getDefaultTargetName(face.source);
       saveTargetFaces();
     });
+    nameInput.addEventListener("change", () => refreshCachedTargetMatches());
     deleteButton.setAttribute("aria-label", `Delete ${getTargetLabel(face, index)}`);
     deleteButton.addEventListener("click", () => {
       deleteTargetFace(face.id);
@@ -2352,6 +2813,9 @@ function renderTargetFaces() {
     confidence.textContent = hasTargetEmbedding(face) ? face.status : face.status || "n/a";
     source.textContent = face.source;
     article.dataset.faceId = face.id;
+    article.tabIndex = 0;
+    article.setAttribute("aria-label", `${getTargetLabel(face, index)} from ${face.source}`);
+    article.setAttribute("aria-keyshortcuts", "ArrowLeft ArrowRight ArrowUp ArrowDown");
     facesGrid.append(article);
   });
 
@@ -2504,12 +2968,17 @@ function loadStoredTargetFaces() {
 function normalizeStoredTargetFace(face) {
   const accurateEmbedding = Array.isArray(face.accurateEmbedding) ? face.accurateEmbedding : null;
   const legacyEmbedding = Array.isArray(face.embedding) ? face.embedding : null;
-  const fastEmbedding = Array.isArray(face.fastEmbedding) ? face.fastEmbedding : legacyEmbedding;
+  const fastEmbedding = Array.isArray(face.fastEmbedding)
+    ? face.fastEmbedding
+    : accurateEmbedding ? null : legacyEmbedding;
   const searchableEmbedding = accurateEmbedding || fastEmbedding;
   return {
     ...face,
     embedding: searchableEmbedding,
     accurateEmbedding,
+    embeddingNorm: Number.isFinite(Number(face.embeddingNorm ?? face.embedding_norm))
+      ? Number(face.embeddingNorm ?? face.embedding_norm)
+      : null,
     fastEmbedding,
     status: face.status || (searchableEmbedding ? "Ready" : "No embedding"),
   };
@@ -2531,17 +3000,18 @@ function addBestTargetMatch(face) {
   const bestMatch = getBestTargetMatchForEmbedding(
     getFaceAccurateEmbedding(face),
     getTargetAccurateEmbedding,
-    accurateSimilarityCoefficients,
   );
   if (!bestMatch) return face;
   const quality = getFaceMatchQuality(face);
+  const decisionThresholds = getMatchDecisionThresholds(quality.quality);
   return {
     ...face,
     match: {
       ...bestMatch,
       ...quality,
+      ...decisionThresholds,
       isCandidate: quality.isMatchable && isCandidateMatch(bestMatch),
-      isMatch: quality.isMatchable && isAcceptedMatch(bestMatch),
+      isMatch: quality.isMatchable && isAcceptedMatch(bestMatch, quality.quality),
     },
   };
 }
@@ -2550,49 +3020,80 @@ function addBestFastTargetMatch(face) {
   const bestMatch = getBestTargetMatchForEmbedding(
     getFaceFastEmbedding(face),
     getTargetFastEmbedding,
-    fastSimilarityCoefficients,
   );
   if (!bestMatch) return face;
   const quality = getFaceMatchQuality(face);
+  const decisionThresholds = getMatchDecisionThresholds(quality.quality);
   return {
     ...face,
     fastMatch: {
       ...bestMatch,
       ...quality,
+      ...decisionThresholds,
       isCandidate: quality.isMatchable && isCandidateMatch(bestMatch),
-      isMatch: quality.isMatchable && isAcceptedMatch(bestMatch),
+      isMatch: quality.isMatchable && isAcceptedMatch(bestMatch, quality.quality),
     },
   };
 }
 
 function isCandidateMatch(match) {
-  return Number.isFinite(match?.similarity) && match.similarity > CANDIDATE_SIMILARITY_THRESHOLD;
+  return Number.isFinite(match?.similarity) && match.similarity >= CANDIDATE_COSINE_THRESHOLD;
 }
 
-function isAcceptedMatch(match) {
+function getMatchDecisionThresholds(quality = {}) {
+  const lowQuality = quality.level === "low";
+  return {
+    matchThreshold: lowQuality ? LOW_QUALITY_MATCH_COSINE_THRESHOLD : MATCH_COSINE_THRESHOLD,
+    marginThreshold: lowQuality ? LOW_QUALITY_MATCH_COSINE_MARGIN : MATCH_COSINE_MARGIN,
+  };
+}
+
+function isAcceptedMatch(match, quality) {
+  const { matchThreshold, marginThreshold } = getMatchDecisionThresholds(quality);
   return Number.isFinite(match?.similarity)
-    && match.similarity > MATCH_SIMILARITY_THRESHOLD
-    && (!Number.isFinite(match.secondSimilarity) || match.similarity - match.secondSimilarity > MATCH_MARGIN_THRESHOLD);
+    && match.similarity >= matchThreshold
+    && (!Number.isFinite(match.secondSimilarity) || match.similarity - match.secondSimilarity >= marginThreshold);
 }
 
 function getFaceMatchQuality(face) {
   const box = face?.box || {};
-  const width = Math.max(0, Number(box.x_max || 0) - Number(box.x_min || 0));
-  const height = Math.max(0, Number(box.y_max || 0) - Number(box.y_min || 0));
+  const preprocessingQuality = face?.quality || {};
+  const detectedWidth = Math.max(0, Number(box.x_max || 0) - Number(box.x_min || 0));
+  const detectedHeight = Math.max(0, Number(box.y_max || 0) - Number(box.y_min || 0));
+  const width = Number.isFinite(Number(preprocessingQuality.source_face_width))
+    ? Number(preprocessingQuality.source_face_width)
+    : detectedWidth;
+  const height = Number.isFinite(Number(preprocessingQuality.source_face_height))
+    ? Number(preprocessingQuality.source_face_height)
+    : detectedHeight;
+  const probability = Number(face?.box?.probability || 0);
   const isLargeEnough = width >= MIN_MATCH_FACE_SIZE_PX && height >= MIN_MATCH_FACE_SIZE_PX;
+  const isGoodSize = width >= GOOD_MATCH_FACE_SIZE_PX && height >= GOOD_MATCH_FACE_SIZE_PX;
+  const hasReliableDetection = probability >= MIN_MATCH_DETECTION_PROBABILITY;
+  const reason = !isLargeEnough
+    ? "face too small"
+    : !hasReliableDetection ? "low detector confidence"
+      : isGoodSize ? "ok" : "low resolution";
 
   return {
-    isMatchable: isLargeEnough,
+    isMatchable: isLargeEnough && hasReliableDetection,
     quality: {
       width: Math.round(width),
       height: Math.round(height),
+      detectionProbability: probability,
+      level: !isLargeEnough ? "too-small" : isGoodSize ? "good" : "low",
       min_size: MIN_MATCH_FACE_SIZE_PX,
-      reason: isLargeEnough ? "ok" : "face too small",
+      good_size: GOOD_MATCH_FACE_SIZE_PX,
+      min_detection_probability: MIN_MATCH_DETECTION_PROBABILITY,
+      reason,
     },
   };
 }
 
 function addRealtimeTargetMatch(face) {
+  const accurateMatchedFace = addBestTargetMatch(face);
+  if (accurateMatchedFace.match) return accurateMatchedFace;
+
   const fastMatchedFace = addBestFastTargetMatch(face);
   if (!fastMatchedFace.fastMatch) return fastMatchedFace;
   return {
@@ -2601,27 +3102,31 @@ function addRealtimeTargetMatch(face) {
   };
 }
 
-function getBestTargetMatchForEmbedding(embedding, getTargetEmbedding, coefficients) {
+function getBestTargetMatchForEmbedding(embedding, getTargetEmbedding) {
   if (!Array.isArray(embedding) || targetFaces.length === 0) return null;
+  const probeEmbedding = normalizeEmbeddingVector(embedding);
+  if (!probeEmbedding) return null;
 
-  const matches = targetFaces
-    .map((target) => {
-      const targetEmbedding = getTargetEmbedding(target);
-      if (!Array.isArray(targetEmbedding)) return null;
-      const distance = euclideanDistance(embedding, targetEmbedding);
+  const matches = createIdentityProfiles(getTargetEmbedding)
+    .map((profile) => {
+      const similarity = getEmbeddingSimilarity(probeEmbedding, profile.embedding);
+      if (!Number.isFinite(similarity)) return null;
       return {
-        target,
-        identityKey: getTargetIdentityKey(target),
-        distance,
-        similarity: distanceToSimilarity(distance, coefficients),
+        target: profile.target,
+        identityKey: profile.identityKey,
+        similarity,
+        distance: Math.sqrt(Math.max(0, 2 - 2 * similarity)),
+        gallerySampleCount: profile.sampleCount,
+        rejectedEnrollmentCount: profile.rejectedCount,
+        metric: "cosine",
       };
     })
     .filter(Boolean)
-    .sort((a, b) => a.distance - b.distance);
+    .sort((a, b) => b.similarity - a.similarity);
   const bestMatch = matches[0] || null;
   if (!bestMatch) return null;
 
-  const secondIdentityMatch = matches.find((match) => match.identityKey !== bestMatch.identityKey) || null;
+  const secondIdentityMatch = matches[1] || null;
   return {
     ...bestMatch,
     secondSimilarity: secondIdentityMatch?.similarity ?? null,
@@ -2630,6 +3135,74 @@ function getBestTargetMatchForEmbedding(embedding, getTargetEmbedding, coefficie
       ? bestMatch.similarity - secondIdentityMatch.similarity
       : null,
   };
+}
+
+function createIdentityProfiles(getTargetEmbedding) {
+  const groups = new Map();
+  targetFaces.forEach((target) => {
+    const embedding = normalizeEmbeddingVector(getTargetEmbedding(target));
+    if (!embedding) return;
+    const identityKey = getTargetIdentityKey(target);
+    const samples = groups.get(identityKey) || [];
+    samples.push({ target, embedding });
+    groups.set(identityKey, samples);
+  });
+
+  return Array.from(groups, ([identityKey, samples]) => createIdentityProfile(identityKey, samples))
+    .filter(Boolean);
+}
+
+function createIdentityProfile(identityKey, samples) {
+  if (samples.length === 0) return null;
+  const medoid = samples
+    .map((sample) => ({
+      ...sample,
+      agreement: samples.length === 1
+        ? 1
+        : samples.reduce((sum, peer) => (
+          peer === sample ? sum : sum + (getEmbeddingSimilarity(sample.embedding, peer.embedding) ?? -1)
+        ), 0) / (samples.length - 1),
+    }))
+    .sort((first, second) => second.agreement - first.agreement)[0];
+  const acceptedSamples = samples.filter((sample) => (
+    sample === medoid
+    || getEmbeddingSimilarity(sample.embedding, medoid.embedding) >= ENROLLMENT_CONSISTENCY_COSINE
+  ));
+  const embedding = averageTargetEmbeddings(acceptedSamples);
+  if (!embedding) return null;
+
+  return {
+    identityKey,
+    target: medoid.target,
+    embedding,
+    sampleCount: acceptedSamples.length,
+    rejectedCount: samples.length - acceptedSamples.length,
+  };
+}
+
+function averageTargetEmbeddings(samples) {
+  if (samples.length === 0) return null;
+  const totals = new Array(samples[0].embedding.length).fill(0);
+  let totalWeight = 0;
+  samples.forEach(({ target, embedding }) => {
+    const featureNorm = Number(target?.embeddingNorm ?? target?.embedding_norm);
+    const weight = Number.isFinite(featureNorm) && featureNorm > 0 ? featureNorm : 1;
+    embedding.forEach((value, index) => {
+      totals[index] += value * weight;
+    });
+    totalWeight += weight;
+  });
+  if (totalWeight <= 0) return null;
+  return normalizeEmbeddingVector(totals.map((value) => value / totalWeight));
+}
+
+function normalizeEmbeddingVector(embedding) {
+  if (!Array.isArray(embedding) || embedding.length === 0) return null;
+  const values = embedding.map(Number);
+  if (values.some((value) => !Number.isFinite(value))) return null;
+  const norm = Math.sqrt(values.reduce((sum, value) => sum + value * value, 0));
+  if (!Number.isFinite(norm) || norm <= 0) return null;
+  return values.map((value) => value / norm);
 }
 
 function getTargetIdentityKey(target) {
@@ -2664,20 +3237,6 @@ function getTargetFastEmbedding(target) {
 
 function hasTargetEmbedding(target) {
   return Array.isArray(getTargetFastEmbedding(target)) || Array.isArray(getTargetAccurateEmbedding(target));
-}
-
-function euclideanDistance(first, second) {
-  if (first.length !== second.length) return Number.POSITIVE_INFINITY;
-  const total = first.reduce((sum, value, index) => {
-    const diff = Number(value) - Number(second[index]);
-    return sum + diff * diff;
-  }, 0);
-  return Math.sqrt(total);
-}
-
-function distanceToSimilarity(distance, coefficients = accurateSimilarityCoefficients) {
-  const [firstCoef, secondCoef] = coefficients;
-  return (Math.tanh((firstCoef - distance) * secondCoef) + 1) / 2;
 }
 
 function createDetectionSummary(faces) {
@@ -2987,7 +3546,7 @@ function setResultState(node, state) {
   if (node.article.isConnected) {
     updateResultCount();
   } else if (uploadInProgress) {
-    updateUploadProgressText();
+    updateDetectionProgress();
   }
 }
 
@@ -3296,7 +3855,7 @@ async function runLiveScanLoop(generation) {
 
   try {
     const blob = await captureScanFrame();
-    const url = `/api/fast/find_faces?face_plugins=${encodeURIComponent(FACE_MATCH_PLUGINS)}&limit=0&det_prob_threshold=${DEFAULT_DETECTION_THRESHOLD}`;
+    const url = `/api/accurate/find_faces?face_plugins=${encodeURIComponent(FACE_MATCH_PLUGINS)}&limit=0&det_prob_threshold=${DEFAULT_DETECTION_THRESHOLD}`;
     const data = new FormData();
     data.append("file", blob, "scan.jpg");
 
@@ -3315,7 +3874,7 @@ async function runLiveScanLoop(generation) {
 
     const faces = noFaceFound || !Array.isArray(payload.result)
       ? []
-      : payload.result.map(normalizeFastDetectionFace);
+      : payload.result.map(normalizeAccurateDetectionFace);
     const matchedFaces = faces.map(addRealtimeTargetMatch);
     const timestamp = performance.now() / 1000;
     liveScanTracks = liveScanTracks.filter(
@@ -3549,7 +4108,6 @@ detectionFolderRestorePromise = restoreStoredDetectionFolderHandle()
   });
 updateResultCount();
 renderTargetFaces();
-loadStatus();
 checkBackend();
 setInterval(checkBackend, 5000);
 window.addEventListener("pagehide", releaseScanCamera);

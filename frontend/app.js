@@ -65,6 +65,18 @@ const CANDIDATE_COSINE_THRESHOLD = 0.40;
 const MATCH_COSINE_MARGIN = 0.10;
 const LOW_QUALITY_MATCH_COSINE_MARGIN = 0.12;
 const ENROLLMENT_CONSISTENCY_COSINE = 0.35;
+const SOURCE_IDENTITY_BOOTSTRAP_COSINE = 0.68;
+const SOURCE_IDENTITY_WEAK_BOOTSTRAP_COSINE = 0.59;
+const SOURCE_IDENTITY_WEAK_CONSENSUS_COSINE = 0.68;
+const SOURCE_IDENTITY_WEAK_MIN_INDEPENDENT_SAMPLES = 3;
+const SOURCE_IDENTITY_BRIDGE_COSINE = 0.65;
+const SOURCE_IDENTITY_SUPPORT_COSINE = 0.58;
+const SOURCE_IDENTITY_MIN_FACE_SIZE_PX = 30;
+const SOURCE_IDENTITY_TRACK_MIN_DETECTION_PROBABILITY = 0.70;
+const SOURCE_IDENTITY_TRACK_MIN_COSINE = 0.10;
+const SOURCE_IDENTITY_TRACK_MAX_CENTER_DISTANCE = 0.08;
+const SOURCE_IDENTITY_TRACK_MAX_SIZE_RATIO = 1.35;
+const SOURCE_IDENTITY_TRACK_MIN_INDEPENDENT_SEEDS = 2;
 const MIN_MATCH_DETECTION_PROBABILITY = 0.80;
 const MIN_MATCH_FACE_SIZE_PX = 40;
 const GOOD_MATCH_FACE_SIZE_PX = 80;
@@ -75,9 +87,10 @@ const DETECTION_FOLDER_DB_NAME = "fdx.detectionFolderHandles";
 const DETECTION_FOLDER_STORE_NAME = "handles";
 const DETECTION_FOLDER_HANDLE_KEY = "current";
 const DETECTION_CACHE_DB_NAME = "fdx.detectionCache";
+const DETECTION_CACHE_DB_VERSION = 2;
 const DETECTION_CACHE_STORE_NAME = "analyses";
 const DETECTION_CACHE_INDEX_NAME = "cachedAt";
-const DETECTION_CACHE_VERSION = 5;
+const DETECTION_CACHE_VERSION = 6;
 const DETECTION_CACHE_MAX_ENTRIES = 200;
 const DETECTION_CACHE_FULL_HASH_MAX_BYTES = 8 * 1024 * 1024;
 const DETECTION_CACHE_SAMPLE_BYTES = 64 * 1024;
@@ -85,10 +98,13 @@ const TARGET_STORAGE_KEY = "fdx.targetFaces.adafaceIr101Ms1mv2.v1";
 const FACE_DETECTION_PLUGINS = "";
 const FACE_MATCH_PLUGINS = "calculator";
 const BACKEND_ACCURATE = "accurate";
-const BACKEND_FAST = "fast";
-const MATCH_CANDIDATE_LIMIT = 12;
-const MATCH_CANDIDATE_PADDING = 0.35;
-const FAST_PREFILTER_SIMILARITY_THRESHOLD = 0.40;
+const EXPECTED_DETECTOR_MODEL_VERSION = "insightface.FaceDetector@retinaface_r50_v1";
+const EXPECTED_CALCULATOR_MODEL_VERSION = "adaface.Calculator@ir101-ms1mv2";
+const DETECTION_MODEL_CACHE_SIGNATURE = [
+  EXPECTED_DETECTOR_MODEL_VERSION,
+  EXPECTED_CALCULATOR_MODEL_VERSION,
+  "cosine-512",
+].join("|");
 const DEFAULT_DETECTION_FPS = 30;
 const CAMERA_IDEAL_FPS = 60;
 const VIDEO_FRAME_INTERVAL_SECONDS = 1 / DEFAULT_DETECTION_FPS;
@@ -124,6 +140,7 @@ let detectionUploadProcessedCount = 0;
 let detectionUploadTotalCount = 0;
 let detectionUploadCacheHitCount = 0;
 let detectionUploadInsertionAnchor = null;
+let detectionUploadFaceSamples = [];
 let detectionResultsHaveRun = false;
 let selectedDownloadInProgress = false;
 let zipCrc32Table = null;
@@ -135,8 +152,10 @@ let targetDrawState = null;
 let resultImagePreviewOpener = null;
 const detectionFileFingerprintPromises = new WeakMap();
 const detectionMemoryCache = new Map();
-const targetEntriesReusingIdentity = new WeakSet();
+let sourceIdentityExpansions = new Map();
+let sourceIdentityExpansionSignature = "";
 let detectionCacheDbPromise = null;
+let detectorModelStatusPromise = null;
 
 pageTabs.forEach((tab) => {
   tab.addEventListener("click", () => {
@@ -150,6 +169,7 @@ window.addEventListener("hashchange", () => {
 
 clearFacesButton.addEventListener("click", () => {
   pendingDetectionSourceRefresh = false;
+  clearSourceIdentityExpansions();
   const removedTargetIds = new Set(targetFaces.map((face) => face.id));
   targetFaces.splice(0, targetFaces.length);
   refreshCachedTargetMatches(removedTargetIds);
@@ -264,13 +284,65 @@ targetDropzone.addEventListener("drop", (event) => {
 
 async function checkBackend() {
   try {
-    const { response } = await fetchDetectorJson("/health");
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const { response, payload } = await fetchDetectorJson("/health");
+    if (!response.ok || payload.ok !== true) throw new Error(`HTTP ${response.status}`);
+    await ensureDetectorModelsReady();
     statusText.textContent = "Detector ready";
     statusDot.classList.add("ready");
   } catch (error) {
-    statusText.textContent = "Detector is starting";
+    statusText.textContent = error?.message || "Detector is starting";
     statusDot.classList.remove("ready");
+  }
+}
+
+function ensureDetectorModelsReady() {
+  if (!detectorModelStatusPromise) {
+    detectorModelStatusPromise = fetchDetectorJson("/status")
+      .then(({ response, payload }) => {
+        if (!response.ok) throw new Error(`Detector status returned HTTP ${response.status}`);
+        validateDetectorModelStatus(payload);
+        return payload;
+      })
+      .catch((error) => {
+        detectorModelStatusPromise = null;
+        throw error;
+      });
+  }
+  return detectorModelStatusPromise;
+}
+
+function validateDetectorModelStatus(payload) {
+  const detectorVersion = payload?.available_plugins?.detector;
+  const calculatorVersion = payload?.available_plugins?.calculator;
+  const embeddingSize = Number(payload?.recognition?.embedding_size);
+  const similarityMetric = String(payload?.similarity_metric || "").toLowerCase();
+
+  if (detectorVersion !== EXPECTED_DETECTOR_MODEL_VERSION) {
+    throw new Error(`Unexpected detector model: ${detectorVersion || "missing"}`);
+  }
+  if (calculatorVersion !== EXPECTED_CALCULATOR_MODEL_VERSION) {
+    throw new Error(`Unexpected face model: ${calculatorVersion || "missing"}`);
+  }
+  if (embeddingSize !== 512 || similarityMetric !== "cosine") {
+    throw new Error("Detector recognition configuration is incompatible");
+  }
+}
+
+function validateDetectorResponseModels(payload, facePlugins) {
+  const detectorVersion = payload?.plugins_versions?.detector;
+  if (detectorVersion !== EXPECTED_DETECTOR_MODEL_VERSION) {
+    throw new Error(`Detection response used an unexpected model: ${detectorVersion || "missing"}`);
+  }
+
+  if (
+    facePlugins.split(",").includes(FACE_MATCH_PLUGINS)
+    && payload?.plugins_versions?.calculator !== EXPECTED_CALCULATOR_MODEL_VERSION
+  ) {
+    throw new Error(
+      `Embedding response used an unexpected model: ${
+        payload?.plugins_versions?.calculator || "missing"
+      }`,
+    );
   }
 }
 
@@ -602,6 +674,7 @@ function showDetectionFolderError(error) {
 }
 
 function setCurrentDetectionSource(source) {
+  clearSourceIdentityExpansions();
   currentDetectionSource = source;
   renderDetectionFolderPath();
 }
@@ -735,12 +808,15 @@ function openDetectionCacheDb() {
   if (detectionCacheDbPromise) return detectionCacheDbPromise;
 
   detectionCacheDbPromise = new Promise((resolve, reject) => {
-    const request = indexedDB.open(DETECTION_CACHE_DB_NAME, 1);
-    request.onupgradeneeded = () => {
+    const request = indexedDB.open(DETECTION_CACHE_DB_NAME, DETECTION_CACHE_DB_VERSION);
+    request.onupgradeneeded = (event) => {
       const database = request.result;
       const store = database.objectStoreNames.contains(DETECTION_CACHE_STORE_NAME)
         ? request.transaction.objectStore(DETECTION_CACHE_STORE_NAME)
         : database.createObjectStore(DETECTION_CACHE_STORE_NAME, { keyPath: "key" });
+      if (event.oldVersion > 0 && event.oldVersion < DETECTION_CACHE_DB_VERSION) {
+        store.clear();
+      }
       if (!store.indexNames.contains(DETECTION_CACHE_INDEX_NAME)) {
         store.createIndex(DETECTION_CACHE_INDEX_NAME, "cachedAt");
       }
@@ -834,6 +910,7 @@ async function createDetectionCacheKey(file, kind, settings) {
   const fingerprint = await getDetectionFileFingerprint(file);
   return JSON.stringify({
     version: DETECTION_CACHE_VERSION,
+    modelSignature: DETECTION_MODEL_CACHE_SIGNATURE,
     kind,
     fingerprint,
     settings,
@@ -897,12 +974,18 @@ function throwIfDetectionAborted(signal) {
 
 async function findFacesWithSourceCache(file, kind, options, signal) {
   throwIfDetectionAborted(signal);
+  await ensureDetectorModelsReady();
+  throwIfDetectionAborted(signal);
   const cacheKey = await createDetectionCacheKey(file, kind, options);
   throwIfDetectionAborted(signal);
   const cached = await readDetectionCacheEntry(cacheKey);
   throwIfDetectionAborted(signal);
 
-  if (cached?.kind === kind && Array.isArray(cached.faces)) {
+  if (
+    cached?.kind === kind
+    && cached.modelSignature === DETECTION_MODEL_CACHE_SIGNATURE
+    && Array.isArray(cached.faces)
+  ) {
     return { faces: cached.faces, cacheHit: true, cacheKey };
   }
 
@@ -916,8 +999,75 @@ async function findFacesWithSourceCache(file, kind, options, signal) {
     options.requestOptions || {},
   );
   const faces = Array.isArray(payload.result) ? payload.result : [];
-  await writeDetectionCacheEntry(cacheKey, { kind, faces });
+  await writeDetectionCacheEntry(cacheKey, {
+    kind,
+    modelSignature: DETECTION_MODEL_CACHE_SIGNATURE,
+    faces,
+  });
   return { faces, cacheHit: false, cacheKey };
+}
+
+function collectDetectionSourceFaceSamples(file, cacheKey, faces, image) {
+  const source = getFileDisplayPath(file);
+  const sequence = getDetectionSourceSequence(source);
+  const imageWidth = Math.max(1, Number(image?.naturalWidth) || 1);
+  const imageHeight = Math.max(1, Number(image?.naturalHeight) || 1);
+
+  faces.forEach((face, index) => {
+    const embedding = normalizeEmbeddingVector(getFaceAccurateEmbedding(face));
+    if (!embedding) return;
+
+    const { quality } = getFaceMatchQuality(face);
+    if (
+      quality.width < SOURCE_IDENTITY_MIN_FACE_SIZE_PX
+      || quality.height < SOURCE_IDENTITY_MIN_FACE_SIZE_PX
+      || quality.detectionProbability < SOURCE_IDENTITY_TRACK_MIN_DETECTION_PROBABILITY
+    ) {
+      return;
+    }
+
+    const box = face?.box || {};
+    const xMin = Number(box.x_min);
+    const yMin = Number(box.y_min);
+    const xMax = Number(box.x_max);
+    const yMax = Number(box.y_max);
+    const hasGeometry = [xMin, yMin, xMax, yMax].every(Number.isFinite)
+      && xMax > xMin
+      && yMax > yMin;
+
+    detectionUploadFaceSamples.push({
+      key: `${cacheKey}:${index}`,
+      sourceKey: cacheKey,
+      source,
+      embedding,
+      embeddingNorm: Number.isFinite(Number(face.embeddingNorm))
+        ? Number(face.embeddingNorm)
+        : null,
+      detectionProbability: quality.detectionProbability,
+      sequenceGroup: sequence?.group || null,
+      sequenceIndex: sequence?.index ?? null,
+      centerX: hasGeometry ? (xMin + xMax) / (2 * imageWidth) : null,
+      centerY: hasGeometry ? (yMin + yMax) / (2 * imageHeight) : null,
+      widthRatio: hasGeometry ? (xMax - xMin) / imageWidth : null,
+      heightRatio: hasGeometry ? (yMax - yMin) / imageHeight : null,
+    });
+  });
+}
+
+function getDetectionSourceSequence(source) {
+  const normalizedSource = String(source || "").replaceAll("\\", "/");
+  const slashIndex = normalizedSource.lastIndexOf("/");
+  const directory = slashIndex >= 0 ? normalizedSource.slice(0, slashIndex + 1) : "";
+  const fileName = slashIndex >= 0 ? normalizedSource.slice(slashIndex + 1) : normalizedSource;
+  const match = fileName.match(/^(.*?)(\d+)(\.[^.]+)$/);
+  if (!match) return null;
+
+  const index = Number(match[2]);
+  if (!Number.isSafeInteger(index)) return null;
+  return {
+    group: `${directory}${match[1]}#${match[3].toLowerCase()}`,
+    index,
+  };
 }
 
 async function handleFiles(fileList) {
@@ -926,6 +1076,9 @@ async function handleFiles(fileList) {
   folderInput.value = "";
   if (files.length === 0) return detectionUploadPromise || Promise.resolve();
 
+  if (!detectionUploadPromise && detectionUploadQueue.length === 0) {
+    detectionUploadFaceSamples = [];
+  }
   const generation = processingGeneration;
   const nodes = files.map((file) => ({ file, node: createResultNode(file) }));
 
@@ -972,9 +1125,18 @@ async function processDetectionUploadQueue(generation) {
     const processedCount = detectionUploadProcessedCount;
     const totalCount = detectionUploadTotalCount;
     const cacheHitCount = detectionUploadCacheHitCount;
+    const completedFaceSamples = detectionUploadFaceSamples;
     let visibleResultCount = 0;
 
     if (generation === processingGeneration) {
+      const expandedIdentityUpdated = updateSourceIdentityExpansions(completedFaceSamples);
+      if (expandedIdentityUpdated) {
+        detectionProgressText.textContent = "Finalizing matches";
+        await rescoreDetectionUploadResultsForSourceExpansion(
+          detectionUploadResultNodes,
+          generation,
+        );
+      }
       visibleResultCount = countPublishedDetectionResults(detectionUploadResultNodes);
       releaseUnpublishedDetectionResultNodes(detectionUploadResultNodes);
       detectionResultsHaveRun = true;
@@ -993,6 +1155,7 @@ async function processDetectionUploadQueue(generation) {
     detectionUploadProcessedCount = 0;
     detectionUploadTotalCount = 0;
     detectionUploadCacheHitCount = 0;
+    detectionUploadFaceSamples = [];
     hideDetectionProgress();
     renderDetectionStartButton();
     if (generation === processingGeneration) {
@@ -1020,7 +1183,7 @@ function removeDetectionUploadInsertionAnchor() {
 
 function publishCompletedDetectionResult(node) {
   if (!shouldShowCompletedDetectionResult(node)) {
-    releaseDetectionResultNode(node);
+    deferUnpublishedDetectionResult(node);
     return false;
   }
 
@@ -1028,6 +1191,119 @@ function publishCompletedDetectionResult(node) {
   results.insertBefore(node.article, detectionUploadInsertionAnchor);
   updateResultCount();
   return true;
+}
+
+function deferUnpublishedDetectionResult(node) {
+  if (
+    hasSearchableTargets()
+    && node.article.dataset.resultState === "no-match"
+  ) {
+    if (node.imageAnalysis) {
+      node.deferredImageFaces = node.imageAnalysis.faces.map(clearFaceTargetMatch);
+    }
+
+    if (node.videoAnalysis) {
+      node.deferredVideoAnalysis = {
+        ...node.videoAnalysis,
+        overlayWidth: node.videoOverlay.width,
+        overlayHeight: node.videoOverlay.height,
+      };
+    }
+  }
+
+  releaseDetectionResultNode(node);
+}
+
+async function rescoreDetectionUploadResultsForSourceExpansion(nodes, generation) {
+  for (const node of nodes) {
+    if (generation !== processingGeneration) return;
+
+    if (node.imageAnalysis) {
+      refreshImageTargetMatches(node);
+      continue;
+    }
+
+    if (node.videoAnalysis) {
+      refreshVideoTargetMatches(node);
+      continue;
+    }
+
+    try {
+      if (Array.isArray(node.deferredImageFaces)) {
+        node.deferredImageFaces.forEach(refreshFaceTargetMatch);
+        if (getResultStateForTargetMatches(node.deferredImageFaces) === "match") {
+          await restoreDeferredImageResult(node);
+        }
+      } else if (node.deferredVideoAnalysis) {
+        const { playbackSamples, confirmedTracks } = node.deferredVideoAnalysis;
+        playbackSamples.forEach((sample) => {
+          sample.faces.forEach(refreshFaceTargetMatch);
+        });
+        refreshTrackTargetLabels(confirmedTracks, playbackSamples);
+        if (confirmedTracks.some((track) => track.targetId)) {
+          await restoreDeferredVideoResult(node);
+        }
+      }
+    } catch (error) {
+      releaseDetectionResultNode(node);
+    }
+  }
+
+  if (generation !== processingGeneration) return;
+  ensureDetectionUploadInsertionAnchor();
+  nodes.forEach((node) => {
+    if (node.article.dataset.resultState !== "match") return;
+    if (!node.imageAnalysis && !node.videoAnalysis) return;
+    results.insertBefore(node.article, detectionUploadInsertionAnchor);
+  });
+  clearDeferredDetectionResultAnalyses(nodes);
+  updateResultCount();
+}
+
+async function restoreDeferredImageResult(node) {
+  const image = await loadImage(node.file);
+  const faces = node.deferredImageFaces;
+  const downloadUrl = URL.createObjectURL(node.file);
+
+  node.released = false;
+  node.downloadUrl = downloadUrl;
+  node.downloadButton.href = downloadUrl;
+  node.imageAnalysis = { image, faces };
+  drawImage(node.canvas, image);
+  node.summary.classList.remove("error");
+  node.summary.textContent = `${createDetectionSummary(faces)}${node.cacheHit ? " · cached" : ""}`;
+  setResultState(node, "match");
+}
+
+async function restoreDeferredVideoResult(node) {
+  const {
+    playbackSamples,
+    confirmedTracks,
+    sampleInterval,
+    overlayWidth,
+    overlayHeight,
+  } = node.deferredVideoAnalysis;
+  const objectUrl = URL.createObjectURL(node.file);
+
+  node.released = false;
+  node.video.src = objectUrl;
+  node.videoOverlay.width = overlayWidth;
+  node.videoOverlay.height = overlayHeight;
+  const state = await installCompletedVideoAnalysis(
+    node,
+    playbackSamples,
+    confirmedTracks,
+    sampleInterval,
+    node.cacheHit,
+  );
+  setResultState(node, state);
+}
+
+function clearDeferredDetectionResultAnalyses(nodes) {
+  nodes.forEach((node) => {
+    node.deferredImageFaces = null;
+    node.deferredVideoAnalysis = null;
+  });
 }
 
 function countPublishedDetectionResults(nodes) {
@@ -1334,6 +1610,8 @@ function createResultNode(file) {
     imageAnalysis: null,
     videoAnalysis: null,
     renderVideoOverlay: null,
+    deferredImageFaces: null,
+    deferredVideoAnalysis: null,
     cacheHit: false,
     released: false,
     file,
@@ -1661,6 +1939,7 @@ async function detectFile(file, node, signal) {
       threshold: getApiThreshold(),
     }, signal);
     const faces = detection.faces.map(normalizeAccurateDetectionFace);
+    collectDetectionSourceFaceSamples(file, detection.cacheKey, faces, image);
     const matchedFaces = needsMatching ? faces.map(addRealtimeTargetMatch) : faces;
     node.cacheHit = detection.cacheHit;
     node.imageAnalysis = { image, faces: matchedFaces };
@@ -1697,160 +1976,6 @@ async function detectFile(file, node, signal) {
   }
 }
 
-async function addCandidateEmbeddings(faces, image, sourceName) {
-  const candidates = selectMatchCandidates(faces, image);
-  const diagnostics = [];
-
-  for (const candidate of candidates) {
-    try {
-      const cropFile = await createFaceCandidateFile(image, candidate.face, sourceName, candidate.rank);
-      const payload = await findFaces(
-        cropFile,
-        FACE_MATCH_PLUGINS,
-        true,
-        BACKEND_ACCURATE,
-        getApiThreshold(),
-        undefined,
-        { inputMode: "cropped" },
-      );
-      const cropFaces = Array.isArray(payload.result) ? payload.result : [];
-      const embeddedFace = selectBestEmbeddedFace(cropFaces);
-
-      if (Array.isArray(embeddedFace?.embedding)) {
-        candidate.face.accurateEmbedding = embeddedFace.embedding;
-        candidate.face.embedding = embeddedFace.embedding;
-        candidate.face.embeddingNorm = Number.isFinite(Number(embeddedFace.embedding_norm))
-          ? Number(embeddedFace.embedding_norm)
-          : null;
-      }
-
-      diagnostics.push({
-        face: candidate.originalIndex + 1,
-        fast_similarity: Number.isFinite(candidate.fastMatch?.similarity)
-          ? Number(candidate.fastMatch.similarity.toFixed(4))
-          : null,
-        fast_match: candidate.fastMatch?.target?.name || null,
-        embedded: Array.isArray(embeddedFace?.embedding),
-        crop_faces: cropFaces.length,
-      });
-    } catch (error) {
-      diagnostics.push({
-        face: candidate.originalIndex + 1,
-        embedded: false,
-        error: error?.message || "Embedding failed",
-      });
-    }
-
-    await yieldToBrowser();
-  }
-
-  return diagnostics;
-}
-
-function selectMatchCandidates(faces, image) {
-  const scoredCandidates = faces
-    .map((face, originalIndex) => {
-      const box = normalizeBox(face.box, image.naturalWidth, image.naturalHeight);
-      if (!box) return null;
-
-      const probability = Number(face.box?.probability || 0);
-      return {
-        face,
-        originalIndex,
-        box,
-        fastMatch: face.fastMatch || null,
-        areaScore: box.width * box.height * Math.max(0.1, probability),
-      };
-    })
-    .filter(Boolean);
-
-  const selected = [];
-  const addUnique = (candidates) => {
-    candidates.forEach((candidate) => {
-      if (selected.length >= MATCH_CANDIDATE_LIMIT) return;
-      if (selected.some((item) => item.originalIndex === candidate.originalIndex)) return;
-      selected.push(candidate);
-    });
-  };
-  const byFastSimilarity = (first, second) =>
-    (second.fastMatch?.similarity || 0) - (first.fastMatch?.similarity || 0)
-    || second.areaScore - first.areaScore;
-  const byArea = (first, second) => second.areaScore - first.areaScore;
-
-  addUnique(
-    scoredCandidates
-      .filter((candidate) => (candidate.fastMatch?.similarity || 0) >= FAST_PREFILTER_SIMILARITY_THRESHOLD)
-      .sort(byFastSimilarity),
-  );
-  addUnique(
-    scoredCandidates
-      .filter((candidate) => Number.isFinite(candidate.fastMatch?.similarity))
-      .sort(byFastSimilarity),
-  );
-  addUnique(scoredCandidates.sort(byArea));
-
-  return selected.map((candidate, rank) => ({ ...candidate, rank }));
-}
-
-async function createFaceCandidateFile(image, face, sourceName, rank) {
-  const box = getPaddedFaceBox(face, image);
-  const canvas = document.createElement("canvas");
-  const context = canvas.getContext("2d");
-
-  canvas.width = box.width;
-  canvas.height = box.height;
-  context.drawImage(
-    image,
-    box.xMin,
-    box.yMin,
-    box.width,
-    box.height,
-    0,
-    0,
-    box.width,
-    box.height,
-  );
-
-  const baseName = sourceName.replace(/\.[^.]+$/, "") || "face";
-  return canvasToPngFile(canvas, `${baseName}-candidate-${rank + 1}.png`);
-}
-
-function getPaddedFaceBox(face, image) {
-  const box = normalizeBox(face.box, image.naturalWidth, image.naturalHeight);
-  if (!box) {
-    return {
-      xMin: 0,
-      yMin: 0,
-      width: image.naturalWidth,
-      height: image.naturalHeight,
-    };
-  }
-
-  const padding = Math.round(Math.max(box.width, box.height) * MATCH_CANDIDATE_PADDING);
-  const xMin = clamp(Math.floor(box.xMin - padding), 0, image.naturalWidth);
-  const yMin = clamp(Math.floor(box.yMin - padding), 0, image.naturalHeight);
-  const xMax = clamp(Math.ceil(box.xMin + box.width + padding), xMin + 1, image.naturalWidth);
-  const yMax = clamp(Math.ceil(box.yMin + box.height + padding), yMin + 1, image.naturalHeight);
-
-  return {
-    xMin,
-    yMin,
-    width: xMax - xMin,
-    height: yMax - yMin,
-  };
-}
-
-function selectBestEmbeddedFace(faces) {
-  return faces
-    .filter((face) => Array.isArray(face.embedding))
-    .sort((first, second) => getFaceArea(second.box) - getFaceArea(first.box))[0];
-}
-
-function getFaceArea(box = {}) {
-  return Math.max(0, Number(box.x_max || 0) - Number(box.x_min || 0))
-    * Math.max(0, Number(box.y_max || 0) - Number(box.y_min || 0));
-}
-
 function yieldToBrowser() {
   return new Promise((resolve) => window.setTimeout(resolve, 0));
 }
@@ -1864,6 +1989,7 @@ async function findFaces(
   signal,
   requestOptions = {},
 ) {
+  await ensureDetectorModelsReady();
   const data = new FormData();
   data.append("file", file, file.name);
   const query = new URLSearchParams({
@@ -1883,11 +2009,15 @@ async function findFaces(
     throw new Error(message);
   }
 
+  validateDetectorResponseModels(payload, facePlugins);
   return payload;
 }
 
 function getFindFacesPath(backend) {
-  return backend === BACKEND_FAST ? "/api/fast/find_faces" : "/api/accurate/find_faces";
+  if (backend !== BACKEND_ACCURATE) {
+    throw new Error(`Unsupported detector backend: ${backend}`);
+  }
+  return "/api/accurate/find_faces";
 }
 
 async function detectVideo(file, node, generation, signal) {
@@ -1927,6 +2057,8 @@ async function detectVideo(file, node, generation, signal) {
     node.videoOverlay.width = frameCanvas.width;
     node.videoOverlay.height = frameCanvas.height;
 
+    await ensureDetectorModelsReady();
+    throwIfDetectionAborted(signal);
     const cacheKey = await createDetectionCacheKey(file, "video", {
       backend: BACKEND_ACCURATE,
       facePlugins: FACE_MATCH_PLUGINS,
@@ -2008,6 +2140,7 @@ async function detectVideo(file, node, generation, signal) {
     );
     await writeDetectionCacheEntry(cacheKey, {
       kind: "video",
+      modelSignature: DETECTION_MODEL_CACHE_SIGNATURE,
       analysis: cacheableAnalysis,
     });
     return installCompletedVideoAnalysis(
@@ -2032,6 +2165,7 @@ async function detectVideo(file, node, generation, signal) {
 
 function isUsableCachedVideoAnalysis(cached, sampleInterval) {
   return cached?.kind === "video"
+    && cached.modelSignature === DETECTION_MODEL_CACHE_SIGNATURE
     && Array.isArray(cached.analysis?.playbackSamples)
     && Array.isArray(cached.analysis?.confirmedTracks)
     && Number(cached.analysis?.sampleInterval) === Number(sampleInterval)
@@ -2236,6 +2370,7 @@ async function addTargetFaceFile(file, options = {}) {
   const {
     singleFace = false,
     croppedFace = false,
+    addFallback = true,
     sourceName = file.name,
     defaultName = getDefaultTargetName(sourceName),
   } = options;
@@ -2276,6 +2411,8 @@ async function addTargetFaceFile(file, options = {}) {
     renderTargetFaces();
     return entries;
   } catch (error) {
+    if (!addFallback) throw error;
+
     const fallback = createFallbackTarget(file, image, baseName, error.message, sourceName);
     targetFaces.unshift(fallback);
     renderTargetFaces();
@@ -2293,26 +2430,21 @@ function reuseExistingTargetIdentity(entry) {
 
   const identityName = String(bestMatch.target.displayName || bestMatch.target.name || "").trim()
     || getTargetLabel(bestMatch.target);
+  entry.identityId = getTargetIdentityKey(bestMatch.target);
   entry.name = identityName;
   entry.displayName = identityName;
-  targetEntriesReusingIdentity.add(entry);
 }
 
 function updateDetectionsAfterTargetEnrollment(entries) {
   const searchableEntries = entries.filter(hasTargetEmbedding);
   if (searchableEntries.length === 0) return;
 
-  const reusedExistingIdentity = searchableEntries.every((entry) => (
-    targetEntriesReusingIdentity.has(entry)
-  ));
-  if (!reusedExistingIdentity) {
-    requestCurrentDetectionSourceRefresh();
-    return;
-  }
-
+  clearSourceIdentityExpansions();
+  // The result grid only retains files that matched the previous gallery.
+  // Re-score those immediately, then replay the complete source so files that
+  // only match a newly enrolled angle can be restored from cached embeddings.
   refreshCachedTargetMatches();
-  batchProgress.hidden = false;
-  batchProgress.textContent = "Same target updated · reused cached detections";
+  requestCurrentDetectionSourceRefresh();
 }
 
 function selectPrimaryTargetFace(faces, image) {
@@ -2560,31 +2692,20 @@ async function addDrawnTargetFace() {
     const entries = await addTargetFaceFile(cropFile, {
       singleFace: true,
       croppedFace: true,
+      addFallback: false,
       sourceName: file.name,
       defaultName: getDefaultTargetName(file.name),
     });
-    const searchableCount = entries.filter(hasTargetEmbedding).length;
-
-    if (searchableCount > 0) {
-      closeTargetDrawPanel();
-      updateDetectionsAfterTargetEnrollment(entries);
-    } else {
-      targetDrawStatus.textContent = entries[0]?.status || "No searchable face found";
-      addDrawnTargetButton.disabled = false;
-    }
+    updateDetectionsAfterTargetEnrollment(entries);
   } catch (error) {
-    targetDrawStatus.textContent = error?.message || "Could not add drawn face";
-    addDrawnTargetButton.disabled = false;
+    batchProgress.hidden = false;
+    batchProgress.textContent = error?.message || "Could not add selected face";
   } finally {
+    closeTargetDrawPanel();
     cancelDrawTargetButton.disabled = false;
     targetFileInput.disabled = false;
     targetAddButton.disabled = false;
     openFaceCaptureButton.disabled = Boolean(faceCaptureStream?.active);
-
-    if (targetDrawState) {
-      addTargetImageButton.disabled = false;
-      addDrawnTargetButton.disabled = !isUsableTargetSelection(targetDrawState.selection);
-    }
   }
 }
 
@@ -2633,18 +2754,6 @@ function getPaddedTargetSelectionBox(image, box) {
   const xMax = clamp(Math.ceil(box.xMin + box.width + padding), xMin + 1, image.naturalWidth);
   const yMax = clamp(Math.ceil(box.yMin + box.height + padding), yMin + 1, image.naturalHeight);
   return { xMin, yMin, width: xMax - xMin, height: yMax - yMin };
-}
-
-function canvasToJpegFile(canvas, fileName, quality = 0.9) {
-  return new Promise((resolve, reject) => {
-    canvas.toBlob((blob) => {
-      if (!blob) {
-        reject(new Error("Could not encode selected face"));
-        return;
-      }
-      resolve(new File([blob], fileName, { type: "image/jpeg" }));
-    }, "image/jpeg", quality);
-  });
 }
 
 function canvasToPngFile(canvas, fileName) {
@@ -2896,8 +3005,10 @@ function createFaceEntry(file, image, face, index, name, sourceName = file.name)
     status = "Ready · AdaFace IR101";
   }
 
+  const id = `${Date.now()}-${file.name}-${index}`;
   return {
-    id: `${Date.now()}-${file.name}-${index}`,
+    id,
+    identityId: `target:${id}`,
     index: index + 1,
     name,
     source: sourceName,
@@ -2923,8 +3034,10 @@ function createFallbackTarget(file, image, name, message, sourceName = file.name
     width: image.naturalWidth,
     height: image.naturalHeight,
   };
+  const id = `${Date.now()}-${file.name}-fallback`;
   return {
-    id: `${Date.now()}-${file.name}-fallback`,
+    id,
+    identityId: `target:${id}`,
     index: 1,
     name,
     source: sourceName,
@@ -2959,18 +3072,6 @@ function normalizeBox(box = {}, imageWidth, imageHeight) {
   return { xMin, yMin, width, height };
 }
 
-function normalizeFastDetectionFace(face) {
-  const fastEmbedding = Array.isArray(face?.fastEmbedding)
-    ? face.fastEmbedding
-    : Array.isArray(face?.embedding) ? face.embedding : null;
-  return {
-    ...face,
-    fastEmbedding,
-    accurateEmbedding: null,
-    embedding: null,
-  };
-}
-
 function normalizeAccurateDetectionFace(face) {
   const accurateEmbedding = Array.isArray(face?.accurateEmbedding)
     ? face.accurateEmbedding
@@ -2983,38 +3084,6 @@ function normalizeAccurateDetectionFace(face) {
       : null,
     fastEmbedding: null,
     embedding: accurateEmbedding,
-  };
-}
-
-function findClosestFaceByBox(face, candidateFaces, image) {
-  const box = normalizeBox(face.box, image.naturalWidth, image.naturalHeight);
-  if (!box || candidateFaces.length === 0) return null;
-  const centerX = box.xMin + box.width / 2;
-  const centerY = box.yMin + box.height / 2;
-  const imageDiagonal = Math.hypot(image.naturalWidth, image.naturalHeight) || 1;
-
-  return candidateFaces
-    .map((candidate) => {
-      const candidateBox = normalizeBox(candidate.box, image.naturalWidth, image.naturalHeight);
-      if (!candidateBox) return null;
-      const candidateCenterX = candidateBox.xMin + candidateBox.width / 2;
-      const candidateCenterY = candidateBox.yMin + candidateBox.height / 2;
-      const centerDistance = Math.hypot(centerX - candidateCenterX, centerY - candidateCenterY) / imageDiagonal;
-      return {
-        face: candidate,
-        score: boxIntersectionOverUnion(toApiBox(box), toApiBox(candidateBox)) - centerDistance,
-      };
-    })
-    .filter(Boolean)
-    .sort((first, second) => second.score - first.score)[0]?.face || null;
-}
-
-function toApiBox(box) {
-  return {
-    x_min: box.xMin,
-    y_min: box.yMin,
-    x_max: box.xMin + box.width,
-    y_max: box.yMin + box.height,
   };
 }
 
@@ -3074,8 +3143,7 @@ function renderTargetFaces() {
     nameInput.value = initialName;
     nameInput.addEventListener("input", () => {
       const editedName = nameInput.value.trim() || fallbackName;
-      face.displayName = editedName;
-      face.name = editedName;
+      setTargetIdentityName(face, editedName);
       deleteButton.setAttribute("aria-label", `Delete ${editedName}`);
       article.setAttribute("aria-label", `${editedName} from ${face.source}`);
       saveTargetFaces();
@@ -3101,6 +3169,15 @@ function renderTargetFaces() {
   syncMatchFilter();
 }
 
+function setTargetIdentityName(face, name) {
+  const identityKey = getTargetIdentityKey(face);
+  targetFaces.forEach((target) => {
+    if (getTargetIdentityKey(target) !== identityKey) return;
+    target.displayName = name;
+    target.name = name;
+  });
+}
+
 function getEditableTargetName(face, index) {
   const savedDisplayName = String(face.displayName || "").trim();
   if (savedDisplayName) return savedDisplayName;
@@ -3119,8 +3196,10 @@ function deleteTargetFace(faceId) {
   if (index === -1) return;
 
   const [removedFace] = targetFaces.splice(index, 1);
+  clearSourceIdentityExpansions();
   refreshCachedTargetMatches(new Set([removedFace.id]));
   renderTargetFaces();
+  requestCurrentDetectionSourceRefresh();
 }
 
 function refreshCachedTargetMatches(removedTargetIds = new Set()) {
@@ -3246,11 +3325,12 @@ function getResultStateForTargetMatches(faces) {
 function loadStoredTargetFaces() {
   try {
     const stored = JSON.parse(localStorage.getItem(TARGET_STORAGE_KEY) || "[]");
-    return Array.isArray(stored)
+    const normalizedFaces = Array.isArray(stored)
       ? stored
         .filter((face) => face && face.id && face.preview)
         .map(normalizeStoredTargetFace)
       : [];
+    return migrateStoredTargetIdentities(normalizedFaces);
   } catch (error) {
     return [];
   }
@@ -3265,6 +3345,9 @@ function normalizeStoredTargetFace(face) {
   const searchableEmbedding = accurateEmbedding || fastEmbedding;
   return {
     ...face,
+    identityId: typeof face.identityId === "string" && face.identityId.trim()
+      ? face.identityId.trim()
+      : null,
     embedding: searchableEmbedding,
     accurateEmbedding,
     embeddingNorm: Number.isFinite(Number(face.embeddingNorm ?? face.embedding_norm))
@@ -3273,6 +3356,56 @@ function normalizeStoredTargetFace(face) {
     fastEmbedding,
     status: face.status || (searchableEmbedding ? "Ready" : "No embedding"),
   };
+}
+
+function migrateStoredTargetIdentities(faces) {
+  const previouslySeen = [];
+
+  // Targets are stored newest-first. Rebuild legacy identity links in original
+  // enrollment order so an automatically reused angle can find its first
+  // accepted sample without merging unrelated cards that share "Target 1".
+  [...faces].reverse().forEach((face) => {
+    if (!face.identityId) {
+      const matchingTarget = findLegacyStoredIdentity(face, previouslySeen);
+      face.identityId = matchingTarget?.identityId || `target:${face.id}`;
+    }
+    previouslySeen.push(face);
+  });
+
+  return faces;
+}
+
+function findLegacyStoredIdentity(face, candidates) {
+  const inheritedName = String(face.displayName || "").trim().toLowerCase();
+  if (!inheritedName) return null;
+
+  const accurateEmbedding = normalizeEmbeddingVector(getTargetAccurateEmbedding(face));
+  const fastEmbedding = accurateEmbedding
+    ? null
+    : normalizeEmbeddingVector(getTargetFastEmbedding(face));
+  const getCandidateEmbedding = accurateEmbedding
+    ? getTargetAccurateEmbedding
+    : getTargetFastEmbedding;
+  const probeEmbedding = accurateEmbedding || fastEmbedding;
+  if (!probeEmbedding) return null;
+
+  const bestCandidate = candidates
+    .filter((candidate) => (
+      String(candidate.displayName || candidate.name || "").trim().toLowerCase() === inheritedName
+    ))
+    .map((candidate) => ({
+      candidate,
+      similarity: getEmbeddingSimilarity(
+        probeEmbedding,
+        normalizeEmbeddingVector(getCandidateEmbedding(candidate)),
+      ),
+    }))
+    .filter(({ similarity }) => Number.isFinite(similarity))
+    .sort((first, second) => second.similarity - first.similarity)[0];
+  if (!bestCandidate) return null;
+
+  const { matchThreshold } = getMatchDecisionThresholds(face.quality);
+  return bestCandidate.similarity >= matchThreshold ? bestCandidate.candidate : null;
 }
 
 function saveTargetFaces() {
@@ -3393,14 +3526,18 @@ function addRealtimeTargetMatch(face) {
   };
 }
 
-function getBestTargetMatchForEmbedding(embedding, getTargetEmbedding) {
+function getBestTargetMatchForEmbedding(
+  embedding,
+  getTargetEmbedding,
+  { includeSourceExpansions = true } = {},
+) {
   if (!Array.isArray(embedding) || targetFaces.length === 0) return null;
   const probeEmbedding = normalizeEmbeddingVector(embedding);
   if (!probeEmbedding) return null;
 
-  const matches = createIdentityProfiles(getTargetEmbedding)
+  const matches = createIdentityProfiles(getTargetEmbedding, { includeSourceExpansions })
     .map((profile) => {
-      const similarity = getEmbeddingSimilarity(probeEmbedding, profile.embedding);
+      const similarity = getIdentityProfileSimilarity(probeEmbedding, profile);
       if (!Number.isFinite(similarity)) return null;
       return {
         target: profile.target,
@@ -3409,6 +3546,8 @@ function getBestTargetMatchForEmbedding(embedding, getTargetEmbedding) {
         distance: Math.sqrt(Math.max(0, 2 - 2 * similarity)),
         gallerySampleCount: profile.sampleCount,
         rejectedEnrollmentCount: profile.rejectedCount,
+        sourceExpandedSampleCount: profile.sourceExpandedSampleCount || 0,
+        sourceExpandedPoseCount: profile.sourceExpandedPoseCount || 0,
         metric: "cosine",
       };
     })
@@ -3428,7 +3567,20 @@ function getBestTargetMatchForEmbedding(embedding, getTargetEmbedding) {
   };
 }
 
-function createIdentityProfiles(getTargetEmbedding) {
+function getIdentityProfileSimilarity(probeEmbedding, profile) {
+  const sourceExpandedEmbeddings = Array.isArray(profile.sourceExpandedEmbeddings)
+    ? profile.sourceExpandedEmbeddings
+    : [];
+  const similarities = [profile.embedding, ...sourceExpandedEmbeddings]
+    .map((embedding) => getEmbeddingSimilarity(probeEmbedding, embedding))
+    .filter(Number.isFinite);
+  return similarities.length > 0 ? Math.max(...similarities) : null;
+}
+
+function createIdentityProfiles(
+  getTargetEmbedding,
+  { includeSourceExpansions = true } = {},
+) {
   const groups = new Map();
   targetFaces.forEach((target) => {
     const embedding = normalizeEmbeddingVector(getTargetEmbedding(target));
@@ -3439,8 +3591,24 @@ function createIdentityProfiles(getTargetEmbedding) {
     groups.set(identityKey, samples);
   });
 
-  return Array.from(groups, ([identityKey, samples]) => createIdentityProfile(identityKey, samples))
-    .filter(Boolean);
+  const profiles = Array.from(
+    groups,
+    ([identityKey, samples]) => createIdentityProfile(identityKey, samples),
+  ).filter(Boolean);
+  if (!includeSourceExpansions || getTargetEmbedding !== getTargetAccurateEmbedding) {
+    return profiles;
+  }
+
+  return profiles.map((profile) => {
+    const expansion = sourceIdentityExpansions.get(profile.identityKey);
+    if (!expansion) return profile;
+    return {
+      ...profile,
+      sourceExpandedEmbeddings: expansion.embeddings,
+      sourceExpandedSampleCount: expansion.sampleKeys.length,
+      sourceExpandedPoseCount: expansion.embeddings.length,
+    };
+  });
 }
 
 function createIdentityProfile(identityKey, samples) {
@@ -3468,7 +3636,437 @@ function createIdentityProfile(identityKey, samples) {
     embedding,
     sampleCount: acceptedSamples.length,
     rejectedCount: samples.length - acceptedSamples.length,
+    allowsWeakSourceConsensus: acceptedSamples.every(({ target }) => (
+      isLowResolutionTargetReference(target)
+    )),
   };
+}
+
+function isLowResolutionTargetReference(target) {
+  if (target?.quality?.level) return target.quality.level === "low";
+
+  const width = Number(target?.width);
+  const height = Number(target?.height);
+  return (
+    Number.isFinite(width)
+    && Number.isFinite(height)
+    && width >= MIN_MATCH_FACE_SIZE_PX
+    && height >= MIN_MATCH_FACE_SIZE_PX
+    && (width < GOOD_MATCH_FACE_SIZE_PX || height < GOOD_MATCH_FACE_SIZE_PX)
+  );
+}
+
+function clearSourceIdentityExpansions() {
+  sourceIdentityExpansions = new Map();
+  sourceIdentityExpansionSignature = "";
+}
+
+function updateSourceIdentityExpansions(samples) {
+  const nextExpansions = buildSourceIdentityExpansions(samples);
+  const nextSignature = createSourceIdentityExpansionSignature(nextExpansions);
+  if (nextSignature === sourceIdentityExpansionSignature) return false;
+
+  sourceIdentityExpansions = nextExpansions;
+  sourceIdentityExpansionSignature = nextSignature;
+  return true;
+}
+
+function buildSourceIdentityExpansions(samples) {
+  if (!Array.isArray(samples) || samples.length === 0) return new Map();
+
+  const trackingCandidates = Array.from(
+    new Map(samples.map((sample) => [sample.key, sample])).values(),
+  );
+  const reliableCandidates = trackingCandidates.filter((candidate) => (
+    candidate.detectionProbability >= MIN_MATCH_DETECTION_PROBABILITY
+  ));
+  const baseProfiles = createIdentityProfiles(
+    getTargetAccurateEmbedding,
+    { includeSourceExpansions: false },
+  );
+  const proposedExpansions = new Map();
+
+  baseProfiles.forEach((profile) => {
+    const ordinaryBaseSamples = resolveSourceIdentitySampleCollisions(
+      expandSourceIdentityProfile(profile, reliableCandidates),
+      profile.embedding,
+    );
+    const weakConsensusSamples = ordinaryBaseSamples.length < 2
+      ? findWeakSourceIdentityConsensus(profile, reliableCandidates)
+      : [];
+    const baseSamples = weakConsensusSamples.length
+      >= SOURCE_IDENTITY_WEAK_MIN_INDEPENDENT_SAMPLES
+      ? weakConsensusSamples
+      : ordinaryBaseSamples;
+    if (baseSamples.length < 2) return;
+    const trackingOrigins = createSourceIdentityTrackingOrigins(
+      profile,
+      baseSamples,
+      trackingCandidates,
+    );
+    const poseSampleGroups = expandSourceIdentityThroughTrackedPoses(
+      baseSamples,
+      trackingOrigins,
+      reliableCandidates,
+      trackingCandidates,
+    );
+    const poseProfiles = poseSampleGroups
+      .map((poseSamples) => ({
+        embedding: averageSourceIdentityEmbeddings(poseSamples),
+        sampleKeys: poseSamples.map((sample) => sample.key).sort(),
+      }))
+      .filter((poseProfile) => Array.isArray(poseProfile.embedding));
+    if (poseProfiles.length === 0) return;
+    const sampleKeys = Array.from(new Set(
+      poseProfiles.flatMap((poseProfile) => poseProfile.sampleKeys),
+    )).sort();
+    proposedExpansions.set(profile.identityKey, {
+      embeddings: poseProfiles.map((poseProfile) => poseProfile.embedding),
+      poseSampleKeys: poseProfiles.map((poseProfile) => poseProfile.sampleKeys),
+      sampleKeys,
+    });
+  });
+
+  const ownersBySample = new Map();
+  proposedExpansions.forEach((expansion, identityKey) => {
+    expansion.sampleKeys.forEach((sampleKey) => {
+      const owners = ownersBySample.get(sampleKey) || [];
+      owners.push(identityKey);
+      ownersBySample.set(sampleKey, owners);
+    });
+  });
+  const conflictedIdentities = new Set();
+  ownersBySample.forEach((owners) => {
+    if (owners.length < 2) return;
+    owners.forEach((identityKey) => conflictedIdentities.add(identityKey));
+  });
+
+  return new Map(
+    Array.from(proposedExpansions)
+      .filter(([identityKey]) => !conflictedIdentities.has(identityKey)),
+  );
+}
+
+function expandSourceIdentityProfile(profile, candidates) {
+  const accepted = [{
+    key: `gallery:${profile.identityKey}`,
+    sourceKey: `gallery:${profile.identityKey}`,
+    embedding: profile.embedding,
+    embeddingNorm: null,
+  }];
+  const acceptedKeys = new Set();
+
+  candidates.forEach((candidate) => {
+    const similarity = getEmbeddingSimilarity(profile.embedding, candidate.embedding);
+    if (similarity < SOURCE_IDENTITY_BOOTSTRAP_COSINE) return;
+    accepted.push(candidate);
+    acceptedKeys.add(candidate.key);
+  });
+
+  let addedAnotherPose = true;
+  while (addedAnotherPose) {
+    addedAnotherPose = false;
+    const additions = [];
+
+    candidates.forEach((candidate) => {
+      if (acceptedKeys.has(candidate.key)) return;
+      const strongestBySource = new Map();
+      accepted.forEach((support) => {
+        const similarity = getEmbeddingSimilarity(candidate.embedding, support.embedding);
+        const previous = strongestBySource.get(support.sourceKey);
+        if (!Number.isFinite(previous) || similarity > previous) {
+          strongestBySource.set(support.sourceKey, similarity);
+        }
+      });
+      const supportScores = Array.from(strongestBySource.values())
+        .filter(Number.isFinite)
+        .sort((first, second) => second - first);
+      if (
+        supportScores[0] >= SOURCE_IDENTITY_BRIDGE_COSINE
+        && supportScores[1] >= SOURCE_IDENTITY_SUPPORT_COSINE
+      ) {
+        additions.push(candidate);
+      }
+    });
+
+    additions.forEach((candidate) => {
+      accepted.push(candidate);
+      acceptedKeys.add(candidate.key);
+      addedAnotherPose = true;
+    });
+  }
+
+  return accepted.slice(1);
+}
+
+function findWeakSourceIdentityConsensus(profile, candidates) {
+  if (!profile.allowsWeakSourceConsensus) return [];
+
+  const weakCandidates = resolveSourceIdentitySampleCollisions(
+    candidates.filter((candidate) => (
+      getEmbeddingSimilarity(profile.embedding, candidate.embedding)
+        >= SOURCE_IDENTITY_WEAK_BOOTSTRAP_COSINE
+    )),
+    profile.embedding,
+  ).sort((first, second) => (
+    getEmbeddingSimilarity(profile.embedding, second.embedding)
+      - getEmbeddingSimilarity(profile.embedding, first.embedding)
+  ));
+  if (weakCandidates.length < SOURCE_IDENTITY_WEAK_MIN_INDEPENDENT_SAMPLES) return [];
+
+  // Anchor the consensus to the source face closest to the gallery. Requiring
+  // every additional face to agree with every previously accepted face keeps
+  // a repeated lookalike cluster from hijacking a weak reference.
+  const consensus = [weakCandidates[0]];
+  weakCandidates.slice(1).forEach((candidate) => {
+    const agreesWithConsensus = consensus.every((support) => (
+      getEmbeddingSimilarity(candidate.embedding, support.embedding)
+        >= SOURCE_IDENTITY_WEAK_CONSENSUS_COSINE
+    ));
+    if (agreesWithConsensus) consensus.push(candidate);
+  });
+
+  return consensus.length >= SOURCE_IDENTITY_WEAK_MIN_INDEPENDENT_SAMPLES
+    ? consensus
+    : [];
+}
+
+function createSourceIdentityTrackingOrigins(profile, baseSamples, trackingCandidates) {
+  const originsByKey = new Map(baseSamples.map((sample) => [sample.key, sample]));
+  trackingCandidates.forEach((candidate) => {
+    if (
+      originsByKey.has(candidate.key)
+      || candidate.detectionProbability >= MIN_MATCH_DETECTION_PROBABILITY
+    ) {
+      return;
+    }
+    const similarity = getEmbeddingSimilarity(profile.embedding, candidate.embedding);
+    if (similarity >= SOURCE_IDENTITY_BOOTSTRAP_COSINE) {
+      originsByKey.set(candidate.key, candidate);
+    }
+  });
+  return Array.from(originsByKey.values());
+}
+
+function expandSourceIdentityThroughTrackedPoses(
+  baseSamples,
+  trackingOrigins,
+  reliableCandidates,
+  trackingCandidates,
+) {
+  const trackedSeeds = findSourceIdentityTrackedSeeds(trackingOrigins, trackingCandidates);
+  if (trackedSeeds.length < SOURCE_IDENTITY_TRACK_MIN_INDEPENDENT_SEEDS) {
+    return [baseSamples];
+  }
+
+  const trackedExpansions = trackedSeeds.map((trackedSeed) => {
+    const samples = expandSourceIdentityProfile({
+      identityKey: `tracked:${trackedSeed.candidate.key}`,
+      embedding: trackedSeed.candidate.embedding,
+    }, reliableCandidates);
+    return {
+      ...trackedSeed,
+      samples,
+      sampleKeys: new Set(samples.map((sample) => sample.key)),
+    };
+  });
+  const validatedExpansions = trackedExpansions.filter((expansion) => {
+    const supportingTracks = trackedSeeds.filter((trackedSeed) => (
+      expansion.sampleKeys.has(trackedSeed.candidate.key)
+    ));
+    const candidateSources = new Set(
+      supportingTracks.map((trackedSeed) => trackedSeed.candidate.sourceKey),
+    );
+    const originSources = new Set(
+      supportingTracks.map((trackedSeed) => trackedSeed.support.sourceKey),
+    );
+    return (
+      candidateSources.size >= SOURCE_IDENTITY_TRACK_MIN_INDEPENDENT_SEEDS
+      && originSources.size >= SOURCE_IDENTITY_TRACK_MIN_INDEPENDENT_SEEDS
+    );
+  }).filter((expansion) => (
+    expansion.samples.length >= 2
+    && !hasSourceIdentitySampleCollision(expansion.samples)
+  ));
+  if (validatedExpansions.length === 0) return [baseSamples];
+
+  const uniqueExpansions = Array.from(new Map(
+    validatedExpansions.map((expansion) => [
+      Array.from(expansion.sampleKeys).sort().join("|"),
+      expansion,
+    ]),
+  ).values());
+  const poseSampleGroups = [baseSamples];
+  let acceptedSamples = getUniqueSourceIdentitySamples(baseSamples);
+
+  uniqueExpansions.forEach((expansion) => {
+    const newSamples = expansion.samples.filter((sample) => (
+      !acceptedSamples.some((acceptedSample) => acceptedSample.key === sample.key)
+    ));
+    if (newSamples.length === 0) return;
+    const proposedSamples = getUniqueSourceIdentitySamples([
+      ...acceptedSamples,
+      ...expansion.samples,
+    ]);
+    if (hasSourceIdentitySampleCollision(proposedSamples)) return;
+    poseSampleGroups.push(expansion.samples);
+    acceptedSamples = proposedSamples;
+  });
+
+  return poseSampleGroups;
+}
+
+function findSourceIdentityTrackedSeeds(trackingOrigins, candidates) {
+  const originKeys = new Set(trackingOrigins.map((sample) => sample.key));
+  const candidatesBySource = new Map();
+  candidates.forEach((candidate) => {
+    const sourceCandidates = candidatesBySource.get(candidate.sourceKey) || [];
+    sourceCandidates.push(candidate);
+    candidatesBySource.set(candidate.sourceKey, sourceCandidates);
+  });
+  const trackedSeeds = new Map();
+
+  trackingOrigins.forEach((support) => {
+    if (!hasSourceIdentityTrackingGeometry(support)) return;
+    candidates.forEach((candidate) => {
+      if (
+        originKeys.has(candidate.key)
+        || !hasSourceIdentityTrackingGeometry(candidate)
+        || candidate.detectionProbability < MIN_MATCH_DETECTION_PROBABILITY
+        || candidate.sequenceGroup !== support.sequenceGroup
+        || Math.abs(candidate.sequenceIndex - support.sequenceIndex) !== 1
+      ) {
+        return;
+      }
+
+      const similarity = getEmbeddingSimilarity(candidate.embedding, support.embedding);
+      const centerDistance = getSourceIdentityCenterDistance(candidate, support);
+      const sizeRatio = getSourceIdentitySizeRatio(candidate, support);
+      if (
+        similarity < SOURCE_IDENTITY_TRACK_MIN_COSINE
+        || centerDistance > SOURCE_IDENTITY_TRACK_MAX_CENTER_DISTANCE
+        || sizeRatio > SOURCE_IDENTITY_TRACK_MAX_SIZE_RATIO
+      ) {
+        return;
+      }
+
+      const candidateSourceFaces = candidatesBySource.get(candidate.sourceKey) || [];
+      const supportSourceFaces = candidatesBySource.get(support.sourceKey) || [];
+      const nearestToSupport = getNearestSourceIdentityFace(support, candidateSourceFaces);
+      const nearestToCandidate = getNearestSourceIdentityFace(candidate, supportSourceFaces);
+      if (nearestToSupport?.key !== candidate.key || nearestToCandidate?.key !== support.key) {
+        return;
+      }
+
+      trackedSeeds.set(candidate.key, { candidate, support });
+    });
+  });
+
+  return Array.from(trackedSeeds.values());
+}
+
+function getUniqueSourceIdentitySamples(samples) {
+  return Array.from(new Map(
+    samples.map((sample) => [sample.key, sample]),
+  ).values());
+}
+
+function resolveSourceIdentitySampleCollisions(samples, referenceEmbedding) {
+  const sampleBySource = new Map();
+  getUniqueSourceIdentitySamples(samples).forEach((sample) => {
+    const previous = sampleBySource.get(sample.sourceKey);
+    if (!previous) {
+      sampleBySource.set(sample.sourceKey, sample);
+      return;
+    }
+    const previousSimilarity = getEmbeddingSimilarity(
+      previous.embedding,
+      referenceEmbedding,
+    );
+    const sampleSimilarity = getEmbeddingSimilarity(
+      sample.embedding,
+      referenceEmbedding,
+    );
+    if (sampleSimilarity > previousSimilarity) {
+      sampleBySource.set(sample.sourceKey, sample);
+    }
+  });
+  return Array.from(sampleBySource.values());
+}
+
+function hasSourceIdentitySampleCollision(samples) {
+  const sampleBySource = new Map();
+  return getUniqueSourceIdentitySamples(samples).some((sample) => {
+    const previousKey = sampleBySource.get(sample.sourceKey);
+    if (previousKey && previousKey !== sample.key) return true;
+    sampleBySource.set(sample.sourceKey, sample.key);
+    return false;
+  });
+}
+
+function hasSourceIdentityTrackingGeometry(sample) {
+  return (
+    typeof sample?.sequenceGroup === "string"
+    && Number.isSafeInteger(sample.sequenceIndex)
+    && Number.isFinite(sample.centerX)
+    && Number.isFinite(sample.centerY)
+    && Number.isFinite(sample.widthRatio)
+    && sample.widthRatio > 0
+    && Number.isFinite(sample.heightRatio)
+    && sample.heightRatio > 0
+  );
+}
+
+function getSourceIdentityCenterDistance(first, second) {
+  return Math.hypot(first.centerX - second.centerX, first.centerY - second.centerY);
+}
+
+function getSourceIdentitySizeRatio(first, second) {
+  return Math.max(
+    first.widthRatio / second.widthRatio,
+    second.widthRatio / first.widthRatio,
+    first.heightRatio / second.heightRatio,
+    second.heightRatio / first.heightRatio,
+  );
+}
+
+function getNearestSourceIdentityFace(sample, candidates) {
+  return candidates
+    .filter(hasSourceIdentityTrackingGeometry)
+    .map((candidate) => ({
+      candidate,
+      distance: getSourceIdentityCenterDistance(sample, candidate),
+    }))
+    .sort((first, second) => first.distance - second.distance)[0]?.candidate || null;
+}
+
+function averageSourceIdentityEmbeddings(samples) {
+  if (samples.length === 0) return null;
+  const totals = new Array(samples[0].embedding.length).fill(0);
+  let totalWeight = 0;
+
+  samples.forEach((sample) => {
+    const featureNorm = Number(sample.embeddingNorm);
+    const weight = Number.isFinite(featureNorm) && featureNorm > 0 ? featureNorm : 1;
+    sample.embedding.forEach((value, index) => {
+      totals[index] += value * weight;
+    });
+    totalWeight += weight;
+  });
+
+  return totalWeight > 0
+    ? normalizeEmbeddingVector(totals.map((value) => value / totalWeight))
+    : null;
+}
+
+function createSourceIdentityExpansionSignature(expansions) {
+  if (expansions.size === 0) return "";
+  return JSON.stringify(
+    Array.from(expansions, ([identityKey, expansion]) => [
+      identityKey,
+      expansion.poseSampleKeys,
+    ]).sort(([first], [second]) => first.localeCompare(second)),
+  );
 }
 
 function averageTargetEmbeddings(samples) {
@@ -3497,9 +4095,7 @@ function normalizeEmbeddingVector(embedding) {
 }
 
 function getTargetIdentityKey(target) {
-  return String(target?.name || target?.source || target?.id || "")
-    .trim()
-    .toLowerCase();
+  return String(target?.identityId || target?.id || "").trim();
 }
 
 function getFaceAccurateEmbedding(face) {
@@ -3708,76 +4304,6 @@ function installVideoOverlayPlayback(video, overlay, samples, sampleInterval) {
   return render;
 }
 
-function interpolateVideoFaces(samples, timestamp, sampleInterval) {
-  if (samples.length === 0) return [];
-  if (timestamp <= samples[0].timestamp) return samples[0].faces;
-  if (timestamp >= samples.at(-1).timestamp) {
-    return timestamp - samples.at(-1).timestamp <= sampleInterval * 1.5
-      ? samples.at(-1).faces
-      : [];
-  }
-
-  let low = 0;
-  let high = samples.length - 1;
-  while (low + 1 < high) {
-    const middle = Math.floor((low + high) / 2);
-    if (samples[middle].timestamp <= timestamp) {
-      low = middle;
-    } else {
-      high = middle;
-    }
-  }
-
-  const previous = samples[low];
-  const next = samples[high];
-  const span = next.timestamp - previous.timestamp;
-  const progress = span > 0 ? (timestamp - previous.timestamp) / span : 0;
-  const nextByTrack = new Map(
-    next.faces.map((face) => [face.track?.id, face]),
-  );
-  const previousTrackIds = new Set(
-    previous.faces.map((face) => face.track?.id),
-  );
-  const interpolated = previous.faces.map((face) => {
-    const nextFace = nextByTrack.get(face.track?.id);
-    return nextFace
-      ? interpolateTrackedFace(face, nextFace, progress)
-      : { ...face, overlayAlpha: 1 - progress };
-  });
-
-  next.faces.forEach((face) => {
-    if (!previousTrackIds.has(face.track?.id)) {
-      interpolated.push({ ...face, overlayAlpha: progress });
-    }
-  });
-
-  return interpolated;
-}
-
-function interpolateTrackedFace(previous, next, progress) {
-  const previousBox = previous.box || {};
-  const nextBox = next.box || {};
-  const interpolate = (key) => {
-    const start = Number(previousBox[key] || 0);
-    return start + (Number(nextBox[key] || 0) - start) * progress;
-  };
-
-  return {
-    ...previous,
-    match: next.match || previous.match,
-    track: next.track || previous.track,
-    overlayAlpha: 1,
-    box: {
-      ...previousBox,
-      x_min: interpolate("x_min"),
-      y_min: interpolate("y_min"),
-      x_max: interpolate("x_max"),
-      y_max: interpolate("y_max"),
-      probability: interpolate("probability"),
-    },
-  };
-}
-
 function createConfirmedVideoAnalysis(samples, tracks) {
   const minimumAppearances = samples.length > 1 ? 2 : 1;
   const confirmedTracks = tracks.filter(
@@ -3820,10 +4346,6 @@ function getApiThreshold() {
 
 function hasSearchableTargets() {
   return targetFaces.some(hasTargetEmbedding);
-}
-
-function hasFastSearchableTargets() {
-  return targetFaces.some((target) => Array.isArray(getTargetFastEmbedding(target)));
 }
 
 function syncMatchFilter() {
@@ -4146,6 +4668,7 @@ async function runLiveScanLoop(generation) {
   let request = null;
 
   try {
+    await ensureDetectorModelsReady();
     const blob = await captureScanFrame();
     const url = `/api/accurate/find_faces?face_plugins=${encodeURIComponent(FACE_MATCH_PLUGINS)}&limit=0&det_prob_threshold=${DEFAULT_DETECTION_THRESHOLD}`;
     const data = new FormData();
@@ -4163,6 +4686,9 @@ async function runLiveScanLoop(generation) {
       throw new Error(payload.message || `HTTP ${response.status}`);
     }
     if (generation !== liveScanGeneration) return;
+    if (!noFaceFound) {
+      validateDetectorResponseModels(payload, FACE_MATCH_PLUGINS);
+    }
 
     const faces = noFaceFound || !Array.isArray(payload.result)
       ? []

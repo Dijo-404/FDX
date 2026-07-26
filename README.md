@@ -91,10 +91,51 @@ FDX_DEVICE=gpu ./.venv/bin/python tools/verify_cropped_pipeline.py
 The command fails if CUDA is unavailable, RetinaFace cannot recover the dark
 crop, or AdaFace does not return a finite, normalized 512-value embedding.
 
+Verify the browser-side identity expansion safety gates:
+
+```sh
+node tools/verify_identity_expansion.mjs
+```
+
+This fails if tracking-only samples enter a centroid, a pose cluster mixes two
+faces from one photo, or matching stops preserving separate pose centroids.
+
 Optional port and image-limit overrides:
 
 ```sh
 FDX_UI_PORT=18080 FDX_ACCURATE_PORT=13000 FDX_IMG_LENGTH_LIMIT=1280 ./run.sh
+```
+
+## Production release check
+
+Run the complete offline release gate before packaging or deployment:
+
+```sh
+./tools/production_check.sh
+```
+
+On an NVIDIA deployment, require CUDA during the check:
+
+```sh
+FDX_DEVICE=gpu ./tools/production_check.sh
+```
+
+The command verifies model checksums, shell/Python/JavaScript syntax,
+identity-expansion collision guards, separate pose centroids, and real
+RetinaFace/AdaFace inference through the cropped-face pipeline.
+
+With FDX already running, also require every public proxy/model route to return
+the expected RetinaFace R50 and AdaFace IR101 versions:
+
+```sh
+FDX_VERIFY_LIVE_ROUTES=1 ./tools/production_check.sh
+```
+
+An existing CDC JSONL scan can be included in the same release gate:
+
+```sh
+FDX_CDC_SCAN_FILE=/tmp/fdx-cdc-regression-20260726.jsonl \
+FDX_VERIFY_LIVE_ROUTES=1 ./tools/production_check.sh
 ```
 
 ## Runtime layout
@@ -121,12 +162,34 @@ database, or external model download is used at runtime.
 - A face must have detector confidence of at least 0.80 before it can be named.
 - Good-quality identity cosine threshold: 0.60; runner-up margin: 0.10.
 - Low-resolution identity cosine threshold: 0.65; runner-up margin: 0.12.
-- Gallery images with the same name are fused into a feature-norm-weighted
-  identity centroid. Samples below 0.35 cosine agreement with the identity
-  medoid are excluded from that centroid.
-- Detection and target-enrollment results are cached by file fingerprint.
-  Adding another accepted photo of an existing identity updates matches from
-  cached face embeddings without running detection over the source again.
+- A low-resolution profile can expand across the selected photo collection
+  through cached pose bridges. Initial source samples require 0.68 cosine;
+  each further pose requires one 0.65 bridge and independent 0.58 support
+  from another image. If the ordinary expansion cannot establish two samples,
+  a low-resolution-only fallback requires at least three different photos:
+  each must be at least 0.59 cosine from the gallery, and every accepted pair
+  must be at least 0.68 cosine. The fallback is anchored to the source face
+  closest to the gallery, preventing a repeated lookalike cluster from taking
+  over the profile. For an extreme rear/side view, consecutive numbered
+  photos can bridge one pose change only when the face is the mutual-nearest
+  position and size match, and at least two independent transitions resolve
+  to the same conservatively matched face cluster. Samples below 0.80 detector
+  confidence may nominate a transition but are never added to an identity
+  centroid. If a reliable base cluster contains two faces from one photo, only
+  the face closest to the enrolled gallery is retained; a newly bridged pose
+  cluster with that collision is rejected entirely. Base and bridged poses
+  retain separate centroids so a new angle cannot erase an earlier match.
+  Competing enrolled identities disable the expansion.
+- Accepted gallery photos linked to the same stable identity are fused into a
+  feature-norm-weighted centroid. Display names do not merge different people.
+  Samples below 0.35 cosine agreement with the identity medoid are excluded.
+- Detection results are cached by file fingerprint plus the exact detector,
+  recognition model, embedding metric, and cache schema versions. A model or
+  schema change clears the old IndexedDB detection store. Every cache lookup
+  first verifies the live model status, so stale entries cannot bypass a dead
+  or incorrectly routed backend. Completing source expansion only rescans
+  already-held face embeddings in memory; it does not restart the upload or
+  rerun model inference over the collection.
 - AdaFace embeddings are L2-normalized and compared directly with cosine
   similarity. Failure to clear every gate leaves the face unknown.
 

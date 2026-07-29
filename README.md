@@ -214,11 +214,15 @@ CLAHE; the strongest centered face supplies the landmarks.
 AdaFace still receives the upscaled original pixels, not the enhanced variant.
 This keeps contrast processing from silently changing identity features. It
 embeds the aligned face and its horizontal flip, then uses the official
-feature-norm-weighted fusion method. Faces below 40 pixels on either detected
-axis are not enrolled or matched, faces from 40 to 79 pixels use stricter match
+feature-norm-weighted fusion method. Source faces below 40 pixels on either
+detected axis are not matched, faces from 40 to 79 pixels use stricter match
 gates, and faces at least 80 pixels on both axes are treated as good quality.
-Deliberately cropped enrollment uses a 0.80 detection threshold; full-image
-enrollment retains the stricter 0.98 threshold.
+A deliberately selected target crop may be enrolled down to 30 pixels when
+detector confidence is at least 0.80. When target identities already exist,
+the crop panel lets the operator explicitly attach the selection to the same
+person; the application never infers that relationship from a weak
+low-resolution embedding. Full-image enrollment retains the stricter 0.98
+detection threshold.
 
 The AdaFace ONNX model was converted from the official
 `adaface_ir101_ms1mv2.ckpt` checkpoint. Its output was compared with the

@@ -9,6 +9,8 @@ const targetDropzone = document.querySelector("#targetDropzone");
 const targetDrawPanel = document.querySelector("#targetDrawPanel");
 const targetDrawCanvas = document.querySelector("#targetDrawCanvas");
 const targetDrawStatus = document.querySelector("#targetDrawStatus");
+const targetIdentityControl = document.querySelector("#targetIdentityControl");
+const targetIdentitySelect = document.querySelector("#targetIdentitySelect");
 const addTargetImageButton = document.querySelector("#addTargetImage");
 const addDrawnTargetButton = document.querySelector("#addDrawnTarget");
 const cancelDrawTargetButton = document.querySelector("#cancelDrawTarget");
@@ -79,6 +81,7 @@ const SOURCE_IDENTITY_TRACK_MAX_SIZE_RATIO = 1.35;
 const SOURCE_IDENTITY_TRACK_MIN_INDEPENDENT_SEEDS = 2;
 const MIN_MATCH_DETECTION_PROBABILITY = 0.80;
 const MIN_MATCH_FACE_SIZE_PX = 40;
+const MIN_CROPPED_TARGET_FACE_SIZE_PX = 30;
 const GOOD_MATCH_FACE_SIZE_PX = 80;
 const MIN_TARGET_SELECTION_SIZE_PX = 24;
 const TARGET_CROP_PADDING = 0.30;
@@ -2371,6 +2374,7 @@ async function addTargetFaceFile(file, options = {}) {
     singleFace = false,
     croppedFace = false,
     addFallback = true,
+    identityId = null,
     sourceName = file.name,
     defaultName = getDefaultTargetName(sourceName),
   } = options;
@@ -2394,6 +2398,11 @@ async function addTargetFaceFile(file, options = {}) {
         index,
         getEntryName(baseName, index, selectedFaces.length),
         sourceName,
+        {
+          minimumFaceSize: croppedFace
+            ? MIN_CROPPED_TARGET_FACE_SIZE_PX
+            : MIN_MATCH_FACE_SIZE_PX,
+        },
       ))
       .filter(Boolean);
     const entries = candidateEntries
@@ -2406,7 +2415,11 @@ async function addTargetFaceFile(file, options = {}) {
       );
     }
 
-    entries.forEach(reuseExistingTargetIdentity);
+    entries.forEach((entry) => {
+      if (!linkTargetEntryToIdentity(entry, identityId)) {
+        reuseExistingTargetIdentity(entry);
+      }
+    });
     targetFaces.unshift(...entries);
     renderTargetFaces();
     return entries;
@@ -2418,6 +2431,22 @@ async function addTargetFaceFile(file, options = {}) {
     renderTargetFaces();
     return [fallback];
   }
+}
+
+function linkTargetEntryToIdentity(entry, identityId) {
+  if (!identityId) return false;
+  const existingTarget = targetFaces.find((target) => (
+    getTargetIdentityKey(target) === identityId
+    && hasTargetEmbedding(target)
+  ));
+  if (!existingTarget) return false;
+
+  const identityName = String(existingTarget.displayName || existingTarget.name || "").trim()
+    || getTargetLabel(existingTarget);
+  entry.identityId = identityId;
+  entry.name = identityName;
+  entry.displayName = identityName;
+  return true;
 }
 
 function reuseExistingTargetIdentity(entry) {
@@ -2498,6 +2527,7 @@ async function openTargetDrawPanel(file) {
       startPoint: null,
       selection: null,
     };
+    renderTargetIdentityOptions();
     renderTargetDrawCanvas();
     targetDrawStatus.textContent = "Image ready";
     addTargetImageButton.disabled = false;
@@ -2518,6 +2548,8 @@ function closeTargetDrawPanel() {
   targetDrawStatus.textContent = "Select a face area";
   addTargetImageButton.disabled = true;
   addDrawnTargetButton.disabled = true;
+  targetIdentitySelect.value = "";
+  targetIdentityControl.hidden = true;
   cancelDrawTargetButton.disabled = false;
   targetFileInput.disabled = false;
   targetAddButton.disabled = false;
@@ -2693,6 +2725,7 @@ async function addDrawnTargetFace() {
       singleFace: true,
       croppedFace: true,
       addFallback: false,
+      identityId: targetIdentitySelect.value || null,
       sourceName: file.name,
       defaultName: getDefaultTargetName(file.name),
     });
@@ -2984,13 +3017,21 @@ function loadImage(file) {
   });
 }
 
-function createFaceEntry(file, image, face, index, name, sourceName = file.name) {
+function createFaceEntry(
+  file,
+  image,
+  face,
+  index,
+  name,
+  sourceName = file.name,
+  { minimumFaceSize = MIN_MATCH_FACE_SIZE_PX } = {},
+) {
   const box = normalizeBox(face.box, image.naturalWidth, image.naturalHeight);
   if (!box) return null;
 
   const preview = createFacePreview(image, box);
   const probability = Number(face.box?.probability || 0);
-  const matchQuality = getFaceMatchQuality(face);
+  const matchQuality = getFaceMatchQuality(face, { minimumFaceSize });
   const accurateEmbedding = matchQuality.isMatchable ? getFaceAccurateEmbedding(face) : null;
   const fastEmbedding = null;
   const searchableEmbedding = accurateEmbedding;
@@ -3165,8 +3206,36 @@ function renderTargetFaces() {
     facesGrid.append(article);
   });
 
+  renderTargetIdentityOptions(targetIdentitySelect.value);
   saveTargetFaces();
   syncMatchFilter();
+}
+
+function renderTargetIdentityOptions(selectedIdentityId = "") {
+  const identities = new Map();
+  targetFaces.forEach((target, index) => {
+    if (!hasTargetEmbedding(target)) return;
+    const identityId = getTargetIdentityKey(target);
+    if (identities.has(identityId)) return;
+    identities.set(identityId, getTargetLabel(target, index));
+  });
+
+  targetIdentitySelect.replaceChildren();
+  const newIdentityOption = document.createElement("option");
+  newIdentityOption.value = "";
+  newIdentityOption.textContent = "New person";
+  targetIdentitySelect.append(newIdentityOption);
+  identities.forEach((label, identityId) => {
+    const option = document.createElement("option");
+    option.value = identityId;
+    option.textContent = label;
+    targetIdentitySelect.append(option);
+  });
+
+  targetIdentitySelect.value = identities.has(selectedIdentityId)
+    ? selectedIdentityId
+    : "";
+  targetIdentityControl.hidden = identities.size === 0;
 }
 
 function setTargetIdentityName(face, name) {
@@ -3479,7 +3548,10 @@ function isAcceptedMatch(match, quality) {
     && (!Number.isFinite(match.secondSimilarity) || match.similarity - match.secondSimilarity >= marginThreshold);
 }
 
-function getFaceMatchQuality(face) {
+function getFaceMatchQuality(
+  face,
+  { minimumFaceSize = MIN_MATCH_FACE_SIZE_PX } = {},
+) {
   const box = face?.box || {};
   const preprocessingQuality = face?.quality || {};
   const detectedWidth = Math.max(0, Number(box.x_max || 0) - Number(box.x_min || 0));
@@ -3491,7 +3563,7 @@ function getFaceMatchQuality(face) {
     ? Number(preprocessingQuality.source_face_height)
     : detectedHeight;
   const probability = Number(face?.box?.probability || 0);
-  const isLargeEnough = width >= MIN_MATCH_FACE_SIZE_PX && height >= MIN_MATCH_FACE_SIZE_PX;
+  const isLargeEnough = width >= minimumFaceSize && height >= minimumFaceSize;
   const isGoodSize = width >= GOOD_MATCH_FACE_SIZE_PX && height >= GOOD_MATCH_FACE_SIZE_PX;
   const hasReliableDetection = probability >= MIN_MATCH_DETECTION_PROBABILITY;
   const reason = !isLargeEnough
@@ -3506,7 +3578,7 @@ function getFaceMatchQuality(face) {
       height: Math.round(height),
       detectionProbability: probability,
       level: !isLargeEnough ? "too-small" : isGoodSize ? "good" : "low",
-      min_size: MIN_MATCH_FACE_SIZE_PX,
+      min_size: minimumFaceSize,
       good_size: GOOD_MATCH_FACE_SIZE_PX,
       min_detection_probability: MIN_MATCH_DETECTION_PROBABILITY,
       reason,

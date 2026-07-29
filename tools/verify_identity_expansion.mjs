@@ -17,6 +17,16 @@ assert.match(
   /modelSignature: DETECTION_MODEL_CACHE_SIGNATURE/,
   "Detection cache entries are not tied to the RetinaFace/AdaFace model signature",
 );
+assert.match(
+  appSource,
+  /const MIN_CROPPED_TARGET_FACE_SIZE_PX = 30;/,
+  "Manually selected low-resolution targets do not have the 30px enrollment floor",
+);
+assert.match(
+  appSource,
+  /identityId: targetIdentitySelect\.value \|\| null/,
+  "Drawn targets cannot be explicitly linked to an existing identity",
+);
 for (const removedDeadSymbol of [
   "addCandidateEmbeddings",
   "selectMatchCandidates",
@@ -192,6 +202,90 @@ assert.equal(
   completionHarness.getRestoredImageCount(),
   1,
   "Completion rescore reopened more than the newly matched images",
+);
+
+const qualityStart = appSource.indexOf("function getFaceMatchQuality(");
+const qualityEnd = appSource.indexOf("function addRealtimeTargetMatch(", qualityStart);
+assert(qualityStart >= 0 && qualityEnd > qualityStart, "Face-quality function not found");
+const qualityHarness = Function(`
+  "use strict";
+  const MIN_MATCH_FACE_SIZE_PX = 40;
+  const GOOD_MATCH_FACE_SIZE_PX = 80;
+  const MIN_MATCH_DETECTION_PROBABILITY = 0.80;
+  ${appSource.slice(qualityStart, qualityEnd)}
+  return getFaceMatchQuality;
+`)();
+const selectedCropFace = {
+  box: { probability: 0.9995 },
+  quality: {
+    source_face_width: 33.44,
+    source_face_height: 39.85,
+  },
+};
+assert.equal(
+  qualityHarness(selectedCropFace).isMatchable,
+  false,
+  "Ordinary source matching unexpectedly accepts a sub-40px face",
+);
+assert.equal(
+  qualityHarness(selectedCropFace, { minimumFaceSize: 30 }).isMatchable,
+  true,
+  "Explicitly selected target crop is still rejected below the ordinary 40px floor",
+);
+assert.equal(
+  qualityHarness(selectedCropFace, { minimumFaceSize: 30 }).quality.level,
+  "low",
+  "Selected 30-39px crop was not classified as a low-resolution reference",
+);
+
+const identityLinkStart = appSource.indexOf("function linkTargetEntryToIdentity(");
+const identityLinkEnd = appSource.indexOf(
+  "function reuseExistingTargetIdentity(",
+  identityLinkStart,
+);
+assert(
+  identityLinkStart >= 0 && identityLinkEnd > identityLinkStart,
+  "Explicit identity-link function not found",
+);
+const identityLinkHarness = Function(`
+  "use strict";
+  const targetFaces = [{
+    id: "portrait",
+    identityId: "target:portrait",
+    name: "Current person",
+    accurateEmbedding: [1, 0, 0],
+  }];
+  function getTargetIdentityKey(target) {
+    return target.identityId || \`target:\${target.id}\`;
+  }
+  function hasTargetEmbedding(target) {
+    return Array.isArray(target.accurateEmbedding);
+  }
+  function getTargetLabel(target) {
+    return target.name;
+  }
+  ${appSource.slice(identityLinkStart, identityLinkEnd)}
+  return linkTargetEntryToIdentity;
+`)();
+const selectedCropEntry = {
+  id: "crop",
+  identityId: "target:crop",
+  name: "DSC08446",
+};
+assert.equal(
+  identityLinkHarness(selectedCropEntry, "target:portrait"),
+  true,
+  "Selected crop was not linked to the operator-chosen identity",
+);
+assert.equal(
+  selectedCropEntry.identityId,
+  "target:portrait",
+  "Selected crop retained a separate identity",
+);
+assert.equal(
+  selectedCropEntry.displayName,
+  "Current person",
+  "Selected crop did not inherit the chosen identity name",
 );
 
 const expansionStart = appSource.indexOf("function expandSourceIdentityProfile(");

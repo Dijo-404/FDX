@@ -49,6 +49,11 @@ driver is still required.
 
 Open `http://127.0.0.1:8080`.
 
+Use **Choose media folder** to scan a folder containing supported photos and
+videos. Video faces are assigned stable track IDs across analyzed frames and
+displayed as synchronized overlays during playback. Enrolled target names
+replace the generic face ID when a track matches a saved person.
+
 Stop it with `Ctrl+C`, or from another terminal:
 
 ```sh
@@ -95,6 +100,12 @@ Verify the browser-side identity expansion safety gates:
 
 ```sh
 node tools/verify_identity_expansion.mjs
+```
+
+Verify video selection, temporal face association, and playback sampling:
+
+```sh
+node tools/verify_video_tracking.mjs
 ```
 
 This fails if tracking-only samples enter a centroid, a pose cluster mixes two

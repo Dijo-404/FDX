@@ -39,6 +39,9 @@ PY
 printf '%s\n' "Checking identity-expansion safety gates..."
 node tools/verify_identity_expansion.mjs
 
+printf '%s\n' "Checking video upload and frame tracking..."
+node tools/verify_video_tracking.mjs
+
 if [ -n "${FDX_CDC_SCAN_FILE:-}" ]; then
   printf '%s\n' "Checking low-resolution consensus against the CDC scan..."
   "$PYTHON_BIN" tools/verify_cdc_weak_consensus.py --scan "$FDX_CDC_SCAN_FILE"

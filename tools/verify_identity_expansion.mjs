@@ -9,7 +9,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const appSource = readFileSync(resolve(root, "frontend/app.js"), "utf8");
 assert.match(
   appSource,
-  /const DETECTION_CACHE_VERSION = 6;/,
+  /const DETECTION_CACHE_VERSION = 7;/,
   "Detection cache was not invalidated for the updated matching pipeline",
 );
 assert.match(

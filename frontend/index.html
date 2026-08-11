@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>FDX Face Detection</title>
-    <link rel="stylesheet" href="/styles.css?v=66">
+    <link rel="stylesheet" href="/styles.css?v=67">
   </head>
   <body>
     <main class="shell">
@@ -53,9 +53,8 @@
               </div>
             </div>
             <div class="topbarUploadActions">
-              <button id="detectionUploadButton" class="uploadChoiceButton sourceChoiceButton" type="button">Choose source</button>
-              <input id="fileInput" class="hiddenFileInput" type="file" accept="image/*,video/*" multiple>
-              <input id="folderInput" class="hiddenFileInput" type="file" accept="image/*" webkitdirectory directory multiple>
+              <button id="detectionUploadButton" class="uploadChoiceButton sourceChoiceButton" type="button">Choose media folder</button>
+              <input id="folderInput" class="hiddenFileInput" type="file" accept="image/*,video/*" webkitdirectory directory multiple>
             </div>
           </header>
 
@@ -137,7 +136,7 @@
 
             <div id="detectionProgress" class="detectionProgress" aria-live="polite" hidden>
               <progress id="detectionProgressBar" class="detectionProgressBar" max="1" value="0"></progress>
-              <span id="detectionProgressText">0 of 0 images processed</span>
+              <span id="detectionProgressText">0 of 0 files processed</span>
             </div>
 
             <section id="resultsEmpty" class="emptyState" hidden>
@@ -217,6 +216,6 @@
     </template>
 
     <script src="/vendor/three.min.js?v=149"></script>
-    <script src="/app.js?v=49"></script>
+    <script src="/app.js?v=50"></script>
   </body>
 </html>

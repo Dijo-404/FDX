@@ -1,4 +1,3 @@
-const fileInput = document.querySelector("#fileInput");
 const folderInput = document.querySelector("#folderInput");
 const detectionUploadButton = document.querySelector("#detectionUploadButton");
 const startDetectionButton = document.querySelector("#startDetectionButton");
@@ -93,7 +92,7 @@ const DETECTION_CACHE_DB_NAME = "fdx.detectionCache";
 const DETECTION_CACHE_DB_VERSION = 2;
 const DETECTION_CACHE_STORE_NAME = "analyses";
 const DETECTION_CACHE_INDEX_NAME = "cachedAt";
-const DETECTION_CACHE_VERSION = 6;
+const DETECTION_CACHE_VERSION = 7;
 const DETECTION_CACHE_MAX_ENTRIES = 200;
 const DETECTION_CACHE_FULL_HASH_MAX_BYTES = 8 * 1024 * 1024;
 const DETECTION_CACHE_SAMPLE_BYTES = 64 * 1024;
@@ -179,16 +178,12 @@ clearFacesButton.addEventListener("click", () => {
   renderTargetFaces();
 });
 
-fileInput.addEventListener("change", () => {
-  void handleFileInputSelection(fileInput.files);
-});
-
 folderInput.addEventListener("change", () => {
   void handleFolderInputSelection(folderInput.files);
 });
 
 detectionUploadButton.addEventListener("click", () => {
-  void openDetectionSourcePicker();
+  void openDetectionFolderPicker();
 });
 
 startDetectionButton.addEventListener("click", () => {
@@ -440,18 +435,8 @@ function supportsDirectoryPicker() {
   return typeof window.showDirectoryPicker === "function";
 }
 
-async function openDetectionSourcePicker() {
-  if (supportsDirectoryPicker()) {
-    await openDetectionFolderPicker();
-    return;
-  }
-
-  if ("webkitdirectory" in folderInput) {
-    folderInput.click();
-    return;
-  }
-
-  fileInput.click();
+function openDetectionSourcePicker() {
+  return openDetectionFolderPicker();
 }
 
 async function openDetectionFolderPicker() {
@@ -495,7 +480,7 @@ async function startDetectionFromCurrentSource() {
   try {
     const files = await getCurrentDetectionSourceFiles();
     if (files.length === 0) {
-      batchProgress.textContent = "No image files in selected folder";
+      batchProgress.textContent = "No supported photos or videos in selected folder";
       return;
     }
 
@@ -503,21 +488,6 @@ async function startDetectionFromCurrentSource() {
   } catch (error) {
     showDetectionFolderError(error);
   }
-}
-
-async function handleFileInputSelection(fileList) {
-  const files = Array.from(fileList).filter(isProcessableDetectionFile);
-  fileInput.value = "";
-  if (files.length === 0) return;
-
-  clearDetectionFolderMeta();
-  setCurrentDetectionSource({
-    type: "files",
-    files,
-    label: `${files.length} selected file${files.length === 1 ? "" : "s"}`,
-  });
-  void deleteStoredDetectionFolderHandle();
-  await handleFiles(files);
 }
 
 async function handleFolderInputSelection(fileList) {
@@ -561,7 +531,7 @@ async function useDetectionDirectoryHandle(handle, { autoRestore = false } = {})
 
   if (files.length === 0) {
     batchProgress.hidden = false;
-    batchProgress.textContent = "No image files in selected folder";
+    batchProgress.textContent = "No supported photos or videos in selected folder";
     return;
   }
 
@@ -652,13 +622,17 @@ function attachDetectionRelativePath(file, relativePath) {
 
 function isProcessableDetectionFile(file) {
   return file.type.startsWith("image/")
-    || file.type.startsWith("video/")
+    || isVideoDetectionFile(file)
     || /\.(avif|bmp|gif|heic|heif|jpe?g|m4v|mov|mp4|png|webm|webp)$/i.test(file.name);
 }
 
 function isFolderDetectionFile(file) {
-  return file.type.startsWith("image/")
-    || /\.(avif|bmp|gif|heic|heif|jpe?g|png|webp)$/i.test(file.name);
+  return isProcessableDetectionFile(file);
+}
+
+function isVideoDetectionFile(file) {
+  return file.type.startsWith("video/")
+    || /\.(m4v|mov|mp4|webm)$/i.test(file.name);
 }
 
 function getFileDisplayPath(file) {
@@ -679,12 +653,6 @@ function showDetectionFolderError(error) {
 function setCurrentDetectionSource(source) {
   clearSourceIdentityExpansions();
   currentDetectionSource = source;
-  renderDetectionFolderPath();
-}
-
-function clearDetectionFolderMeta() {
-  detectionFolderMeta = null;
-  localStorage.removeItem(DETECTION_FOLDER_STORAGE_KEY);
   renderDetectionFolderPath();
 }
 
@@ -716,15 +684,13 @@ function loadStoredDetectionFolderMeta() {
 
 function renderDetectionFolderPath() {
   const sourceLabel = currentDetectionSource?.label || detectionFolderMeta?.path;
-  const sourceType = currentDetectionSource?.type || detectionFolderMeta?.source;
 
   if (sourceLabel) {
-    const prefix = sourceType === "files" ? "Batch" : "Folder";
-    detectionUploadButton.textContent = `${prefix}: ${sourceLabel}`;
-    detectionUploadButton.title = "Choose another file batch or folder";
+    detectionUploadButton.textContent = `Folder: ${sourceLabel}`;
+    detectionUploadButton.title = "Choose another media folder";
   } else {
-    detectionUploadButton.textContent = "Choose source";
-    detectionUploadButton.title = "Choose files or a folder";
+    detectionUploadButton.textContent = "Choose media folder";
+    detectionUploadButton.title = "Choose a folder containing photos and videos";
   }
 
   renderDetectionStartButton(sourceLabel);
@@ -1075,7 +1041,6 @@ function getDetectionSourceSequence(source) {
 
 async function handleFiles(fileList) {
   const files = Array.from(fileList).filter(isProcessableDetectionFile);
-  fileInput.value = "";
   folderInput.value = "";
   if (files.length === 0) return detectionUploadPromise || Promise.resolve();
 
@@ -1110,7 +1075,7 @@ async function processDetectionUploadQueue(generation) {
       if (generation !== processingGeneration) break;
       const { file, node } = detectionUploadQueue.shift();
       setResultState(node, "processing");
-      const state = file.type.startsWith("video/")
+      const state = isVideoDetectionFile(file)
         ? await detectVideo(file, node, generation, abortController.signal)
         : await detectFile(file, node, abortController.signal);
 
@@ -1430,7 +1395,7 @@ async function refreshCurrentDetectionSource() {
   try {
     const files = await getCurrentDetectionSourceFiles();
     if (files.length === 0) {
-      batchProgress.textContent = "No image files in selected folder";
+      batchProgress.textContent = "No supported photos or videos in selected folder";
       return;
     }
 
@@ -1540,14 +1505,14 @@ function updateDetectionProgress() {
   detectionProgress.hidden = false;
   detectionProgressBar.max = total || 1;
   detectionProgressBar.value = processed;
-  detectionProgressText.textContent = `${processed} of ${total} images processed`;
+  detectionProgressText.textContent = `${processed} of ${total} files processed`;
 }
 
 function hideDetectionProgress() {
   detectionProgress.hidden = true;
   detectionProgressBar.max = 1;
   detectionProgressBar.value = 0;
-  detectionProgressText.textContent = "0 of 0 images processed";
+  detectionProgressText.textContent = "0 of 0 files processed";
 }
 
 function createResultNode(file) {
@@ -1568,12 +1533,12 @@ function createResultNode(file) {
   title.textContent = displayPath;
   summary.textContent = "Queued";
   article.dataset.resultState = "queued";
-  article.dataset.kind = file.type.startsWith("video/") ? "video" : "image";
+  article.dataset.kind = isVideoDetectionFile(file) ? "video" : "image";
   article.tabIndex = 0;
   article.setAttribute("aria-label", `Detection result for ${displayPath}`);
   article.setAttribute("aria-keyshortcuts", "ArrowLeft ArrowRight ArrowUp ArrowDown");
 
-  if (!file.type.startsWith("video/")) {
+  if (!isVideoDetectionFile(file)) {
     const downloadUrl = URL.createObjectURL(file);
     downloadButton.href = downloadUrl;
     downloadButton.download = getDownloadFileName(displayPath, file);
@@ -1619,7 +1584,7 @@ function createResultNode(file) {
     released: false,
     file,
     displayPath,
-    downloadUrl: file.type.startsWith("video/") ? null : downloadButton.href,
+    downloadUrl: isVideoDetectionFile(file) ? null : downloadButton.href,
   };
   article.fdxResultNode = node;
   return node;
@@ -2121,14 +2086,14 @@ async function detectVideo(file, node, generation, signal) {
       const detectedFaces = Array.isArray(payload.result)
         ? payload.result.map((face) => (useEmbeddings ? normalizeAccurateDetectionFace(face) : face))
         : [];
+      const faces = useEmbeddings ? detectedFaces.map(addRealtimeTargetMatch) : detectedFaces;
       nextTrackId = assignFaceTracks(
-        detectedFaces,
+        faces,
         tracks,
         timestamp,
         sampleInterval,
         nextTrackId,
       );
-      const faces = useEmbeddings ? detectedFaces.map(addRealtimeTargetMatch) : detectedFaces;
       samples.push({ timestamp, faces });
     }
 
@@ -3368,6 +3333,18 @@ function refreshTrackTargetLabels(tracks, samples) {
       track.targetId = match.target.id;
     });
   });
+
+  samples.forEach((sample) => {
+    sample.faces.forEach((face) => {
+      const track = tracksById.get(face.track?.id);
+      if (!track) return;
+      face.track = {
+        ...face.track,
+        name: track.name,
+        targetId: track.targetId,
+      };
+    });
+  });
 }
 
 function refreshLiveTargetMatches(removedTargetIds) {
@@ -4246,7 +4223,7 @@ function calculateTrackScore(face, track) {
     && embeddingSimilarity >= TRACK_MIN_EMBEDDING_SIMILARITY;
 
   if (!sameTarget && !embeddingMatches && overlap < TRACK_MIN_IOU) return null;
-  return (sameTarget ? 2 : 0) + overlap + (embeddingSimilarity || 0);
+  return (sameTarget ? 4 : 0) + overlap + Math.max(-1, embeddingSimilarity || 0) * 2;
 }
 
 function createTrack(id, face, timestamp) {
@@ -4324,8 +4301,9 @@ function installVideoOverlayPlayback(video, overlay, samples, sampleInterval) {
   let scheduledFrame = null;
   let scheduledWithVideoCallback = false;
 
-  const render = () => {
-    drawVideoOverlay(overlay);
+  const render = (mediaTime) => {
+    const playbackTime = Number.isFinite(mediaTime) ? mediaTime : video.currentTime;
+    drawVideoOverlay(overlay, samples, playbackTime, sampleInterval);
   };
 
   const cancelScheduledFrame = () => {
@@ -4520,9 +4498,57 @@ function drawImage(canvas, image) {
   context.drawImage(image, 0, 0, width, height);
 }
 
-function drawVideoOverlay(canvas) {
+function drawVideoOverlay(canvas, samples = [], playbackTime = 0, sampleInterval = VIDEO_FRAME_INTERVAL_SECONDS) {
   const context = canvas.getContext("2d");
   context.clearRect(0, 0, canvas.width, canvas.height);
+  const sample = getVideoSampleForTime(samples, playbackTime, sampleInterval);
+  if (!sample || canvas.width <= 0 || canvas.height <= 0) return;
+
+  context.lineWidth = Math.max(2, Math.round(Math.min(canvas.width, canvas.height) / 360));
+  context.font = "bold 13px 'JetBrains Mono', monospace";
+
+  sample.faces.forEach((face) => {
+    const box = face.box || {};
+    const xMin = clamp(Number(box.x_min || 0), 0, canvas.width);
+    const yMin = clamp(Number(box.y_min || 0), 0, canvas.height);
+    const xMax = clamp(Number(box.x_max || 0), xMin, canvas.width);
+    const yMax = clamp(Number(box.y_max || 0), yMin, canvas.height);
+    const width = xMax - xMin;
+    const height = yMax - yMin;
+    if (width < 1 || height < 1) return;
+
+    const color = face.match?.isMatch ? MATCH_BOX_COLOR : FACE_BOX_COLOR;
+    const label = createBoxLabel(face, { includeConfidence: true });
+    drawReticle(context, xMin, yMin, width, height, color);
+    if (label) drawCanvasLabel(context, label, xMin, yMin, color, 20);
+  });
+
+  context.shadowBlur = 0;
+}
+
+function getVideoSampleForTime(samples, playbackTime, sampleInterval) {
+  if (!Array.isArray(samples) || samples.length === 0) return null;
+
+  const time = Math.max(0, Number(playbackTime) || 0);
+  let low = 0;
+  let high = samples.length - 1;
+
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const timestamp = Number(samples[middle]?.timestamp) || 0;
+    if (timestamp < time) low = middle + 1;
+    else if (timestamp > time) high = middle - 1;
+    else return samples[middle];
+  }
+
+  const candidates = [samples[high], samples[low]].filter(Boolean);
+  const closest = candidates.reduce((best, candidate) => (
+    Math.abs(Number(candidate.timestamp) - time) < Math.abs(Number(best.timestamp) - time)
+      ? candidate
+      : best
+  ));
+  const maximumDistance = Math.max(Number(sampleInterval) * 0.75, 1 / 120);
+  return Math.abs(Number(closest.timestamp) - time) <= maximumDistance ? closest : null;
 }
 
 function createBoxLabel(face, options = {}) {
@@ -4532,6 +4558,8 @@ function createBoxLabel(face, options = {}) {
 
   if (match?.isMatch) {
     parts.push(match.target.name || getTargetLabel(match.target));
+  } else if (face.track?.name) {
+    parts.push(face.track.name);
   } else if (face.track?.id) {
     parts.push(`Face ${face.track.id}`);
   }

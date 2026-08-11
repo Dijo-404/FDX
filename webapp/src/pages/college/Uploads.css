@@ -1,0 +1,8 @@
+.upload-status {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--violet-600);
+  background: var(--gradient-soft);
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+}

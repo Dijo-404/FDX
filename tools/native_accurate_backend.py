@@ -563,4 +563,4 @@ def _warm_up() -> None:
 
 if __name__ == "__main__":
     _warm_up()
-    app.run(host="127.0.0.1", port=PORT, debug=False, threaded=False)
+    app.run(host=os.environ.get("ML_HOST", "127.0.0.1"), port=PORT, debug=False, threaded=False)

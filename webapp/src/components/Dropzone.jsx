@@ -9,8 +9,11 @@ export default function Dropzone({ title, hint, accept, multiple = true, onFiles
 
   function addFiles(fileList) {
     const list = Array.from(fileList);
-    setFiles((prev) => [...list, ...prev]);
-    onFiles?.(list);
+    setFiles((previous) => {
+      const next = multiple ? [...list, ...previous] : list.slice(0, 1);
+      onFiles?.(next);
+      return next;
+    });
   }
 
   return (

@@ -73,12 +73,6 @@ export default function Login() {
             {submitting ? "Signing in..." : "Sign in"}
           </button>
 
-          <div className="login-demo">
-            <p>Demo accounts</p>
-            <code>superadmin@fdx.io / SuperAdmin@123</code>
-            <code>admin@srit.edu.in / College@123</code>
-            <code>admin@nova.io / College@123</code>
-          </div>
         </form>
       </div>
     </div>

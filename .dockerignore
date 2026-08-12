@@ -1,0 +1,9 @@
+.git
+.venv
+webapp/node_modules
+webapp/dist
+data
+*.zip
+*.log
+__pycache__
+*.pyc

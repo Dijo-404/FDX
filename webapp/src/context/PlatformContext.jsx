@@ -1,40 +1,46 @@
 /* oxlint-disable react/only-export-components -- Provider and hook form one public context API. */
-import { createContext, useContext, useMemo, useState } from "react";
-import { initialEvents, initialOrganizationUsers, initialOrganizations, initialParticipants } from "../lib/mockData";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { api } from "../lib/api";
+import { useAuth } from "./AuthContext";
 
 const PlatformContext = createContext(null);
+const initialState = { organizations: [], organizationUsers: [], events: [], participants: [], matches: [], deliveries: [], logs: [], services: [], uploads: [], jobs: [], dashboard: null, organization: null, system: null };
 
 export function PlatformProvider({ children }) {
-  const [organizations, setOrganizations] = useState(initialOrganizations);
-  const [organizationUsers, setOrganizationUsers] = useState(initialOrganizationUsers);
-  const [events, setEvents] = useState(initialEvents);
-  const [participants, setParticipants] = useState(initialParticipants);
+  const { user, isAuthenticated } = useAuth();
+  const [data, setData] = useState(initialState);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
 
-  const value = useMemo(() => ({
-    organizations,
-    organizationUsers,
-    events,
-    participants,
-    addOrganization(input) {
-      const id = `${input.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "")}-${Date.now().toString().slice(-4)}`;
-      setOrganizations((items) => [{ ...input, id, status: "active", users: 0, storageUsedGB: 0, events: 0, nextDataExpiry: "—" }, ...items]);
-      return id;
-    },
-    updateOrganization(id, patch) {
-      setOrganizations((items) => items.map((item) => item.id === id ? { ...item, ...patch } : item));
-    },
-    addOrganizationUser(input) {
-      const organization = organizations.find((item) => item.id === input.organizationId);
-      setOrganizationUsers((items) => [{ ...input, id: Date.now(), organization: organization?.name ?? "Unknown", role: "org_admin", status: "active", invite: "pending", lastActive: "Invite pending" }, ...items]);
-    },
-    addEvent(input) {
-      setEvents((items) => [{ ...input, id: Date.now(), photos: 0, facesDetected: 0, participants: 0, enrolled: 0, matched: 0, delivered: 0, status: "preparing" }, ...items]);
-    },
-    addParticipants(rows) {
-      setParticipants((items) => [...rows.map((row, index) => ({ ...row, id: Date.now() + index, enrollment: "invited", delivery: "pending", matches: 0, uploadedAt: "Just now" })), ...items]);
-    },
-  }), [events, organizationUsers, organizations, participants]);
+  const refresh = useCallback(async () => {
+    if (!isAuthenticated) { setData(initialState); return; }
+    setLoading(true); setError("");
+    try {
+      if (user.role === "super_admin") {
+        const [dashboard, organizations, users, logs, system] = await Promise.all([api("/admin/dashboard"), api("/admin/organizations"), api("/admin/users"), api("/admin/logs"), api("/admin/system")]);
+        setData({ ...initialState, dashboard, organizations: organizations.items, organizationUsers: users.items, logs: logs.items, services: system.services, system });
+      } else {
+        const [dashboard, events, participants, uploads, processing, matches, deliveries, logs, organization] = await Promise.all([api("/organization/dashboard"), api("/organization/events"), api("/organization/participants"), api("/organization/uploads"), api("/organization/processing"), api("/organization/matches"), api("/organization/deliveries"), api("/organization/logs"), api("/organization/settings")]);
+        setData({ ...initialState, dashboard, organization, events: events.items, participants: participants.items, uploads: uploads.items, jobs: processing.items, processingStats: processing.stats, matches: matches.items, matchStats: matches.stats, deliveries: deliveries.items, deliveryStats: deliveries.stats, logs: logs.items });
+      }
+    } catch (requestError) { setError(requestError.message); }
+    finally { setLoading(false); }
+  }, [isAuthenticated, user?.role]);
 
+  useEffect(() => { refresh(); }, [refresh]);
+
+  const mutate = useCallback(async (path, options) => { const result = await api(path, options); await refresh(); return result; }, [refresh]);
+  const value = useMemo(() => ({ ...data, loading, error, refresh,
+    addOrganization: (input) => mutate("/admin/organizations", { method: "POST", body: JSON.stringify(input) }),
+    updateOrganization: (id, input) => mutate(`/admin/organizations/${id}`, { method: "PATCH", body: JSON.stringify(input) }),
+    addOrganizationUser: (input) => mutate("/admin/users", { method: "POST", body: JSON.stringify(input) }),
+    addEvent: (input) => mutate("/organization/events", { method: "POST", body: JSON.stringify(input) }),
+    importParticipants: (eventId, file) => { const body = new FormData(); body.append("event_id", eventId); body.append("file", file); return mutate("/organization/participants/import", { method: "POST", body }); },
+    uploadPhotos: (eventId, files) => { const body = new FormData(); body.append("event_id", eventId); files.forEach((file) => body.append("files", file)); return mutate("/organization/photos", { method: "POST", body }); },
+    reviewMatch: (id, decision) => mutate(`/organization/matches/${id}`, { method: "PATCH", body: JSON.stringify({ decision }) }),
+    sendDelivery: (participantId) => mutate(`/organization/deliveries/${participantId}/send`, { method: "POST" }),
+    updateSettings: (input) => mutate("/organization/settings", { method: "PATCH", body: JSON.stringify(input) }),
+  }), [data, error, loading, mutate, refresh]);
   return <PlatformContext.Provider value={value}>{children}</PlatformContext.Provider>;
 }
 

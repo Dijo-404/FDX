@@ -1,0 +1,627 @@
+from __future__ import annotations
+
+import csv
+import hashlib
+import io
+import mimetypes
+import secrets
+import tempfile
+import zipfile
+from contextlib import asynccontextmanager
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path, PurePosixPath
+
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response, StreamingResponse
+from openpyxl import load_workbook
+from pydantic import BaseModel, EmailStr, Field
+from redis import Redis
+from sqlalchemy import func, select, text
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+from starlette.background import BackgroundTask
+
+from .auth import check_login_rate_limit, current_user, find_user_by_email, hash_password, hash_token, new_opaque_token, require_org_admin, require_super_admin, token_pair, verify_password
+from .config import settings
+from .database import Base, SessionLocal, engine, get_db
+from .integrations import cache_delete, dependency_health, dispatch_email, ml_embedding, publish_job, queue_email, storage
+from .models import AuditLog, Delivery, EmailOutbox, Event, FaceDetection, FaceMatch, Organization, OrganizationType, Participant, Photo, ProcessingJob, User, UserRole, utcnow
+from .serializers import event_json, iso, organization_json, participant_json, user_json
+
+
+GB = 1024**3
+
+
+class LoginInput(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class PasswordInput(BaseModel):
+    password: str = Field(min_length=10)
+
+
+class OrganizationInput(BaseModel):
+    name: str = Field(min_length=2, max_length=180)
+    type: OrganizationType
+    contactName: str = ""
+    contactEmail: EmailStr
+    phone: str = ""
+    storageLimitGB: float = Field(default=100, gt=0)
+    retentionDays: int = Field(default=90, ge=1, le=3650)
+    expiry: date | None = None
+
+
+class OrganizationPatch(BaseModel):
+    status: str | None = None
+    storageLimitGB: float | None = Field(default=None, gt=0)
+    retentionDays: int | None = Field(default=None, ge=1, le=3650)
+    expiry: date | None = None
+    contactName: str | None = None
+    contactEmail: EmailStr | None = None
+    phone: str | None = None
+
+
+class UserInviteInput(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    email: EmailStr
+    organizationId: str
+
+
+class EventInput(BaseModel):
+    name: str = Field(min_length=2, max_length=180)
+    description: str = ""
+    date: date
+    location: str = ""
+    retentionDays: int | None = Field(default=None, ge=1, le=3650)
+    expiresAt: date | None = None
+
+
+class MatchReviewInput(BaseModel):
+    decision: str
+
+
+class SettingsInput(BaseModel):
+    contactName: str | None = None
+    contactEmail: EmailStr | None = None
+    phone: str | None = None
+
+
+def audit(db: Session, user: User | None, action: str, details: str, level: str = "info", organization_id: str | None = None) -> None:
+    db.add(AuditLog(organization_id=organization_id if organization_id is not None else user.organization_id if user else None, actor_user_id=user.id if user else None, actor=user.email if user else "system", action=action, details=details, level=level))
+
+
+def bootstrap() -> None:
+    if settings.environment == "production":
+        insecure_jwt_values = {"change-this-development-secret", "replace-this-before-production"}
+        if len(settings.jwt_secret) < 32 or settings.jwt_secret in insecure_jwt_values:
+            raise RuntimeError("Production requires a unique JWT_SECRET of at least 32 characters")
+        if settings.super_admin_password in {"SuperAdmin@123", "replace-with-a-strong-bootstrap-password"}:
+            raise RuntimeError("Production requires a unique FDX_SUPER_ADMIN_PASSWORD")
+    Base.metadata.create_all(engine)
+    with SessionLocal() as db:
+        existing = find_user_by_email(db, settings.super_admin_email)
+        if not existing:
+            db.add(User(name="FDX Super Admin", email=settings.super_admin_email.lower(), password_hash=hash_password(settings.super_admin_password), role=UserRole.SUPER_ADMIN, status="active"))
+            db.add(AuditLog(actor="system", action="Platform initialized", details="Initial Super Admin account created", level="info"))
+            db.commit()
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    bootstrap()
+    yield
+
+
+app = FastAPI(title="FDX Platform API", version="1.0.0", lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=[settings.frontend_url, "http://127.0.0.1:5173", "http://localhost:5173"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+
+@app.get("/health")
+@app.get("/api/health")
+def health(db: Session = Depends(get_db)):
+    db.execute(text("SELECT 1"))
+    services = [
+        {"name": "API Gateway", "detail": "NGINX routing and rate limits", "status": "healthy"},
+        {"name": "FastAPI", "detail": "Application service available", "status": "healthy"},
+        {"name": "PostgreSQL", "detail": "Primary database connected", "status": "healthy"},
+        *dependency_health(),
+    ]
+    return {"status": "healthy" if all(item["status"] == "healthy" for item in services) else "degraded", "services": services}
+
+
+@app.post("/api/auth/login")
+def login(payload: LoginInput, request: Request, db: Session = Depends(get_db)):
+    email = str(payload.email).lower()
+    check_login_rate_limit(request, email)
+    user = find_user_by_email(db, email)
+    if not user or not verify_password(payload.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    if user.status != "active":
+        raise HTTPException(status_code=403, detail="Account is not active")
+    if user.organization and (user.organization.status != "active" or (user.organization.expires_at and user.organization.expires_at < date.today())):
+        raise HTTPException(status_code=403, detail="Organization access is suspended or expired")
+    user.last_active_at = utcnow()
+    audit(db, user, "Signed in", "JWT session issued")
+    result = token_pair(user)
+    db.commit()
+    return {**result, "user": user_json(user)}
+
+
+@app.get("/api/auth/me")
+def me(user: User = Depends(current_user)):
+    return {"user": user_json(user)}
+
+
+@app.post("/api/auth/invitations/{token}")
+def accept_invitation(token: str, payload: PasswordInput, db: Session = Depends(get_db)):
+    user = db.scalar(select(User).where(User.invite_token_hash == hash_token(token)))
+    now = utcnow()
+    if not user or not user.invite_expires_at or user.invite_expires_at < now:
+        raise HTTPException(status_code=404, detail="Invitation is invalid or expired")
+    user.password_hash = hash_password(payload.password)
+    user.invite_token_hash = None
+    user.invite_expires_at = None
+    user.status = "active"
+    audit(db, user, "Invitation accepted", "Organization Admin password created")
+    db.commit()
+    return {**token_pair(user), "user": user_json(user)}
+
+
+@app.get("/api/admin/organizations")
+def list_organizations(_: User = Depends(require_super_admin), db: Session = Depends(get_db)):
+    return {"items": [organization_json(db, item) for item in db.scalars(select(Organization).order_by(Organization.created_at.desc())).all()]}
+
+
+@app.post("/api/admin/organizations", status_code=201)
+def create_organization(payload: OrganizationInput, user: User = Depends(require_super_admin), db: Session = Depends(get_db)):
+    organization = Organization(name=payload.name.strip(), type=payload.type, contact_name=payload.contactName.strip(), contact_email=str(payload.contactEmail).lower(), phone=payload.phone.strip(), storage_limit_bytes=int(payload.storageLimitGB * GB), retention_days=payload.retentionDays, expires_at=payload.expiry, status="active")
+    db.add(organization)
+    audit(db, user, "Organization created", f"{organization.name} ({organization.type.value})", organization_id=organization.id)
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="An organization with this name already exists") from exc
+    return organization_json(db, organization)
+
+
+@app.patch("/api/admin/organizations/{organization_id}")
+def update_organization(organization_id: str, payload: OrganizationPatch, user: User = Depends(require_super_admin), db: Session = Depends(get_db)):
+    organization = db.get(Organization, organization_id)
+    if not organization:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    values = payload.model_dump(exclude_unset=True)
+    mapping = {"contactName": "contact_name", "contactEmail": "contact_email", "retentionDays": "retention_days", "expiry": "expires_at", "storageLimitGB": "storage_limit_bytes"}
+    for key, value in values.items():
+        attribute = mapping.get(key, key)
+        if key == "storageLimitGB":
+            value = int(value * GB)
+            if value < organization.storage_used_bytes:
+                raise HTTPException(status_code=422, detail="Quota cannot be below current storage usage")
+        if key == "status" and value not in {"active", "suspended"}:
+            raise HTTPException(status_code=422, detail="Status must be active or suspended")
+        setattr(organization, attribute, value)
+    audit(db, user, "Organization updated", f"{organization.name}: {', '.join(values)}", organization_id=organization.id)
+    db.commit()
+    cache_delete("fdx:admin:dashboard", f"fdx:org:{organization.id}:dashboard")
+    return organization_json(db, organization)
+
+
+@app.get("/api/admin/users")
+def list_users(_: User = Depends(require_super_admin), db: Session = Depends(get_db)):
+    users = db.scalars(select(User).where(User.role == UserRole.ORG_ADMIN).order_by(User.created_at.desc())).all()
+    return {"items": [{**user_json(item), "organization": item.organization.name if item.organization else None} for item in users]}
+
+
+@app.post("/api/admin/users", status_code=201)
+def invite_user(payload: UserInviteInput, user: User = Depends(require_super_admin), db: Session = Depends(get_db)):
+    organization = db.get(Organization, payload.organizationId)
+    if not organization:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    if find_user_by_email(db, str(payload.email)):
+        raise HTTPException(status_code=409, detail="A user with this email already exists")
+    raw_token, token_hash = new_opaque_token()
+    invited = User(organization_id=organization.id, name=payload.name.strip(), email=str(payload.email).lower(), role=UserRole.ORG_ADMIN, status="invited", invite_token_hash=token_hash, invite_expires_at=utcnow() + timedelta(days=7))
+    db.add(invited)
+    db.flush()
+    invite_url = f"{settings.frontend_url}/accept-invite/{raw_token}"
+    email = queue_email(db, organization.id, invited.email, "You have been invited to FDX", f"<p>Hello {invited.name},</p><p>You have been invited to manage {organization.name} in FDX.</p><p><a href='{invite_url}'>Set your password</a></p><p>This link expires in 7 days.</p>")
+    dispatch_email(db, email)
+    audit(db, user, "Organization Admin invited", f"{invited.email} → {organization.name}", organization_id=organization.id)
+    db.commit()
+    response = {**user_json(invited), "organization": organization.name}
+    if settings.environment == "development":
+        response["developmentInviteUrl"] = invite_url
+    return response
+
+
+@app.get("/api/admin/dashboard")
+def admin_dashboard(_: User = Depends(require_super_admin), db: Session = Depends(get_db)):
+    organizations = db.scalars(select(Organization).order_by(Organization.storage_used_bytes.desc())).all()
+    jobs = db.scalar(select(func.count(ProcessingJob.id)).where(ProcessingJob.status.in_(["queued", "processing"]))) or 0
+    failed_jobs = db.scalar(select(func.count(ProcessingJob.id)).where(ProcessingJob.status == "failed")) or 0
+    email_total = db.scalar(select(func.count(EmailOutbox.id)).where(EmailOutbox.status == "sent")) or 0
+    photo_total = db.scalar(select(func.count(Photo.id))) or 0
+    services = health(db)["services"]
+    return {"stats": {"organizations": len(organizations), "activeOrganizations": sum(item.status == "active" for item in organizations), "organizationUsers": db.scalar(select(func.count(User.id)).where(User.role == UserRole.ORG_ADMIN)) or 0, "events": db.scalar(select(func.count(Event.id))) or 0, "photos": photo_total, "storageUsedGB": round(sum(item.storage_used_bytes for item in organizations) / GB, 2), "storageLimitGB": round(sum(item.storage_limit_bytes for item in organizations) / GB, 2), "processingJobs": jobs, "failedJobs": failed_jobs, "emailsSent": email_total, "expiringData": db.scalar(select(func.count(Event.id)).where(Event.expires_at <= date.today() + timedelta(days=30), Event.status != "expired")) or 0}, "organizations": [organization_json(db, item) for item in organizations], "services": services, "logs": log_items(db, None, 5)}
+
+
+def log_items(db: Session, organization_id: str | None, limit: int = 200):
+    statement = select(AuditLog).order_by(AuditLog.created_at.desc()).limit(limit)
+    if organization_id:
+        statement = statement.where(AuditLog.organization_id == organization_id)
+    return [{"id": item.id, "timestamp": iso(item.created_at), "actor": item.actor, "action": item.action, "details": item.details, "level": item.level} for item in db.scalars(statement).all()]
+
+
+@app.get("/api/admin/logs")
+def admin_logs(_: User = Depends(require_super_admin), db: Session = Depends(get_db)):
+    return {"items": log_items(db, None)}
+
+
+@app.get("/api/admin/system")
+def admin_system(_: User = Depends(require_super_admin), db: Session = Depends(get_db)):
+    service_result = health(db)
+    queue_counts = {status: count for status, count in db.execute(select(ProcessingJob.status, func.count(ProcessingJob.id)).group_by(ProcessingJob.status)).all()}
+    return {"status": service_result["status"], "services": service_result["services"], "queues": queue_counts, "emails": {status: count for status, count in db.execute(select(EmailOutbox.status, func.count(EmailOutbox.id)).group_by(EmailOutbox.status)).all()}}
+
+
+def org_events(db: Session, organization_id: str) -> list[Event]:
+    return db.scalars(select(Event).where(Event.organization_id == organization_id).order_by(Event.event_date.desc())).all()
+
+
+@app.get("/api/organization/events")
+def list_events(user: User = Depends(require_org_admin), db: Session = Depends(get_db)):
+    return {"items": [event_json(db, item) for item in org_events(db, user.organization_id)]}
+
+
+@app.post("/api/organization/events", status_code=201)
+def create_event(payload: EventInput, user: User = Depends(require_org_admin), db: Session = Depends(get_db)):
+    retention = payload.retentionDays or user.organization.retention_days
+    expires = payload.expiresAt or payload.date + timedelta(days=retention)
+    if expires < payload.date:
+        raise HTTPException(status_code=422, detail="Data expiry must be after the event date")
+    event = Event(organization_id=user.organization_id, name=payload.name.strip(), description=payload.description.strip(), event_date=payload.date, location=payload.location.strip(), retention_days=retention, expires_at=expires, status="preparing")
+    db.add(event)
+    audit(db, user, "Event created", event.name)
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="This event already exists") from exc
+    return event_json(db, event)
+
+
+@app.get("/api/organization/participants")
+def list_participants(eventId: str | None = None, user: User = Depends(require_org_admin), db: Session = Depends(get_db)):
+    statement = select(Participant).where(Participant.organization_id == user.organization_id).order_by(Participant.created_at.desc())
+    if eventId:
+        statement = statement.where(Participant.event_id == eventId)
+    return {"items": [participant_json(db, item) for item in db.scalars(statement).all()]}
+
+
+def participant_rows(content: bytes, filename: str) -> tuple[list[dict], int]:
+    if filename.lower().endswith(".csv"):
+        text_content = content.decode("utf-8-sig")
+        rows = list(csv.DictReader(io.StringIO(text_content)))
+    elif filename.lower().endswith((".xlsx", ".xlsm")):
+        sheet = load_workbook(io.BytesIO(content), read_only=True, data_only=True).active
+        values = list(sheet.values)
+        if not values:
+            return [], 0
+        headers = [str(value or "").strip() for value in values[0]]
+        rows = [dict(zip(headers, values_row)) for values_row in values[1:]]
+    else:
+        raise HTTPException(status_code=422, detail="Only CSV and XLSX participant files are supported")
+    normalized = []
+    for row in rows:
+        lowered = {str(key).strip().lower().replace("-", "").replace("_", ""): value for key, value in row.items()}
+        name = str(lowered.get("name") or "").strip()
+        email = str(lowered.get("email") or lowered.get("emailid") or "").strip().lower()
+        if name and "@" in email:
+            normalized.append({"name": name, "email": email})
+    return normalized, len(rows)
+
+
+@app.post("/api/organization/participants/import")
+def import_participants(event_id: str = Form(...), file: UploadFile = File(...), user: User = Depends(require_org_admin), db: Session = Depends(get_db)):
+    event = db.scalar(select(Event).where(Event.id == event_id, Event.organization_id == user.organization_id))
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    rows, total_rows = participant_rows(file.file.read(), file.filename or "participants.csv")
+    existing = set(db.scalars(select(Participant.email).where(Participant.event_id == event.id)).all())
+    imported = 0
+    duplicates = 0
+    development_links = []
+    for row in rows:
+        if row["email"] in existing:
+            duplicates += 1
+            continue
+        raw_token, token_hash = new_opaque_token()
+        participant = Participant(organization_id=user.organization_id, event_id=event.id, name=row["name"], email=row["email"], enrollment_token_hash=token_hash, enrollment_expires_at=utcnow() + timedelta(days=14))
+        db.add(participant)
+        db.flush()
+        enrollment_url = f"{settings.frontend_url}/enroll/{raw_token}"
+        email_item = queue_email(db, user.organization_id, participant.email, f"Find your photos from {event.name}", f"<p>Photos from {event.name} are being processed.</p><p>Verify your face securely to find photographs containing you.</p><p><a href='{enrollment_url}'>Find My Photos</a></p>")
+        dispatch_email(db, email_item)
+        if settings.environment == "development":
+            development_links.append(enrollment_url)
+        existing.add(row["email"])
+        imported += 1
+    audit(db, user, "Participants imported", f"{event.name}: {imported} imported, {duplicates} duplicates")
+    db.commit()
+    return {"imported": imported, "duplicates": duplicates, "invalid": max(0, total_rows - len(rows)), "developmentEnrollmentUrls": development_links}
+
+
+SUPPORTED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+MAX_ARCHIVE_FILES = 5_000
+MAX_ARCHIVE_UNCOMPRESSED_BYTES = 2 * GB
+
+
+def upload_candidates(files: list[UploadFile]):
+    """Yield image name, bytes and media type from image files or safe ZIP batches."""
+    for item in files:
+        content = item.file.read()
+        filename = item.filename or "photo.jpg"
+        if filename.lower().endswith(".zip"):
+            try:
+                with zipfile.ZipFile(io.BytesIO(content)) as archive:
+                    members = [entry for entry in archive.infolist() if not entry.is_dir()]
+                    if len(members) > MAX_ARCHIVE_FILES:
+                        raise HTTPException(status_code=413, detail=f"ZIP archives may contain at most {MAX_ARCHIVE_FILES} files")
+                    if sum(entry.file_size for entry in members) > MAX_ARCHIVE_UNCOMPRESSED_BYTES:
+                        raise HTTPException(status_code=413, detail="ZIP archive expands beyond the 2 GB safety limit")
+                    for entry in members:
+                        suffix = PurePosixPath(entry.filename).suffix.lower()
+                        if suffix not in SUPPORTED_IMAGE_EXTENSIONS:
+                            continue
+                        if entry.flag_bits & 0x1:
+                            raise HTTPException(status_code=422, detail="Encrypted ZIP archives are not supported")
+                        yield PurePosixPath(entry.filename).name, archive.read(entry), mimetypes.guess_type(entry.filename)[0] or "application/octet-stream"
+            except zipfile.BadZipFile as exc:
+                raise HTTPException(status_code=422, detail=f"{filename} is not a valid ZIP archive") from exc
+            continue
+        suffix = Path(filename).suffix.lower()
+        if (item.content_type or "").startswith("image/") and suffix in SUPPORTED_IMAGE_EXTENSIONS:
+            yield filename, content, item.content_type or mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        else:
+            yield filename, b"", ""
+
+
+@app.post("/api/organization/photos", status_code=201)
+def upload_photos(event_id: str = Form(...), files: list[UploadFile] = File(...), user: User = Depends(require_org_admin), db: Session = Depends(get_db)):
+    event = db.scalar(select(Event).where(Event.id == event_id, Event.organization_id == user.organization_id))
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    uploaded = []
+    skipped = []
+    total_added = 0
+    jobs = []
+    for filename, content, content_type in upload_candidates(files):
+        if not content:
+            skipped.append({"name": filename, "reason": "not a supported image"})
+            continue
+        checksum = hashlib.sha256(content).hexdigest()
+        if db.scalar(select(Photo).where(Photo.event_id == event.id, Photo.sha256 == checksum)):
+            skipped.append({"name": item.filename, "reason": "duplicate"})
+            continue
+        if user.organization.storage_used_bytes + total_added + len(content) > user.organization.storage_limit_bytes:
+            raise HTTPException(status_code=413, detail="Organization storage quota would be exceeded")
+        photo_id = secrets.token_hex(16)
+        safe_name = "".join(character for character in filename if character.isalnum() or character in ".-_") or "photo.jpg"
+        key = f"organizations/{user.organization_id}/events/{event.id}/original/{photo_id}-{safe_name}"
+        storage.put(key, content, content_type)
+        photo = Photo(id=photo_id, organization_id=user.organization_id, event_id=event.id, filename=safe_name, storage_key=key, content_type=content_type, size_bytes=len(content), sha256=checksum, processing_status="queued")
+        job = ProcessingJob(organization_id=user.organization_id, event_id=event.id, photo_id=photo.id, job_type="face_pipeline", status="queued")
+        db.add_all([photo, job])
+        db.flush()
+        uploaded.append({"id": photo.id, "filename": photo.filename, "sizeBytes": photo.size_bytes, "status": photo.processing_status})
+        jobs.append(job.id)
+        total_added += len(content)
+    user.organization.storage_used_bytes += total_added
+    if uploaded:
+        event.status = "processing"
+    audit(db, user, "Photo batch uploaded", f"{event.name}: {len(uploaded)} accepted, {len(skipped)} skipped")
+    db.commit()
+    published = sum(publish_job({"job_id": job_id}) for job_id in jobs)
+    return {"uploaded": uploaded, "skipped": skipped, "jobsPublished": published}
+
+
+@app.get("/api/organization/uploads")
+def list_uploads(user: User = Depends(require_org_admin), db: Session = Depends(get_db)):
+    photos = db.scalars(select(Photo).where(Photo.organization_id == user.organization_id).order_by(Photo.uploaded_at.desc()).limit(200)).all()
+    return {"items": [{"id": item.id, "eventId": item.event_id, "event": item.event.name, "filename": item.filename, "sizeBytes": item.size_bytes, "status": item.processing_status, "uploadedAt": iso(item.uploaded_at)} for item in photos]}
+
+
+@app.get("/api/organization/processing")
+def processing(user: User = Depends(require_org_admin), db: Session = Depends(get_db)):
+    jobs = db.scalars(select(ProcessingJob).where(ProcessingJob.organization_id == user.organization_id).order_by(ProcessingJob.created_at.desc()).limit(200)).all()
+    counts = {status: count for status, count in db.execute(select(ProcessingJob.status, func.count(ProcessingJob.id)).where(ProcessingJob.organization_id == user.organization_id).group_by(ProcessingJob.status)).all()}
+    faces = db.scalar(select(func.count(FaceDetection.id)).where(FaceDetection.organization_id == user.organization_id)) or 0
+    return {"stats": {"activeJobs": counts.get("queued", 0) + counts.get("processing", 0), "failedJobs": counts.get("failed", 0), "facesDetected": faces}, "items": [{"id": item.id, "eventId": item.event_id, "photoId": item.photo_id, "type": item.job_type, "status": item.status, "progress": item.progress, "worker": item.worker or "queued", "error": item.error, "createdAt": iso(item.created_at)} for item in jobs]}
+
+
+@app.get("/api/organization/matches")
+def matches(state: str | None = None, user: User = Depends(require_org_admin), db: Session = Depends(get_db)):
+    statement = select(FaceMatch).where(FaceMatch.organization_id == user.organization_id).order_by(FaceMatch.created_at.desc())
+    if state and state != "all":
+        statement = statement.where(FaceMatch.state == state)
+    rows = db.scalars(statement.limit(500)).all()
+    counts = {match_state: count for match_state, count in db.execute(select(FaceMatch.state, func.count(FaceMatch.id)).where(FaceMatch.organization_id == user.organization_id).group_by(FaceMatch.state)).all()}
+    total_faces = db.scalar(select(func.count(FaceDetection.id)).where(FaceDetection.organization_id == user.organization_id)) or 0
+    return {"stats": {"facesDetected": total_faces, "high": counts.get("high", 0) + counts.get("approved", 0), "review": counts.get("review", 0), "low": counts.get("low", 0) + counts.get("rejected", 0)}, "items": [{"id": row.id, "event": row.detection.photo.event.name, "participant": row.participant.name if row.participant else "Unknown", "participantId": row.participant_id, "confidence": row.confidence, "photo": row.detection.photo.filename, "photoId": row.detection.photo_id, "state": row.state, "matchedAt": iso(row.created_at)} for row in rows]}
+
+
+@app.patch("/api/organization/matches/{match_id}")
+def review_match(match_id: str, payload: MatchReviewInput, user: User = Depends(require_org_admin), db: Session = Depends(get_db)):
+    row = db.scalar(select(FaceMatch).where(FaceMatch.id == match_id, FaceMatch.organization_id == user.organization_id))
+    if not row:
+        raise HTTPException(status_code=404, detail="Match not found")
+    if payload.decision not in {"approved", "rejected"}:
+        raise HTTPException(status_code=422, detail="Decision must be approved or rejected")
+    row.state = payload.decision
+    row.reviewed_by = user.id
+    row.reviewed_at = utcnow()
+    audit(db, user, "Face match reviewed", f"{row.id}: {payload.decision}")
+    db.commit()
+    return {"id": row.id, "state": row.state}
+
+
+def delivery_json(db: Session, row: Delivery) -> dict:
+    photos = db.scalar(select(func.count(FaceMatch.id)).where(FaceMatch.participant_id == row.participant_id, FaceMatch.event_id == row.event_id, FaceMatch.state.in_(["high", "approved"]))) or 0
+    return {"id": row.id, "participant": row.participant.name, "participantId": row.participant_id, "event": row.event.name, "eventId": row.event_id, "photos": photos, "status": row.status, "expires": iso(row.expires_at), "sentAt": iso(row.sent_at)}
+
+
+@app.get("/api/organization/deliveries")
+def deliveries(user: User = Depends(require_org_admin), db: Session = Depends(get_db)):
+    rows = db.scalars(select(Delivery).where(Delivery.organization_id == user.organization_id).order_by(Delivery.created_at.desc())).all()
+    counts = {status: count for status, count in db.execute(select(Delivery.status, func.count(Delivery.id)).where(Delivery.organization_id == user.organization_id).group_by(Delivery.status)).all()}
+    return {"stats": counts, "items": [delivery_json(db, item) for item in rows]}
+
+
+@app.post("/api/organization/deliveries/{participant_id}/send")
+def send_delivery(participant_id: str, user: User = Depends(require_org_admin), db: Session = Depends(get_db)):
+    participant = db.scalar(select(Participant).where(Participant.id == participant_id, Participant.organization_id == user.organization_id))
+    if not participant:
+        raise HTTPException(status_code=404, detail="Participant not found")
+    match_count = db.scalar(select(func.count(FaceMatch.id)).where(FaceMatch.participant_id == participant.id, FaceMatch.state.in_(["high", "approved"]))) or 0
+    if not match_count:
+        raise HTTPException(status_code=409, detail="No approved photos are available")
+    raw_token, token_hash = new_opaque_token()
+    delivery = db.scalar(select(Delivery).where(Delivery.participant_id == participant.id, Delivery.event_id == participant.event_id))
+    if not delivery:
+        delivery = Delivery(organization_id=user.organization_id, event_id=participant.event_id, participant_id=participant.id, gallery_token_hash=token_hash, expires_at=datetime.combine(participant.event.expires_at, datetime.min.time(), timezone.utc))
+        db.add(delivery)
+    else:
+        delivery.gallery_token_hash = token_hash
+    gallery_url = f"{settings.frontend_url}/gallery/{raw_token}"
+    email_item = queue_email(db, user.organization_id, participant.email, f"Your photos from {participant.event.name} are ready", f"<p>Hello {participant.name},</p><p>We found {match_count} photos containing you.</p><p><a href='{gallery_url}'>View My Photos</a></p><p>This private link expires {participant.event.expires_at.isoformat()}.</p>")
+    dispatch_email(db, email_item)
+    delivery.status = "delivered" if email_item.status == "sent" else "failed"
+    delivery.sent_at = utcnow()
+    participant.delivery_status = delivery.status
+    audit(db, user, "Gallery delivered", f"{participant.event.name}: {participant.email} ({match_count} photos)")
+    db.commit()
+    result = delivery_json(db, delivery)
+    if settings.environment == "development":
+        result["developmentGalleryUrl"] = gallery_url
+    return result
+
+
+@app.get("/api/organization/logs")
+def organization_logs(user: User = Depends(require_org_admin), db: Session = Depends(get_db)):
+    return {"items": log_items(db, user.organization_id)}
+
+
+@app.get("/api/organization/settings")
+def organization_settings(user: User = Depends(require_org_admin), db: Session = Depends(get_db)):
+    return organization_json(db, user.organization)
+
+
+@app.patch("/api/organization/settings")
+def update_settings(payload: SettingsInput, user: User = Depends(require_org_admin), db: Session = Depends(get_db)):
+    values = payload.model_dump(exclude_unset=True)
+    for key, value in values.items():
+        setattr(user.organization, {"contactName": "contact_name", "contactEmail": "contact_email"}.get(key, key), value)
+    audit(db, user, "Organization profile updated", ", ".join(values))
+    db.commit()
+    return organization_json(db, user.organization)
+
+
+@app.get("/api/organization/dashboard")
+def organization_dashboard(user: User = Depends(require_org_admin), db: Session = Depends(get_db)):
+    events = org_events(db, user.organization_id)
+    return {"organization": organization_json(db, user.organization), "events": [event_json(db, item) for item in events], "stats": {"events": len(events), "photos": db.scalar(select(func.count(Photo.id)).where(Photo.organization_id == user.organization_id)) or 0, "participants": db.scalar(select(func.count(Participant.id)).where(Participant.organization_id == user.organization_id)) or 0, "enrolled": db.scalar(select(func.count(Participant.id)).where(Participant.organization_id == user.organization_id, Participant.enrollment_status == "verified")) or 0, "matched": db.scalar(select(func.count(func.distinct(FaceMatch.participant_id))).where(FaceMatch.organization_id == user.organization_id, FaceMatch.participant_id.is_not(None), FaceMatch.state.in_(["high", "approved"]))) or 0, "delivered": db.scalar(select(func.count(Delivery.id)).where(Delivery.organization_id == user.organization_id, Delivery.status == "delivered")) or 0}}
+
+
+@app.get("/api/media/{photo_id}")
+def media(photo_id: str, user: User = Depends(require_org_admin), db: Session = Depends(get_db)):
+    photo = db.scalar(select(Photo).where(Photo.id == photo_id, Photo.organization_id == user.organization_id))
+    if not photo:
+        raise HTTPException(status_code=404, detail="Photo not found")
+    content, content_type = storage.read(photo.storage_key)
+    return Response(content, media_type=content_type, headers={"Cache-Control": "private, max-age=300"})
+
+
+@app.get("/api/public/enroll/{token}")
+def enrollment_info(token: str, db: Session = Depends(get_db)):
+    participant = db.scalar(select(Participant).where(Participant.enrollment_token_hash == hash_token(token)))
+    if not participant or participant.enrollment_expires_at < utcnow():
+        raise HTTPException(status_code=404, detail="Enrollment link is invalid or expired")
+    return {"participant": participant.name, "event": participant.event.name, "organization": participant.event.organization.name, "status": participant.enrollment_status, "expiresAt": iso(participant.enrollment_expires_at)}
+
+
+@app.post("/api/public/enroll/{token}")
+def enroll_face(token: str, consent: bool = Form(...), selfie: UploadFile = File(...), db: Session = Depends(get_db)):
+    participant = db.scalar(select(Participant).where(Participant.enrollment_token_hash == hash_token(token)))
+    if not participant or participant.enrollment_expires_at < utcnow():
+        raise HTTPException(status_code=404, detail="Enrollment link is invalid or expired")
+    if not consent:
+        raise HTTPException(status_code=422, detail="Consent is required")
+    content = selfie.file.read()
+    if not content or not (selfie.content_type or "").startswith("image/"):
+        raise HTTPException(status_code=422, detail="A valid selfie image is required")
+    try:
+        result = ml_embedding(content, selfie.filename or "selfie.jpg", selfie.content_type or "image/jpeg")
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"A clear face could not be enrolled: {exc}") from exc
+    key = f"organizations/{participant.organization_id}/events/{participant.event_id}/enrollments/{participant.id}.jpg"
+    storage.put(key, content, selfie.content_type or "image/jpeg")
+    from .models import FaceEnrollment
+    enrollment = participant.enrollment or FaceEnrollment(participant_id=participant.id, storage_key=key, embedding=result["embedding"], detector_confidence=result["box"]["probability"])
+    enrollment.storage_key = key
+    enrollment.embedding = result["embedding"]
+    enrollment.detector_confidence = result["box"]["probability"]
+    db.add(enrollment)
+    participant.enrollment_status = "verified"
+    participant.consented_at = utcnow()
+    audit(db, None, "Face enrollment completed", f"{participant.event.name}: {participant.email}", organization_id=participant.organization_id)
+    db.commit()
+    return {"status": "verified", "message": "Your face was enrolled securely. We will email you when your private gallery is ready."}
+
+
+@app.get("/api/public/gallery/{token}")
+def public_gallery(token: str, db: Session = Depends(get_db)):
+    delivery = db.scalar(select(Delivery).where(Delivery.gallery_token_hash == hash_token(token)))
+    if not delivery or delivery.expires_at < utcnow():
+        raise HTTPException(status_code=404, detail="Gallery link is invalid or expired")
+    matches = db.scalars(select(FaceMatch).where(FaceMatch.participant_id == delivery.participant_id, FaceMatch.event_id == delivery.event_id, FaceMatch.state.in_(["high", "approved"]))).all()
+    photos = {row.detection.photo.id: row.detection.photo for row in matches}
+    return {"participant": delivery.participant.name, "event": delivery.event.name, "organization": delivery.event.organization.name, "expiresAt": iso(delivery.expires_at), "photos": [{"id": photo.id, "filename": photo.filename, "url": f"/api/public/gallery/{token}/photos/{photo.id}"} for photo in photos.values()]}
+
+
+@app.get("/api/public/gallery/{token}/photos/{photo_id}")
+def public_gallery_photo(token: str, photo_id: str, db: Session = Depends(get_db)):
+    delivery = db.scalar(select(Delivery).where(Delivery.gallery_token_hash == hash_token(token)))
+    if not delivery or delivery.expires_at < utcnow():
+        raise HTTPException(status_code=404, detail="Gallery link is invalid or expired")
+    permitted = db.scalar(select(FaceMatch).join(FaceDetection).where(FaceMatch.participant_id == delivery.participant_id, FaceMatch.event_id == delivery.event_id, FaceDetection.photo_id == photo_id, FaceMatch.state.in_(["high", "approved"])))
+    if not permitted:
+        raise HTTPException(status_code=404, detail="Photo not found")
+    content, content_type = storage.read(permitted.detection.photo.storage_key)
+    return Response(content, media_type=content_type, headers={"Cache-Control": "private, max-age=300", "Content-Disposition": f'inline; filename="{permitted.detection.photo.filename}"'})
+
+
+@app.get("/api/public/gallery/{token}/download")
+def public_gallery_download(token: str, photoIds: str | None = None, db: Session = Depends(get_db)):
+    delivery = db.scalar(select(Delivery).where(Delivery.gallery_token_hash == hash_token(token)))
+    if not delivery or delivery.expires_at < utcnow():
+        raise HTTPException(status_code=404, detail="Gallery link is invalid or expired")
+    matches = db.scalars(select(FaceMatch).where(FaceMatch.participant_id == delivery.participant_id, FaceMatch.event_id == delivery.event_id, FaceMatch.state.in_(["high", "approved"]))).all()
+    permitted = {row.detection.photo.id: row.detection.photo for row in matches}
+    requested = {value for value in (photoIds or "").split(",") if value}
+    photos = [photo for photo_id, photo in permitted.items() if not requested or photo_id in requested]
+    if not photos:
+        raise HTTPException(status_code=404, detail="No selected photos are available")
+    archive_buffer = tempfile.SpooledTemporaryFile(max_size=32 * 1024 * 1024)
+    with zipfile.ZipFile(archive_buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for photo in photos:
+            content, _ = storage.read(photo.storage_key)
+            archive.writestr(f"{photo.id[:8]}-{photo.filename}", content)
+    archive_buffer.seek(0)
+    base_name = "".join(character for character in delivery.event.name.lower().replace(" ", "-") if character.isalnum() or character in "-_") or "event"
+    def chunks():
+        while content := archive_buffer.read(1024 * 1024):
+            yield content
+    return StreamingResponse(chunks(), media_type="application/zip", headers={"Cache-Control": "no-store", "Content-Disposition": f'attachment; filename="{base_name}-photos.zip"'}, background=BackgroundTask(archive_buffer.close))

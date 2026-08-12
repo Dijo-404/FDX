@@ -18,6 +18,9 @@ import FaceMatches from "./pages/organization/FaceMatches";
 import Deliveries from "./pages/organization/Deliveries";
 import OrganizationLogs from "./pages/organization/Logs";
 import Settings from "./pages/organization/Settings";
+import AcceptInvite from "./pages/public/AcceptInvite";
+import Enrollment from "./pages/public/Enrollment";
+import Gallery from "./pages/public/Gallery";
 
 const SUPER_ADMIN_NAV = [
   { to: "/admin", label: "Overview", icon: "dashboard", end: true },
@@ -43,6 +46,9 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
+      <Route path="/accept-invite/:token" element={<AcceptInvite />} />
+      <Route path="/enroll/:token" element={<Enrollment />} />
+      <Route path="/gallery/:token" element={<Gallery />} />
 
       <Route path="/admin" element={<ProtectedRoute role="super_admin"><DashboardShell navItems={SUPER_ADMIN_NAV} roleLabel="Super Admin" title="FDX Control Center" /></ProtectedRoute>}>
         <Route index element={<SuperAdminOverview />} />

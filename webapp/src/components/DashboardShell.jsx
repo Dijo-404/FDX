@@ -57,11 +57,6 @@ export default function DashboardShell({ navItems, roleLabel, title }) {
           </div>
 
           <div className="shell-topbar-actions">
-            <div className="shell-search">
-              <Icon name="search" size={15} />
-              <input type="text" placeholder="Search..." />
-            </div>
-            <button type="button" className="shell-alert" aria-label="Notifications"><Icon name="bell" size={18} /><span /></button>
             <div className="shell-avatar" title={user?.email}>
               {user?.name?.slice(0, 1) ?? "U"}
             </div>

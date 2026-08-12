@@ -1,5 +1,31 @@
 # FDX Portable Arch/NVIDIA Build
 
+## Multi-tenant event platform
+
+The `feature/scale` application implements the workflow in `docs/workflow.txt`: one JWT login routes Super Admins and Organization Admins into role-scoped React dashboards; NGINX applies routing and rate limits; FastAPI persists tenant data in PostgreSQL; Redis protects login and provides cache infrastructure; Kafka distributes RetinaFace/AdaFace jobs; private participant links handle consent, enrollment, and gallery delivery.
+
+Start the complete platform:
+
+```sh
+./run-platform.sh
+```
+
+Open `http://127.0.0.1:8080`. Development bootstraps the Super Admin from `.env`; no organizations, events, participants, photos, metrics, or logs are seeded. Invitations and galleries return their private development URLs in the UI when `FDX_ENVIRONMENT=development`. Configure Resend or AWS SES to send real email.
+
+Run the live API and tenant-isolation verification:
+
+```sh
+node tools/verify_platform.mjs
+```
+
+Stop the platform without deleting persistent volumes:
+
+```sh
+./stop-platform.sh
+```
+
+Production object storage supports S3, while local development uses a Docker volume. The deployment mapping and encrypted S3/Glacier CloudFormation template are in `deploy/aws/`.
+
 This is the isolated Docker-free FDX build. It runs RetinaFace R50 detection
 and AdaFace IR101 matching directly through ONNX Runtime. The recognition path
 is tuned conservatively for small, dark crops and for rejecting unknown faces.

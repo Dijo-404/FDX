@@ -23,6 +23,7 @@ const PATHS = {
   check: "m5 12 4 4L19 6",
   mail: "M3 6l9 7 9-7M5 5h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z",
   arrow: "M5 12h14m-6-6 6 6-6 6",
+  download: "M12 3v12m0 0 5-5m-5 5-5-5M5 21h14",
 };
 
 export default function Icon({ name, size = 18, strokeWidth = 1.8, className }) {

@@ -1,6 +1,6 @@
 # FDX
 
-FDX is a multi-tenant event-photo delivery platform implementing the workflow in `docs/workflow.txt`. A single JWT login routes Super Admins, Organization Admins, and restricted Staff users to role-scoped React dashboards.
+FDX is a multi-tenant event-photo delivery platform implementing the workflow in [`docs/workflow.md`](docs/workflow.md). A single JWT login routes Super Admins, Organization Admins, and restricted Staff users to role-scoped React dashboards.
 
 ## Architecture
 

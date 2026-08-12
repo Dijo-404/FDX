@@ -40,6 +40,8 @@ def organization_json(db: Session, organization: Organization) -> dict:
         "status": organization.status,
         "users": users,
         "events": events,
+        "storageUsedBytes": organization.storage_used_bytes,
+        "storageLimitBytes": organization.storage_limit_bytes,
         "storageUsedGB": round(organization.storage_used_bytes / GB, 2),
         "storageLimitGB": round(organization.storage_limit_bytes / GB, 2),
         "retentionDays": organization.retention_days,

@@ -26,6 +26,7 @@ class OrganizationType(str, enum.Enum):
 class UserRole(str, enum.Enum):
     SUPER_ADMIN = "super_admin"
     ORG_ADMIN = "org_admin"
+    STAFF = "staff"
 
 
 class Organization(Base):
@@ -104,6 +105,7 @@ class FaceEnrollment(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4)
     participant_id: Mapped[str] = mapped_column(ForeignKey("participants.id", ondelete="CASCADE"), unique=True)
     storage_key: Mapped[str] = mapped_column(String(500))
+    size_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
     embedding: Mapped[list] = mapped_column(JSON)
     detector_confidence: Mapped[float] = mapped_column(Float)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -117,8 +119,10 @@ class Photo(Base):
     event_id: Mapped[str] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"), index=True)
     filename: Mapped[str] = mapped_column(String(260))
     storage_key: Mapped[str] = mapped_column(String(500), unique=True)
+    thumbnail_storage_key: Mapped[str | None] = mapped_column(String(500), nullable=True)
     content_type: Mapped[str] = mapped_column(String(120))
     size_bytes: Mapped[int] = mapped_column(BigInteger)
+    thumbnail_size_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
     sha256: Mapped[str] = mapped_column(String(64))
     processing_status: Mapped[str] = mapped_column(String(24), default="uploaded", index=True)
     uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -192,6 +196,7 @@ class EmailOutbox(Base):
     __tablename__ = "email_outbox"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4)
     organization_id: Mapped[str | None] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True)
+    delivery_id: Mapped[str | None] = mapped_column(ForeignKey("deliveries.id", ondelete="SET NULL"), nullable=True, index=True)
     recipient: Mapped[str] = mapped_column(String(254))
     subject: Mapped[str] = mapped_column(String(240))
     html: Mapped[str] = mapped_column(Text)
@@ -199,6 +204,9 @@ class EmailOutbox(Base):
     provider: Mapped[str] = mapped_column(String(30), default="outbox")
     provider_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

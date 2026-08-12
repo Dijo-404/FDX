@@ -1,0 +1,341 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Complete FDX production platform - ALB, EC2, RDS PostgreSQL, ElastiCache Redis, MSK, S3/Glacier, SES permissions, and scheduled Lambda retention.
+
+Parameters:
+  DomainName:
+    Type: String
+    Description: Public HTTPS origin, for example https://fdx.example.com
+  CertificateArn:
+    Type: String
+    Description: ACM certificate ARN for DomainName
+  EmailFrom:
+    Type: String
+    Description: SES-verified sender address
+  SuperAdminEmail:
+    Type: String
+    Default: superadmin@fdx.io
+  InstanceType:
+    Type: String
+    Default: t3.large
+  DatabaseInstanceClass:
+    Type: String
+    Default: db.t4g.medium
+  KafkaInstanceType:
+    Type: String
+    Default: kafka.t3.small
+  ArchiveAfterDays:
+    Type: Number
+    Default: 90
+  DeleteAfterDays:
+    Type: Number
+    Default: 365
+  DockerComposeVersion:
+    Type: String
+    Default: v2.39.1
+
+Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.42.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags: [{ Key: Name, Value: fdx-production }]
+  InternetGateway: { Type: AWS::EC2::InternetGateway }
+  GatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties: { VpcId: !Ref Vpc, InternetGatewayId: !Ref InternetGateway }
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties: { VpcId: !Ref Vpc, CidrBlock: 10.42.0.0/24, AvailabilityZone: !Select [0, !GetAZs ""], MapPublicIpOnLaunch: true }
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties: { VpcId: !Ref Vpc, CidrBlock: 10.42.1.0/24, AvailabilityZone: !Select [1, !GetAZs ""], MapPublicIpOnLaunch: true }
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties: { VpcId: !Ref Vpc, CidrBlock: 10.42.10.0/24, AvailabilityZone: !Select [0, !GetAZs ""] }
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties: { VpcId: !Ref Vpc, CidrBlock: 10.42.11.0/24, AvailabilityZone: !Select [1, !GetAZs ""] }
+  NatEip:
+    Type: AWS::EC2::EIP
+    DependsOn: GatewayAttachment
+    Properties: { Domain: vpc }
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties: { AllocationId: !GetAtt NatEip.AllocationId, SubnetId: !Ref PublicSubnetA }
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties: { VpcId: !Ref Vpc }
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayAttachment
+    Properties: { RouteTableId: !Ref PublicRouteTable, DestinationCidrBlock: 0.0.0.0/0, GatewayId: !Ref InternetGateway }
+  PublicRouteA: { Type: AWS::EC2::SubnetRouteTableAssociation, Properties: { SubnetId: !Ref PublicSubnetA, RouteTableId: !Ref PublicRouteTable } }
+  PublicRouteB: { Type: AWS::EC2::SubnetRouteTableAssociation, Properties: { SubnetId: !Ref PublicSubnetB, RouteTableId: !Ref PublicRouteTable } }
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties: { VpcId: !Ref Vpc }
+  PrivateDefaultRoute:
+    Type: AWS::EC2::Route
+    Properties: { RouteTableId: !Ref PrivateRouteTable, DestinationCidrBlock: 0.0.0.0/0, NatGatewayId: !Ref NatGateway }
+  PrivateRouteA: { Type: AWS::EC2::SubnetRouteTableAssociation, Properties: { SubnetId: !Ref PrivateSubnetA, RouteTableId: !Ref PrivateRouteTable } }
+  PrivateRouteB: { Type: AWS::EC2::SubnetRouteTableAssociation, Properties: { SubnetId: !Ref PrivateSubnetB, RouteTableId: !Ref PrivateRouteTable } }
+
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Public HTTPS to FDX ALB
+      VpcId: !Ref Vpc
+      SecurityGroupIngress: [{ IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0 }]
+  AppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: FDX application hosts
+      VpcId: !Ref Vpc
+      SecurityGroupIngress: [{ IpProtocol: tcp, FromPort: 8080, ToPort: 8080, SourceSecurityGroupId: !Ref AlbSecurityGroup }]
+  DataSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: FDX private data services
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 5432, ToPort: 5432, SourceSecurityGroupId: !Ref AppSecurityGroup }
+        - { IpProtocol: tcp, FromPort: 6379, ToPort: 6379, SourceSecurityGroupId: !Ref AppSecurityGroup }
+        - { IpProtocol: tcp, FromPort: 9094, ToPort: 9094, SourceSecurityGroupId: !Ref AppSecurityGroup }
+
+  MediaBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption: { ServerSideEncryptionConfiguration: [{ ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 } }] }
+      PublicAccessBlockConfiguration: { BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true }
+      VersioningConfiguration: { Status: Enabled }
+      LifecycleConfiguration:
+        Rules:
+          - Id: ArchiveEventMedia
+            Prefix: organizations/
+            Status: Enabled
+            Transitions: [{ StorageClass: GLACIER_IR, TransitionInDays: !Ref ArchiveAfterDays }]
+            ExpirationInDays: !Ref DeleteAfterDays
+            NoncurrentVersionExpiration: { NoncurrentDays: 30 }
+  ApiRepository: { Type: AWS::ECR::Repository, Properties: { ImageScanningConfiguration: { ScanOnPush: true }, ImageTagMutability: MUTABLE } }
+  WebRepository: { Type: AWS::ECR::Repository, Properties: { ImageScanningConfiguration: { ScanOnPush: true }, ImageTagMutability: MUTABLE } }
+  MlRepository: { Type: AWS::ECR::Repository, Properties: { ImageScanningConfiguration: { ScanOnPush: true }, ImageTagMutability: MUTABLE } }
+
+  EmailIdentity:
+    Type: AWS::SES::EmailIdentity
+    Properties: { EmailIdentity: !Ref EmailFrom }
+
+  DatabaseSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      GenerateSecretString: { SecretStringTemplate: '{"username":"fdx"}', GenerateStringKey: password, PasswordLength: 32, ExcludePunctuation: true }
+  JwtSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      GenerateSecretString: { SecretStringTemplate: '{}', GenerateStringKey: value, PasswordLength: 64, ExcludePunctuation: true }
+  AdminSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      GenerateSecretString: { SecretStringTemplate: !Sub '{"email":"${SuperAdminEmail}"}', GenerateStringKey: password, PasswordLength: 32, ExcludePunctuation: true }
+
+  DatabaseSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties: { DBSubnetGroupDescription: FDX private database subnets, SubnetIds: [!Ref PrivateSubnetA, !Ref PrivateSubnetB] }
+  Database:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      Engine: postgres
+      DBInstanceClass: !Ref DatabaseInstanceClass
+      AllocatedStorage: 100
+      MaxAllocatedStorage: 1000
+      StorageType: gp3
+      StorageEncrypted: true
+      MultiAZ: true
+      DBName: fdx
+      MasterUsername: !Sub '{{resolve:secretsmanager:${DatabaseSecret}:SecretString:username}}'
+      MasterUserPassword: !Sub '{{resolve:secretsmanager:${DatabaseSecret}:SecretString:password}}'
+      DBSubnetGroupName: !Ref DatabaseSubnetGroup
+      VPCSecurityGroups: [!Ref DataSecurityGroup]
+      BackupRetentionPeriod: 14
+      DeletionProtection: true
+      PubliclyAccessible: false
+
+  RedisSubnetGroup:
+    Type: AWS::ElastiCache::SubnetGroup
+    Properties: { Description: FDX Redis subnets, SubnetIds: [!Ref PrivateSubnetA, !Ref PrivateSubnetB] }
+  RedisReplicationGroup:
+    Type: AWS::ElastiCache::ReplicationGroup
+    Properties:
+      ReplicationGroupDescription: FDX cache and rate limiting
+      Engine: redis
+      CacheNodeType: cache.t4g.small
+      NumCacheClusters: 2
+      AutomaticFailoverEnabled: true
+      MultiAZEnabled: true
+      AtRestEncryptionEnabled: true
+      TransitEncryptionEnabled: true
+      CacheSubnetGroupName: !Ref RedisSubnetGroup
+      SecurityGroupIds: [!Ref DataSecurityGroup]
+
+  KafkaCluster:
+    Type: AWS::MSK::Cluster
+    Properties:
+      ClusterName: !Sub fdx-${AWS::StackName}
+      KafkaVersion: 3.9.x
+      NumberOfBrokerNodes: 2
+      BrokerNodeGroupInfo:
+        InstanceType: !Ref KafkaInstanceType
+        ClientSubnets: [!Ref PrivateSubnetA, !Ref PrivateSubnetB]
+        SecurityGroups: [!Ref DataSecurityGroup]
+        StorageInfo: { EBSStorageInfo: { VolumeSize: 100 } }
+      EncryptionInfo: { EncryptionInTransit: { ClientBroker: TLS, InCluster: true } }
+      ClientAuthentication: { Unauthenticated: { Enabled: true } }
+      EnhancedMonitoring: PER_BROKER
+
+  ApplicationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument: { Version: "2012-10-17", Statement: [{ Effect: Allow, Principal: { Service: ec2.amazonaws.com }, Action: sts:AssumeRole }] }
+      ManagedPolicyArns: [arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore]
+      Policies:
+        - PolicyName: FdxRuntime
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - { Effect: Allow, Action: [s3:GetObject, s3:PutObject, s3:DeleteObject], Resource: !Sub '${MediaBucket.Arn}/*' }
+              - { Effect: Allow, Action: [s3:ListBucket], Resource: !GetAtt MediaBucket.Arn }
+              - { Effect: Allow, Action: [ses:SendEmail], Resource: '*' }
+              - { Effect: Allow, Action: [kafka:GetBootstrapBrokers], Resource: !Ref KafkaCluster }
+              - { Effect: Allow, Action: [secretsmanager:GetSecretValue], Resource: [!Ref DatabaseSecret, !Ref JwtSecret, !Ref AdminSecret] }
+              - { Effect: Allow, Action: [ecr:GetAuthorizationToken], Resource: '*' }
+              - { Effect: Allow, Action: [ecr:BatchGetImage, ecr:GetDownloadUrlForLayer, ecr:BatchCheckLayerAvailability], Resource: [!GetAtt ApiRepository.Arn, !GetAtt WebRepository.Arn, !GetAtt MlRepository.Arn] }
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties: { Roles: [!Ref ApplicationRole] }
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties: { Scheme: internet-facing, SecurityGroups: [!Ref AlbSecurityGroup], Subnets: [!Ref PublicSubnetA, !Ref PublicSubnetB] }
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties: { VpcId: !Ref Vpc, Port: 8080, Protocol: HTTP, HealthCheckPath: /api/health, Matcher: { HttpCode: "200" }, TargetType: instance }
+  HttpsListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 443
+      Protocol: HTTPS
+      Certificates: [{ CertificateArn: !Ref CertificateArn }]
+      DefaultActions: [{ Type: forward, TargetGroupArn: !Ref TargetGroup }]
+
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
+        InstanceType: !Ref InstanceType
+        IamInstanceProfile: { Arn: !GetAtt InstanceProfile.Arn }
+        SecurityGroupIds: [!Ref AppSecurityGroup]
+        MetadataOptions: { HttpTokens: required }
+        BlockDeviceMappings: [{ DeviceName: /dev/xvda, Ebs: { Encrypted: true, VolumeSize: 100, VolumeType: gp3 } }]
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            set -euo pipefail
+            dnf install -y docker awscli jq
+            systemctl enable --now docker
+            mkdir -p /usr/local/lib/docker/cli-plugins
+            curl -fsSL https://github.com/docker/compose/releases/download/${DockerComposeVersion}/docker-compose-linux-x86_64 -o /usr/local/lib/docker/cli-plugins/docker-compose
+            chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+            mkdir -p /opt/fdx/models/onnx
+            until aws s3 cp s3://${MediaBucket}/deployments/docker-compose.aws.yml /opt/fdx/docker-compose.yml --region ${AWS::Region}; do sleep 30; done
+            aws s3 cp s3://${MediaBucket}/models/onnx/retinaface-r50.onnx /opt/fdx/models/onnx/retinaface-r50.onnx --region ${AWS::Region}
+            aws s3 cp s3://${MediaBucket}/models/onnx/adaface-ir101-ms1mv2.onnx /opt/fdx/models/onnx/adaface-ir101-ms1mv2.onnx --region ${AWS::Region}
+            DB_SECRET=$(aws secretsmanager get-secret-value --secret-id ${DatabaseSecret} --query SecretString --output text --region ${AWS::Region})
+            JWT_SECRET_VALUE=$(aws secretsmanager get-secret-value --secret-id ${JwtSecret} --query SecretString --output text --region ${AWS::Region})
+            ADMIN_SECRET_VALUE=$(aws secretsmanager get-secret-value --secret-id ${AdminSecret} --query SecretString --output text --region ${AWS::Region})
+            KAFKA_BROKERS=$(aws kafka get-bootstrap-brokers --cluster-arn ${KafkaCluster} --query BootstrapBrokerStringTls --output text --region ${AWS::Region})
+            cat >/opt/fdx/.env <<ENV
+            API_IMAGE=${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ApiRepository}:latest
+            WEB_IMAGE=${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${WebRepository}:latest
+            ML_IMAGE=${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${MlRepository}:latest
+            DATABASE_URL=postgresql+psycopg://fdx:$(echo "$DB_SECRET" | jq -r .password)@${Database.Endpoint.Address}:5432/fdx
+            REDIS_URL=rediss://${RedisReplicationGroup.PrimaryEndPoint.Address}:6379/0
+            KAFKA_BOOTSTRAP_SERVERS=$KAFKA_BROKERS
+            S3_BUCKET=${MediaBucket}
+            AWS_REGION=${AWS::Region}
+            JWT_SECRET=$(echo "$JWT_SECRET_VALUE" | jq -r .value)
+            FRONTEND_URL=${DomainName}
+            FDX_SUPER_ADMIN_EMAIL=$(echo "$ADMIN_SECRET_VALUE" | jq -r .email)
+            FDX_SUPER_ADMIN_PASSWORD=$(echo "$ADMIN_SECRET_VALUE" | jq -r .password)
+            EMAIL_FROM=${EmailFrom}
+            ENV
+            aws ecr get-login-password --region ${AWS::Region} | docker login --username AWS --password-stdin ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com
+            cd /opt/fdx
+            docker compose pull
+            docker compose up -d
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier: [!Ref PrivateSubnetA, !Ref PrivateSubnetB]
+      MinSize: "1"
+      MaxSize: "4"
+      DesiredCapacity: "1"
+      TargetGroupARNs: [!Ref TargetGroup]
+      LaunchTemplate: { LaunchTemplateId: !Ref LaunchTemplate, Version: !GetAtt LaunchTemplate.LatestVersionNumber }
+      Tags: [{ Key: Name, Value: fdx-application, PropagateAtLaunch: true }, { Key: Application, Value: FDX, PropagateAtLaunch: true }]
+  CpuScalingPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      PolicyType: TargetTrackingScaling
+      TargetTrackingConfiguration: { PredefinedMetricSpecification: { PredefinedMetricType: ASGAverageCPUUtilization }, TargetValue: 60 }
+
+  RetentionLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument: { Version: "2012-10-17", Statement: [{ Effect: Allow, Principal: { Service: lambda.amazonaws.com }, Action: sts:AssumeRole }] }
+      ManagedPolicyArns: [arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole]
+      Policies:
+        - PolicyName: TriggerRetention
+          PolicyDocument: { Version: "2012-10-17", Statement: [{ Effect: Allow, Action: [ec2:DescribeInstances, ssm:SendCommand], Resource: '*' }] }
+  RetentionFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.13
+      Handler: index.handler
+      Role: !GetAtt RetentionLambdaRole.Arn
+      Timeout: 60
+      Code:
+        ZipFile: |
+          import boto3
+          def handler(event, context):
+              ec2 = boto3.client("ec2")
+              response = ec2.describe_instances(Filters=[{"Name":"tag:Application","Values":["FDX"]},{"Name":"instance-state-name","Values":["running"]}])
+              ids = [instance["InstanceId"] for reservation in response["Reservations"] for instance in reservation["Instances"]][:1]
+              if not ids:
+                  return {"triggered": 0}
+              command = "cd /opt/fdx && docker compose exec -T worker python -c 'from app.worker import run_retention; run_retention()'"
+              boto3.client("ssm").send_command(InstanceIds=ids, DocumentName="AWS-RunShellScript", Parameters={"commands":[command]})
+              return {"triggered": len(ids)}
+  RetentionSchedule:
+    Type: AWS::Events::Rule
+    Properties: { ScheduleExpression: rate(1 day), State: ENABLED, Targets: [{ Arn: !GetAtt RetentionFunction.Arn, Id: retention }] }
+  RetentionPermission:
+    Type: AWS::Lambda::Permission
+    Properties: { Action: lambda:InvokeFunction, FunctionName: !Ref RetentionFunction, Principal: events.amazonaws.com, SourceArn: !GetAtt RetentionSchedule.Arn }
+
+Outputs:
+  ApplicationUrl: { Value: !Ref DomainName }
+  LoadBalancerDnsName: { Value: !GetAtt LoadBalancer.DNSName }
+  MediaBucketName: { Value: !Ref MediaBucket }
+  ApiRepositoryUri: { Value: !GetAtt ApiRepository.RepositoryUri }
+  WebRepositoryUri: { Value: !GetAtt WebRepository.RepositoryUri }
+  MlRepositoryUri: { Value: !GetAtt MlRepository.RepositoryUri }
+  AutoScalingGroupName: { Value: !Ref AutoScalingGroup }
+  DatabaseEndpoint: { Value: !GetAtt Database.Endpoint.Address }
+  RedisEndpoint: { Value: !GetAtt RedisReplicationGroup.PrimaryEndPoint.Address }
+  KafkaClusterArn: { Value: !Ref KafkaCluster }

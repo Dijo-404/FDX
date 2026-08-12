@@ -16,6 +16,7 @@ class Settings:
     redis_url: str = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
     kafka_bootstrap_servers: str = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "127.0.0.1:9092")
     kafka_topic: str = os.getenv("KAFKA_TOPIC", "fdx.photo.processing")
+    kafka_security_protocol: str = os.getenv("KAFKA_SECURITY_PROTOCOL", "PLAINTEXT")
     jwt_secret: str = os.getenv("JWT_SECRET", "change-this-development-secret")
     jwt_issuer: str = os.getenv("JWT_ISSUER", "fdx-api")
     access_token_minutes: int = int(os.getenv("ACCESS_TOKEN_MINUTES", "480"))
@@ -31,6 +32,9 @@ class Settings:
     super_admin_email: str = os.getenv("FDX_SUPER_ADMIN_EMAIL", "superadmin@fdx.io")
     super_admin_password: str = os.getenv("FDX_SUPER_ADMIN_PASSWORD", "SuperAdmin@123")
     environment: str = os.getenv("FDX_ENVIRONMENT", "development")
+    retention_scheduler_enabled: bool = os.getenv("RETENTION_SCHEDULER_ENABLED", "true").lower() in {"1", "true", "yes"}
+    email_poll_seconds: int = int(os.getenv("EMAIL_POLL_SECONDS", "5"))
+    email_max_attempts: int = int(os.getenv("EMAIL_MAX_ATTEMPTS", "5"))
 
 
 settings = Settings()

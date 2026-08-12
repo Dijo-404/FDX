@@ -4,17 +4,17 @@ import math
 import os
 import socket
 import time
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from kafka import KafkaConsumer
-from kafka.errors import NoBrokersAvailable
+from kafka.errors import KafkaError
 from sqlalchemy import delete, func, select
 
 from .config import settings
 from .database import SessionLocal
-from .integrations import ml_faces, storage
+from .integrations import dispatch_email, ml_faces, storage
 from .main import audit, bootstrap
-from .models import Delivery, Event, FaceDetection, FaceEnrollment, FaceMatch, Organization, Participant, Photo, ProcessingJob, utcnow
+from .models import Delivery, EmailOutbox, Event, FaceDetection, FaceEnrollment, FaceMatch, Organization, Participant, Photo, ProcessingJob, utcnow
 
 
 WORKER_NAME = f"ml-{socket.gethostname()}-{os.getpid()}"
@@ -29,8 +29,8 @@ def cosine(left: list[float], right: list[float]) -> float:
 
 def process_job(job_id: str) -> None:
     with SessionLocal() as db:
-        job = db.get(ProcessingJob, job_id)
-        if not job or job.status in {"completed", "processing"}:
+        job = db.scalar(select(ProcessingJob).where(ProcessingJob.id == job_id, ProcessingJob.status == "queued").with_for_update(skip_locked=True))
+        if not job:
             return
         job.status = "processing"
         job.progress = 10
@@ -93,12 +93,15 @@ def run_retention() -> None:
         expired_events = db.scalars(select(Event).where(Event.expires_at <= date.today(), Event.status != "expired")).all()
         for event in expired_events:
             photos = db.scalars(select(Photo).where(Photo.event_id == event.id)).all()
-            released = sum(photo.size_bytes for photo in photos)
+            released = sum(photo.size_bytes + photo.thumbnail_size_bytes for photo in photos)
             for photo in photos:
                 storage.delete(photo.storage_key)
+                if photo.thumbnail_storage_key:
+                    storage.delete(photo.thumbnail_storage_key)
             enrollments = db.scalars(select(FaceEnrollment).join(Participant).where(Participant.event_id == event.id)).all()
             for enrollment in enrollments:
                 storage.delete(enrollment.storage_key)
+            released += sum(enrollment.size_bytes for enrollment in enrollments)
             if photos:
                 db.execute(delete(Photo).where(Photo.id.in_([photo.id for photo in photos])))
             if enrollments:
@@ -113,21 +116,57 @@ def run_retention() -> None:
 def main() -> None:
     bootstrap()
     consumer = None
-    while consumer is None:
-        try:
-            consumer = KafkaConsumer(settings.kafka_topic, bootstrap_servers=settings.kafka_bootstrap_servers.split(","), group_id="fdx-ml-workers", auto_offset_reset="earliest", enable_auto_commit=True, value_deserializer=lambda value: __import__("json").loads(value.decode()))
-        except NoBrokersAvailable:
-            print("Waiting for Kafka...", flush=True)
-            time.sleep(5)
+    last_consumer_attempt = 0.0
     last_retention = 0.0
+    last_email_poll = 0.0
+    last_queue_poll = 0.0
     while True:
-        if time.monotonic() - last_retention > 3600:
+        now = time.monotonic()
+        if consumer is None and now - last_consumer_attempt > 5:
+            last_consumer_attempt = now
+            try:
+                consumer = KafkaConsumer(settings.kafka_topic, bootstrap_servers=settings.kafka_bootstrap_servers.split(","), security_protocol=settings.kafka_security_protocol, group_id="fdx-ml-workers", auto_offset_reset="earliest", enable_auto_commit=True, value_deserializer=lambda value: __import__("json").loads(value.decode()))
+            except KafkaError:
+                print("Waiting for Kafka; PostgreSQL fallback remains active...", flush=True)
+        if settings.retention_scheduler_enabled and now - last_retention > 3600:
             run_retention()
-            last_retention = time.monotonic()
-        batches = consumer.poll(timeout_ms=5_000, max_records=10)
-        for messages in batches.values():
-            for message in messages:
-                process_job(message.value["job_id"])
+            last_retention = now
+        if now - last_email_poll > settings.email_poll_seconds:
+            retry_failed_emails()
+            last_email_poll = now
+        if now - last_queue_poll > 10:
+            process_pending_jobs()
+            last_queue_poll = now
+        if consumer is None:
+            time.sleep(1)
+            continue
+        try:
+            batches = consumer.poll(timeout_ms=5_000, max_records=10)
+            for messages in batches.values():
+                for message in messages:
+                    process_job(message.value["job_id"])
+        except KafkaError:
+            try:
+                consumer.close(autocommit=False)
+            except KafkaError:
+                pass
+            consumer = None
+
+
+def retry_failed_emails() -> None:
+    with SessionLocal() as db:
+        pending = db.scalars(select(EmailOutbox).where(EmailOutbox.status == "failed", EmailOutbox.attempts < settings.email_max_attempts, EmailOutbox.next_attempt_at <= utcnow()).order_by(EmailOutbox.next_attempt_at).limit(25)).all()
+        for item in pending:
+            dispatch_email(db, item)
+        db.commit()
+
+
+def process_pending_jobs() -> None:
+    """Use PostgreSQL as a durable fallback when Kafka publication is interrupted."""
+    with SessionLocal() as db:
+        job_ids = db.scalars(select(ProcessingJob.id).where(ProcessingJob.status == "queued", ProcessingJob.created_at <= utcnow() - timedelta(seconds=30)).order_by(ProcessingJob.created_at).limit(10)).all()
+    for job_id in job_ids:
+        process_job(job_id)
 
 
 if __name__ == "__main__":

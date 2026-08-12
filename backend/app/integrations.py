@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import mimetypes
+from datetime import timedelta
 from pathlib import Path
 
 import boto3
@@ -14,7 +15,7 @@ from redis.exceptions import RedisError
 from sqlalchemy.orm import Session
 
 from .config import settings
-from .models import EmailOutbox, utcnow
+from .models import Delivery, EmailOutbox, utcnow
 
 
 logger = logging.getLogger("fdx.integrations")
@@ -62,6 +63,7 @@ def publish_job(payload: dict) -> bool:
     try:
         producer = KafkaProducer(
             bootstrap_servers=settings.kafka_bootstrap_servers.split(","),
+            security_protocol=settings.kafka_security_protocol,
             value_serializer=lambda value: json.dumps(value).encode(),
             request_timeout_ms=2500,
             api_version_auto_timeout_ms=2500,
@@ -81,9 +83,10 @@ def cache_delete(*keys: str) -> None:
         pass
 
 
-def queue_email(db: Session, organization_id: str | None, recipient: str, subject: str, html: str) -> EmailOutbox:
+def queue_email(db: Session, organization_id: str | None, recipient: str, subject: str, html: str, delivery_id: str | None = None) -> EmailOutbox:
     item = EmailOutbox(
         organization_id=organization_id,
+        delivery_id=delivery_id,
         recipient=recipient,
         subject=subject,
         html=html,
@@ -95,6 +98,8 @@ def queue_email(db: Session, organization_id: str | None, recipient: str, subjec
 
 
 def dispatch_email(db: Session, item: EmailOutbox) -> None:
+    item.attempts += 1
+    item.last_attempt_at = utcnow()
     try:
         if settings.email_provider == "resend":
             if not settings.resend_api_key:
@@ -119,9 +124,26 @@ def dispatch_email(db: Session, item: EmailOutbox) -> None:
             item.provider_id = f"outbox:{item.id}"
         item.status = "sent"
         item.sent_at = utcnow()
+        item.next_attempt_at = None
+        item.error = None
+        if item.delivery_id:
+            delivery = db.get(Delivery, item.delivery_id)
+            if delivery:
+                delivery.status = "delivered"
+                delivery.sent_at = item.sent_at
+                delivery.participant.delivery_status = "delivered"
     except Exception as exc:  # provider failures remain visible and retryable
         item.status = "failed"
         item.error = str(exc)
+        if item.delivery_id:
+            delivery = db.get(Delivery, item.delivery_id)
+            if delivery:
+                delivery.status = "failed"
+                delivery.sent_at = None
+                delivery.participant.delivery_status = "failed"
+        if item.attempts < settings.email_max_attempts:
+            delay_minutes = min(60, 2 ** max(0, item.attempts - 1))
+            item.next_attempt_at = utcnow() + timedelta(minutes=delay_minutes)
     db.flush()
 
 
@@ -151,6 +173,16 @@ def ml_faces(content: bytes, filename: str, content_type: str) -> list[dict]:
 
 def dependency_health() -> list[dict]:
     services = []
+    if settings.email_provider == "resend":
+        configured = bool(settings.resend_api_key and "@" in settings.email_from)
+        email_detail = "Resend API credentials configured" if configured else "Resend credentials are incomplete"
+    elif settings.email_provider == "ses":
+        configured = bool(settings.email_from and "@" in settings.email_from)
+        email_detail = f"AWS SES configured in {settings.s3_region}" if configured else "AWS SES sender is incomplete"
+    else:
+        configured = settings.environment != "production"
+        email_detail = "Persistent development outbox" if configured else "Production cannot use the local outbox provider"
+    services.append({"name": "Email", "detail": email_detail, "status": "healthy" if configured else "degraded"})
     redis = None
     try:
         redis = Redis.from_url(settings.redis_url, socket_connect_timeout=1, decode_responses=True)
@@ -174,7 +206,7 @@ def dependency_health() -> list[dict]:
     except Exception as exc:
         dependencies.append({"name": "ML Workers", "detail": str(exc), "status": "degraded"})
     try:
-        admin = KafkaAdminClient(bootstrap_servers=settings.kafka_bootstrap_servers.split(","), request_timeout_ms=2000, api_version_auto_timeout_ms=2000)
+        admin = KafkaAdminClient(bootstrap_servers=settings.kafka_bootstrap_servers.split(","), security_protocol=settings.kafka_security_protocol, request_timeout_ms=2000, api_version_auto_timeout_ms=2000)
         topics = admin.list_topics()
         admin.close()
         dependencies.append({"name": "Kafka", "detail": f"{len(topics)} topics available", "status": "healthy"})

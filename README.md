@@ -24,7 +24,9 @@ Stop the platform without deleting persistent volumes:
 ./stop-platform.sh
 ```
 
-Production object storage supports S3, while local development uses a Docker volume. The deployment mapping and encrypted S3/Glacier CloudFormation template are in `deploy/aws/`.
+Production object storage supports S3, while local development uses a Docker volume. `deploy/aws/platform.yml` provisions the complete EC2/ALB, RDS, ElastiCache, MSK, S3/Glacier, SES/IAM, ECR, Secrets Manager, and scheduled Lambda baseline; deployment and publishing commands are in `deploy/aws/README.md`.
+
+Organization admins can invite restricted staff, inspect an event-level result screen, delete an event and all of its stored/derived data, monitor/retry email delivery, import CSV plus modern or legacy Excel workbooks, and upload a ZIP, multiple files, or a browser-selected folder. Upload processing stores both private originals and generated JPEG thumbnails. The ML HTTP service runs under Gunicorn in its production container.
 
 This is the isolated Docker-free FDX build. It runs RetinaFace R50 detection
 and AdaFace IR101 matching directly through ONNX Runtime. The recognition path

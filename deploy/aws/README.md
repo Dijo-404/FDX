@@ -1,11 +1,38 @@
 # AWS deployment
 
-FDX runs as Docker containers behind NGINX on an EC2 host. Production should use RDS PostgreSQL, ElastiCache Redis, and MSK Kafka endpoints; event media is stored privately in S3 and archived by lifecycle policy to Glacier Instant Retrieval. The FastAPI worker enforces the application retention date and deletes expired database/media records.
+`platform.yml` provisions the complete production baseline used by FDX:
 
-1. Deploy `storage.yml`, attach the output instance profile to the EC2 host, and use the output bucket as `S3_BUCKET`.
-2. Provision PostgreSQL, Redis, and Kafka in private subnets and permit access only from the EC2 security group.
-3. Set `DATABASE_URL`, `REDIS_URL`, `KAFKA_BOOTSTRAP_SERVERS`, `STORAGE_BACKEND=s3`, `S3_BUCKET`, `EMAIL_PROVIDER=ses`, `FRONTEND_URL`, and long random bootstrap/JWT secrets in the host environment or AWS Systems Manager Parameter Store.
-4. Terminate TLS at an Application Load Balancer or CloudFront and allow inbound traffic to NGINX only from that layer.
-5. Run `docker compose up --build -d`. For more throughput, run additional worker instances against the same Kafka consumer group.
+- a two-AZ VPC, HTTPS Application Load Balancer, EC2 Auto Scaling group, and SSM access;
+- encrypted RDS PostgreSQL, TLS-enabled ElastiCache Redis, and TLS MSK Kafka in private subnets;
+- private/versioned S3 media storage with Glacier Instant Retrieval and expiration lifecycle rules;
+- ECR repositories, Secrets Manager bootstrap/JWT/database secrets, SES sender identity and least-privilege runtime IAM;
+- a daily EventBridge/Lambda job that asks one worker host to run application-level retention cleanup.
 
-The template does not create networking or data services because those settings depend on the target AWS account’s VPC, availability, backup, and recovery requirements. S3 public access is blocked; galleries are served only after the API validates their hashed, expiring token.
+## Prerequisites
+
+Install AWS CLI v2 and Docker, configure an AWS account, place both ONNX model files under `models/onnx/`, request an ACM certificate in the deployment region, and move the SES account out of sandbox when sending outside verified recipients.
+
+Deploy the infrastructure (replace the example values):
+
+```sh
+aws cloudformation deploy \
+  --stack-name fdx-production \
+  --template-file deploy/aws/platform.yml \
+  --capabilities CAPABILITY_IAM \
+  --region ap-south-1 \
+  --parameter-overrides \
+    DomainName=https://fdx.example.com \
+    CertificateArn=arn:aws:acm:ap-south-1:123456789012:certificate/example \
+    EmailFrom=noreply@example.com \
+    SuperAdminEmail=admin@example.com
+```
+
+AWS sends a verification message for `EmailFrom`. Confirm it, then build and publish the containers and model/deployment assets:
+
+```sh
+./deploy/aws/publish.sh fdx-production ap-south-1
+```
+
+The publish command pushes the API/worker, web, and Gunicorn ML images, uploads the private Compose manifest and models, and performs an Auto Scaling instance refresh. Point the application hostname at the `LoadBalancerDnsName` stack output. The API container applies Alembic migrations before it starts; workers do not race it.
+
+RDS deletion protection is enabled and replacement/deletion preserves a final snapshot. Disable deletion protection explicitly before intentionally deleting the stack. `storage.yml` remains available only for storage-only/manual deployments.

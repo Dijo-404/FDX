@@ -109,7 +109,9 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     command: ["python", "-m", "app.worker"]
-    environment: *api_environment
+    environment:
+      <<: *api_environment
+      RUN_MIGRATIONS: "false"
     volumes:
       - object_storage:/data/storage
     depends_on:

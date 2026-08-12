@@ -2,7 +2,14 @@ import { useRef, useState } from "react";
 import Icon from "./Icon";
 import "./Dropzone.css";
 
-export default function Dropzone({ title, hint, accept, multiple = true, onFiles }) {
+export default function Dropzone({
+  title,
+  hint,
+  accept,
+  multiple = true,
+  directory = false,
+  onFiles,
+}) {
   const inputRef = useRef(null);
   const [dragOver, setDragOver] = useState(false);
   const [files, setFiles] = useState([]);
@@ -39,6 +46,8 @@ export default function Dropzone({ title, hint, accept, multiple = true, onFiles
           type="file"
           accept={accept}
           multiple={multiple}
+          webkitdirectory={directory ? "" : undefined}
+          directory={directory ? "" : undefined}
           hidden
           onChange={(event) => {
             if (event.target.files.length) addFiles(event.target.files);
@@ -55,7 +64,9 @@ export default function Dropzone({ title, hint, accept, multiple = true, onFiles
           {files.map((file, index) => (
             <li key={`${file.name}-${index}`}>
               <span>{file.name}</span>
-              <span className="dropzone-file-size">{(file.size / 1024).toFixed(0)} KB</span>
+              <span className="dropzone-file-size">
+                {(file.size / 1024).toFixed(0)} KB
+              </span>
             </li>
           ))}
         </ul>

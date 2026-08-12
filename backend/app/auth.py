@@ -107,6 +107,14 @@ def require_org_admin(user: User = Depends(current_user)) -> User:
     return user
 
 
+def require_org_member(user: User = Depends(current_user)) -> User:
+    if user.role not in {UserRole.ORG_ADMIN, UserRole.STAFF} or not user.organization_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Organization membership required")
+    if not user.organization or user.organization.status != "active" or (user.organization.expires_at and user.organization.expires_at < date.today()):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Organization is suspended or expired")
+    return user
+
+
 def check_login_rate_limit(request: Request, email: str) -> None:
     key = f"fdx:login:{request.client.host if request.client else 'unknown'}:{email.lower()}"
     try:

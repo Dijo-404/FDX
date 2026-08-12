@@ -25,18 +25,22 @@ export default function DashboardShell({ navItems, roleLabel, title }) {
         <div className="shell-nav-wrap">
           <p className="shell-nav-label">Menu</p>
           <nav className="shell-nav">
-            {navItems.map((item) => (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                end={item.end}
-                onClick={() => setNavOpen(false)}
-                className={({ isActive }) => `shell-nav-item${isActive ? " active" : ""}`}
-              >
-                <Icon name={item.icon} size={17} />
-                <span>{item.label}</span>
-              </NavLink>
-            ))}
+            {navItems
+              .filter((item) => !item.roles || item.roles.includes(user?.role))
+              .map((item) => (
+                <NavLink
+                  key={item.to}
+                  to={item.to}
+                  end={item.end}
+                  onClick={() => setNavOpen(false)}
+                  className={({ isActive }) =>
+                    `shell-nav-item${isActive ? " active" : ""}`
+                  }
+                >
+                  <Icon name={item.icon} size={17} />
+                  <span>{item.label}</span>
+                </NavLink>
+              ))}
           </nav>
         </div>
 
@@ -48,12 +52,19 @@ export default function DashboardShell({ navItems, roleLabel, title }) {
 
       <div className="shell-main">
         <header className="shell-topbar">
-          <button type="button" className="shell-menu" onClick={() => setNavOpen((value) => !value)} aria-label="Toggle navigation">
+          <button
+            type="button"
+            className="shell-menu"
+            onClick={() => setNavOpen((value) => !value)}
+            aria-label="Toggle navigation"
+          >
             <Icon name={navOpen ? "close" : "menu"} size={20} />
           </button>
           <div>
             <h1>{title}</h1>
-            <p>{user?.organizationName ?? "Platform operations and governance"}</p>
+            <p>
+              {user?.organizationName ?? "Platform operations and governance"}
+            </p>
           </div>
 
           <div className="shell-topbar-actions">

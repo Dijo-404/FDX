@@ -1,2 +1,142 @@
-import {useState} from "react";import Badge from "../../components/Badge";import Icon from "../../components/Icon";import StatCard from "../../components/StatCard";import {usePlatform} from "../../context/PlatformContext";
-export default function Deliveries(){const{deliveries,deliveryStats,sendDelivery}=usePlatform();const[notice,setNotice]=useState("");const stats=deliveryStats??{};async function send(row){const result=await sendDelivery(row.participantId);setNotice(result.developmentGalleryUrl?`Gallery delivered. Development link: ${result.developmentGalleryUrl}`:`Gallery delivered to ${row.participant}`)}return <div className="page"><div className="page-head"><div><p className="eyebrow">Private galleries</p><h2>Deliveries</h2><p>Send each participant an expiring link to only their approved photos.</p></div></div>{notice?<div className="notice success"><Icon name="check" size={16}/>{notice}</div>:null}<div className="stat-grid"><StatCard icon="delivery" label="Delivered" value={stats.delivered??0} hint="Email provider accepted"/><StatCard icon="face" label="Ready to send" value={stats.ready??0} hint="Galleries generated"/><StatCard icon="health" label="Failed" value={stats.failed??0} hint="Retry available"/><StatCard icon="events" label="Total galleries" value={deliveries.length} hint="Event retention enforced"/></div><section className="delivery-preview card"><div className="delivery-copy"><span className="eyebrow">Participant experience</span><h3>Your event photos are ready</h3><p>Each signed gallery exposes only approved photographs matched to that participant and expires with the event.</p><span className="btn primary">Private by design <Icon name="check" size={15}/></span></div><div className="gallery-mosaic">{Array.from({length:6},(_,i)=><div key={i}><Icon name="face" size={22}/></div>)}</div></section><div className="card table-wrap"><table><thead><tr><th>Participant</th><th>Event</th><th>Photos</th><th>Gallery expiry</th><th>Status</th><th>Sent</th><th/></tr></thead><tbody>{deliveries.map(row=><tr key={row.id}><td>{row.participant}</td><td>{row.event}</td><td>{row.photos}</td><td>{row.expires?new Date(row.expires).toLocaleDateString():"—"}</td><td><Badge status={row.status}/></td><td>{row.sentAt?new Date(row.sentAt).toLocaleString():"—"}</td><td>{row.status==="ready"?<button className="btn primary small" onClick={()=>send(row)}>Send gallery</button>:row.status==="failed"?<button className="btn small" onClick={()=>send(row)}>Retry</button>:<span>Sent</span>}</td></tr>)}</tbody></table>{!deliveries.length?<p className="empty-note">Galleries appear after high-confidence matches are processed.</p>:null}</div></div>}
+import { useState } from "react";
+import Badge from "../../components/Badge";
+import Icon from "../../components/Icon";
+import StatCard from "../../components/StatCard";
+import { usePlatform } from "../../context/PlatformContext";
+import { useAuth } from "../../context/AuthContext";
+export default function Deliveries() {
+  const { user } = useAuth();
+  const { deliveries, deliveryStats, sendDelivery } = usePlatform();
+  const [notice, setNotice] = useState("");
+  const stats = deliveryStats ?? {};
+  async function send(row) {
+    const result = await sendDelivery(row.participantId);
+    setNotice(
+      result.developmentGalleryUrl
+        ? `Gallery delivered. Development link: ${result.developmentGalleryUrl}`
+        : `Gallery delivered to ${row.participant}`,
+    );
+  }
+  return (
+    <div className="page">
+      <div className="page-head">
+        <div>
+          <p className="eyebrow">Private galleries</p>
+          <h2>Deliveries</h2>
+          <p>
+            Send each participant an expiring link to only their approved
+            photos.
+          </p>
+        </div>
+      </div>
+      {notice ? (
+        <div className="notice success">
+          <Icon name="check" size={16} />
+          {notice}
+        </div>
+      ) : null}
+      <div className="stat-grid">
+        <StatCard
+          icon="delivery"
+          label="Delivered"
+          value={stats.delivered ?? 0}
+          hint="Email provider accepted"
+        />
+        <StatCard
+          icon="face"
+          label="Ready to send"
+          value={stats.ready ?? 0}
+          hint="Galleries generated"
+        />
+        <StatCard
+          icon="health"
+          label="Failed"
+          value={stats.failed ?? 0}
+          hint="Retry available"
+        />
+        <StatCard
+          icon="events"
+          label="Total galleries"
+          value={deliveries.length}
+          hint="Event retention enforced"
+        />
+      </div>
+      <section className="delivery-preview card">
+        <div className="delivery-copy">
+          <span className="eyebrow">Participant experience</span>
+          <h3>Your event photos are ready</h3>
+          <p>
+            Each signed gallery exposes only approved photographs matched to
+            that participant and expires with the event.
+          </p>
+          <span className="btn primary">
+            Private by design <Icon name="check" size={15} />
+          </span>
+        </div>
+        <div className="gallery-mosaic">
+          {Array.from({ length: 6 }, (_, i) => (
+            <div key={i}>
+              <Icon name="face" size={22} />
+            </div>
+          ))}
+        </div>
+      </section>
+      <div className="card table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Participant</th>
+              <th>Event</th>
+              <th>Photos</th>
+              <th>Gallery expiry</th>
+              <th>Status</th>
+              <th>Sent</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {deliveries.map((row) => (
+              <tr key={row.id}>
+                <td>{row.participant}</td>
+                <td>{row.event}</td>
+                <td>{row.photos}</td>
+                <td>
+                  {row.expires
+                    ? new Date(row.expires).toLocaleDateString()
+                    : "—"}
+                </td>
+                <td>
+                  <Badge status={row.status} />
+                </td>
+                <td>
+                  {row.sentAt ? new Date(row.sentAt).toLocaleString() : "—"}
+                </td>
+                <td>
+                  {row.status === "ready" && user?.role === "org_admin" ? (
+                    <button
+                      className="btn primary small"
+                      onClick={() => send(row)}
+                    >
+                      Send gallery
+                    </button>
+                  ) : row.status === "failed" && user?.role === "org_admin" ? (
+                    <button className="btn small" onClick={() => send(row)}>
+                      Retry
+                    </button>
+                  ) : (
+                    <span>Sent</span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {!deliveries.length ? (
+          <p className="empty-note">
+            Galleries appear after high-confidence matches are processed.
+          </p>
+        ) : null}
+      </div>
+    </div>
+  );
+}

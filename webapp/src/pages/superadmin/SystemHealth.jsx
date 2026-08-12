@@ -1,3 +1,228 @@
-import Badge from "../../components/Badge";import Icon from "../../components/Icon";import PageState from "../../components/PageState";import StatCard from "../../components/StatCard";import {usePlatform} from "../../context/PlatformContext";
-const layers=[{title:"Authentication",text:"Single login · JWT session · Role resolver",tone:"purple",icon:"users"},{title:"React frontends",text:"Super Admin · Organization Admin",tone:"blue",icon:"dashboard"},{title:"API gateway",text:"NGINX · Routing · Rate limiting",tone:"teal",icon:"health"},{title:"FastAPI",text:"Auth · Events · Galleries · Retention",tone:"orange",icon:"processing"},{title:"Data & jobs",text:"PostgreSQL · Redis · Kafka",tone:"slate",icon:"storage"},{title:"ML processing",text:"RetinaFace → Align → AdaFace → Matching",tone:"pink",icon:"face"},{title:"External services",text:"S3 · SES / Resend · Workers",tone:"green",icon:"delivery"}];
-export default function SystemHealth(){const{system,loading,error}=usePlatform();const queues=system?.queues??{};const services=system?.services??[];return <div className="page"><div className="page-head"><div><p className="eyebrow">Platform operations</p><h2>System health</h2><p>Live infrastructure checks and queue pressure.</p></div><div className="live-chip"><span/> Dependency probes active</div></div><PageState loading={loading} error={error}>{system?<><div className="stat-grid"><StatCard icon="health" label="Services healthy" value={`${services.filter(x=>x.status==="healthy").length}/${services.length}`} hint={system.status}/><StatCard icon="processing" label="Jobs in queue" value={queues.queued??0} hint={`${queues.failed??0} failed`}/><StatCard icon="face" label="Processing" value={queues.processing??0} hint="Kafka workers"/><StatCard icon="delivery" label="Emails sent" value={system.emails?.sent??0} hint={`${system.emails?.failed??0} failed`}/></div><div className="two-col"><section className="card section"><div className="section-head"><div><h3>Services</h3><p>Live checks from each dependency</p></div></div><div className="service-list">{services.map(service=><div className="service-line" key={service.name}><div><span className={`service-status ${service.status}`}/><strong>{service.name}</strong></div><span>{service.detail}</span><Badge status={service.status}/></div>)}</div></section><section className="card section"><div className="section-head"><div><h3>Job queues</h3><p>PostgreSQL-backed job state</p></div></div>{Object.entries(queues).length?Object.entries(queues).map(([name,value])=><div className="queue-row" key={name}><div><strong>{name}</strong><span>{value} jobs</span></div><div className="progress-track"><span style={{width:`${Math.min(100,value*10)}%`}}/></div></div>):<p className="empty-note">No jobs have been submitted.</p>}</section></div><section className="card section"><div className="section-head"><div><h3>FDX architecture</h3><p>Authenticated traffic through the required production stack</p></div><span className="architecture-note">Tenant isolation enforced in FastAPI</span></div><div className="architecture-flow"><div className="architecture-start">FDX</div>{layers.map(layer=><div className={`architecture-layer ${layer.tone}`} key={layer.title}><Icon name={layer.icon} size={19}/><div><strong>{layer.title}</strong><p>{layer.text}</p></div></div>)}</div></section></>:null}</PageState></div>}
+import Badge from "../../components/Badge";
+import Icon from "../../components/Icon";
+import PageState from "../../components/PageState";
+import StatCard from "../../components/StatCard";
+import { usePlatform } from "../../context/PlatformContext";
+const layers = [
+  {
+    title: "Authentication",
+    text: "Single login · JWT session · Role resolver",
+    tone: "purple",
+    icon: "users",
+  },
+  {
+    title: "React frontends",
+    text: "Super Admin · Organization Admin",
+    tone: "blue",
+    icon: "dashboard",
+  },
+  {
+    title: "API gateway",
+    text: "NGINX · Routing · Rate limiting",
+    tone: "teal",
+    icon: "health",
+  },
+  {
+    title: "FastAPI",
+    text: "Auth · Events · Galleries · Retention",
+    tone: "orange",
+    icon: "processing",
+  },
+  {
+    title: "Data & jobs",
+    text: "PostgreSQL · Redis · Kafka",
+    tone: "slate",
+    icon: "storage",
+  },
+  {
+    title: "ML processing",
+    text: "RetinaFace → Align → AdaFace → Matching",
+    tone: "pink",
+    icon: "face",
+  },
+  {
+    title: "External services",
+    text: "S3 · SES / Resend · Workers",
+    tone: "green",
+    icon: "delivery",
+  },
+];
+export default function SystemHealth() {
+  const { system, loading, error, adminRetryEmail } = usePlatform();
+  const queues = system?.queues ?? {};
+  const services = system?.services ?? [];
+  return (
+    <div className="page">
+      <div className="page-head">
+        <div>
+          <p className="eyebrow">Platform operations</p>
+          <h2>System health</h2>
+          <p>Live infrastructure checks and queue pressure.</p>
+        </div>
+        <div className="live-chip">
+          <span /> Dependency probes active
+        </div>
+      </div>
+      <PageState loading={loading} error={error}>
+        {system ? (
+          <>
+            <div className="stat-grid">
+              <StatCard
+                icon="health"
+                label="Services healthy"
+                value={`${services.filter((x) => x.status === "healthy").length}/${services.length}`}
+                hint={system.status}
+              />
+              <StatCard
+                icon="processing"
+                label="Jobs in queue"
+                value={queues.queued ?? 0}
+                hint={`${queues.failed ?? 0} failed`}
+              />
+              <StatCard
+                icon="face"
+                label="Processing"
+                value={queues.processing ?? 0}
+                hint="Kafka workers"
+              />
+              <StatCard
+                icon="delivery"
+                label="Emails sent"
+                value={system.emails?.sent ?? 0}
+                hint={`${system.emails?.failed ?? 0} failed`}
+              />
+            </div>
+            <div className="two-col">
+              <section className="card section">
+                <div className="section-head">
+                  <div>
+                    <h3>Services</h3>
+                    <p>Live checks from each dependency</p>
+                  </div>
+                </div>
+                <div className="service-list">
+                  {services.map((service) => (
+                    <div className="service-line" key={service.name}>
+                      <div>
+                        <span className={`service-status ${service.status}`} />
+                        <strong>{service.name}</strong>
+                      </div>
+                      <span>{service.detail}</span>
+                      <Badge status={service.status} />
+                    </div>
+                  ))}
+                </div>
+              </section>
+              <section className="card section">
+                <div className="section-head">
+                  <div>
+                    <h3>Job queues</h3>
+                    <p>PostgreSQL-backed job state</p>
+                  </div>
+                </div>
+                {Object.entries(queues).length ? (
+                  Object.entries(queues).map(([name, value]) => (
+                    <div className="queue-row" key={name}>
+                      <div>
+                        <strong>{name}</strong>
+                        <span>{value} jobs</span>
+                      </div>
+                      <div className="progress-track">
+                        <span
+                          style={{ width: `${Math.min(100, value * 10)}%` }}
+                        />
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <p className="empty-note">No jobs have been submitted.</p>
+                )}
+              </section>
+            </div>
+            <section className="card section">
+              <div className="section-head">
+                <div>
+                  <h3>Email delivery</h3>
+                  <p>Persistent provider results and retry state</p>
+                </div>
+              </div>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Recipient</th>
+                      <th>Subject</th>
+                      <th>Provider</th>
+                      <th>Status</th>
+                      <th>Attempts</th>
+                      <th />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(system.recentEmails ?? []).map((email) => (
+                      <tr key={email.id}>
+                        <td>{email.recipient}</td>
+                        <td>
+                          <strong>{email.subject}</strong>
+                          {email.error ? (
+                            <span className="table-error">{email.error}</span>
+                          ) : null}
+                        </td>
+                        <td>{email.provider}</td>
+                        <td>
+                          <Badge status={email.status} />
+                        </td>
+                        <td>{email.attempts}</td>
+                        <td>
+                          {email.status === "failed" ? (
+                            <button
+                              className="btn small"
+                              onClick={() => adminRetryEmail(email.id)}
+                            >
+                              <Icon name="processing" size={14} /> Retry
+                            </button>
+                          ) : null}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {!system.recentEmails?.length ? (
+                  <p className="empty-note">No email has been queued.</p>
+                ) : null}
+              </div>
+            </section>
+            <section className="card section">
+              <div className="section-head">
+                <div>
+                  <h3>FDX architecture</h3>
+                  <p>
+                    Authenticated traffic through the required production stack
+                  </p>
+                </div>
+                <span className="architecture-note">
+                  Tenant isolation enforced in FastAPI
+                </span>
+              </div>
+              <div className="architecture-flow">
+                <div className="architecture-start">FDX</div>
+                {layers.map((layer) => (
+                  <div
+                    className={`architecture-layer ${layer.tone}`}
+                    key={layer.title}
+                  >
+                    <Icon name={layer.icon} size={19} />
+                    <div>
+                      <strong>{layer.title}</strong>
+                      <p>{layer.text}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          </>
+        ) : null}
+      </PageState>
+    </div>
+  );
+}

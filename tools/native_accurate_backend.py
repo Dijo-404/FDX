@@ -561,6 +561,10 @@ def _warm_up() -> None:
     )
 
 
+if __name__ != "__main__" and os.environ.get("ML_WARMUP_ON_IMPORT", "0") == "1":
+    _warm_up()
+
+
 if __name__ == "__main__":
     _warm_up()
     app.run(host=os.environ.get("ML_HOST", "127.0.0.1"), port=PORT, debug=False, threaded=False)

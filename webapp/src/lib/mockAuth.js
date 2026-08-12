@@ -13,18 +13,20 @@ const DEMO_USERS = [
   {
     email: "admin@srit.edu.in",
     password: "College@123",
-    role: "college",
+    role: "org_admin",
     name: "Priya Nair",
-    collegeId: "srit",
-    collegeName: "SRIT Institute of Technology",
+    organizationId: "srit",
+    organizationName: "SRIT Institute of Technology",
+    organizationType: "COLLEGE",
   },
   {
-    email: "admin@nvce.edu.in",
+    email: "admin@nova.io",
     password: "College@123",
-    role: "college",
+    role: "org_admin",
     name: "Karthik Rao",
-    collegeId: "nvce",
-    collegeName: "NVCE College of Engineering",
+    organizationId: "nova",
+    organizationName: "Nova Systems Pvt. Ltd.",
+    organizationType: "COMPANY",
   },
 ];
 

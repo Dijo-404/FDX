@@ -4,31 +4,39 @@ import DashboardShell from "./components/DashboardShell";
 import Login from "./pages/Login";
 
 import SuperAdminOverview from "./pages/superadmin/Overview";
-import Colleges from "./pages/superadmin/Colleges";
-import UserDetails from "./pages/superadmin/UserDetails";
+import Organizations from "./pages/superadmin/Organizations";
+import OrganizationUsers from "./pages/superadmin/OrganizationUsers";
+import SystemHealth from "./pages/superadmin/SystemHealth";
 import SuperAdminLogs from "./pages/superadmin/Logs";
 
-import CollegeOverview from "./pages/college/Overview";
-import Uploads from "./pages/college/Uploads";
-import Students from "./pages/college/Students";
-import Events from "./pages/college/Events";
-import FaceData from "./pages/college/FaceData";
-import CollegeLogs from "./pages/college/Logs";
+import OrganizationOverview from "./pages/organization/Overview";
+import Events from "./pages/organization/Events";
+import Participants from "./pages/organization/Participants";
+import Uploads from "./pages/organization/Uploads";
+import Processing from "./pages/organization/Processing";
+import FaceMatches from "./pages/organization/FaceMatches";
+import Deliveries from "./pages/organization/Deliveries";
+import OrganizationLogs from "./pages/organization/Logs";
+import Settings from "./pages/organization/Settings";
 
 const SUPER_ADMIN_NAV = [
-  { to: "/admin", label: "Dashboard", icon: "dashboard", end: true },
-  { to: "/admin/colleges", label: "College maintenance", icon: "colleges" },
-  { to: "/admin/users", label: "User details", icon: "users" },
-  { to: "/admin/logs", label: "Logs", icon: "logs" },
+  { to: "/admin", label: "Overview", icon: "dashboard", end: true },
+  { to: "/admin/organizations", label: "Organizations", icon: "organization" },
+  { to: "/admin/users", label: "Organization users", icon: "users" },
+  { to: "/admin/system", label: "System health", icon: "health" },
+  { to: "/admin/logs", label: "Audit logs", icon: "logs" },
 ];
 
-const COLLEGE_NAV = [
-  { to: "/college", label: "Dashboard", icon: "dashboard", end: true },
-  { to: "/college/uploads", label: "Upload data", icon: "upload" },
-  { to: "/college/students", label: "Students", icon: "students" },
-  { to: "/college/events", label: "Events", icon: "events" },
-  { to: "/college/face-data", label: "Face detection data", icon: "face" },
-  { to: "/college/logs", label: "Logs", icon: "logs" },
+const ORGANIZATION_NAV = [
+  { to: "/organization", label: "Overview", icon: "dashboard", end: true },
+  { to: "/organization/events", label: "Events", icon: "events" },
+  { to: "/organization/participants", label: "Participants", icon: "students" },
+  { to: "/organization/uploads", label: "Uploads", icon: "upload" },
+  { to: "/organization/processing", label: "Processing", icon: "processing" },
+  { to: "/organization/matches", label: "Face matches", icon: "face" },
+  { to: "/organization/deliveries", label: "Deliveries", icon: "delivery" },
+  { to: "/organization/logs", label: "Audit logs", icon: "logs" },
+  { to: "/organization/settings", label: "Settings", icon: "settings" },
 ];
 
 export default function App() {
@@ -36,36 +44,28 @@ export default function App() {
     <Routes>
       <Route path="/login" element={<Login />} />
 
-      <Route
-        path="/admin"
-        element={
-          <ProtectedRoute role="super_admin">
-            <DashboardShell navItems={SUPER_ADMIN_NAV} roleLabel="Super Admin" title="Super Admin" />
-          </ProtectedRoute>
-        }
-      >
+      <Route path="/admin" element={<ProtectedRoute role="super_admin"><DashboardShell navItems={SUPER_ADMIN_NAV} roleLabel="Super Admin" title="FDX Control Center" /></ProtectedRoute>}>
         <Route index element={<SuperAdminOverview />} />
-        <Route path="colleges" element={<Colleges />} />
-        <Route path="users" element={<UserDetails />} />
+        <Route path="organizations" element={<Organizations />} />
+        <Route path="users" element={<OrganizationUsers />} />
+        <Route path="system" element={<SystemHealth />} />
         <Route path="logs" element={<SuperAdminLogs />} />
+        <Route path="colleges" element={<Navigate to="/admin/organizations" replace />} />
       </Route>
 
-      <Route
-        path="/college"
-        element={
-          <ProtectedRoute role="college">
-            <DashboardShell navItems={COLLEGE_NAV} roleLabel="College Admin" title="College Dashboard" />
-          </ProtectedRoute>
-        }
-      >
-        <Route index element={<CollegeOverview />} />
-        <Route path="uploads" element={<Uploads />} />
-        <Route path="students" element={<Students />} />
+      <Route path="/organization" element={<ProtectedRoute role="org_admin"><DashboardShell navItems={ORGANIZATION_NAV} roleLabel="Organization Admin" title="Organization Workspace" /></ProtectedRoute>}>
+        <Route index element={<OrganizationOverview />} />
         <Route path="events" element={<Events />} />
-        <Route path="face-data" element={<FaceData />} />
-        <Route path="logs" element={<CollegeLogs />} />
+        <Route path="participants" element={<Participants />} />
+        <Route path="uploads" element={<Uploads />} />
+        <Route path="processing" element={<Processing />} />
+        <Route path="matches" element={<FaceMatches />} />
+        <Route path="deliveries" element={<Deliveries />} />
+        <Route path="logs" element={<OrganizationLogs />} />
+        <Route path="settings" element={<Settings />} />
       </Route>
 
+      <Route path="/college/*" element={<Navigate to="/organization" replace />} />
       <Route path="/" element={<Navigate to="/login" replace />} />
       <Route path="*" element={<Navigate to="/login" replace />} />
     </Routes>

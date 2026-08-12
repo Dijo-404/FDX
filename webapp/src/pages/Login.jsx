@@ -12,7 +12,7 @@ export default function Login() {
   const [submitting, setSubmitting] = useState(false);
 
   if (isAuthenticated) {
-    return <Navigate to={user.role === "super_admin" ? "/admin" : "/college"} replace />;
+    return <Navigate to={user.role === "super_admin" ? "/admin" : "/organization"} replace />;
   }
 
   async function handleSubmit(event) {
@@ -21,7 +21,7 @@ export default function Login() {
     setSubmitting(true);
     try {
       const { user: loggedInUser } = await login(email, password);
-      navigate(loggedInUser.role === "super_admin" ? "/admin" : "/college", { replace: true });
+      navigate(loggedInUser.role === "super_admin" ? "/admin" : "/organization", { replace: true });
     } catch (err) {
       setError(err.message);
     } finally {
@@ -34,12 +34,12 @@ export default function Login() {
       <div className="login-panel">
         <div className="login-brand">
           <span className="login-mark">FDX</span>
-          <p>Face Detection &amp; Event Media Platform</p>
+          <p>Private event photo delivery, powered by face intelligence</p>
         </div>
 
         <form className="login-card card" onSubmit={handleSubmit}>
           <h1>Sign in</h1>
-          <p className="login-sub">Use your admin credentials to continue.</p>
+          <p className="login-sub">One secure login for FDX and organization administrators.</p>
 
           <div className="field">
             <label htmlFor="email">Email</label>
@@ -77,6 +77,7 @@ export default function Login() {
             <p>Demo accounts</p>
             <code>superadmin@fdx.io / SuperAdmin@123</code>
             <code>admin@srit.edu.in / College@123</code>
+            <code>admin@nova.io / College@123</code>
           </div>
         </form>
       </div>

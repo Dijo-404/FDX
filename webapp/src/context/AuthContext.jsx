@@ -1,3 +1,4 @@
+/* oxlint-disable react/only-export-components -- Provider and hook form one public context API. */
 import { createContext, useContext, useMemo, useState } from "react";
 import { getStoredSession, login as mockLogin, logout as mockLogout } from "../lib/mockAuth";
 

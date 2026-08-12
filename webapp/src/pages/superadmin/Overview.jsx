@@ -1,90 +1,60 @@
-import StatCard from "../../components/StatCard";
 import Badge from "../../components/Badge";
-import { colleges, superAdminLogs } from "../../lib/mockData";
+import StatCard from "../../components/StatCard";
+import { usePlatform } from "../../context/PlatformContext";
+import { superAdminLogs, systemServices } from "../../lib/mockData";
 
 export default function SuperAdminOverview() {
-  const totalColleges = colleges.length;
-  const activeColleges = colleges.filter((c) => c.status === "active").length;
-  const totalUsers = colleges.reduce((sum, c) => sum + c.users, 0);
-  const totalEvents = colleges.reduce((sum, c) => sum + c.events, 0);
-  const totalStorageUsed = colleges.reduce((sum, c) => sum + c.storageUsedGB, 0);
-  const totalStorageLimit = colleges.reduce((sum, c) => sum + c.storageLimitGB, 0);
+  const { organizations, organizationUsers, events } = usePlatform();
+  const totalPhotos = events.reduce((sum, event) => sum + event.photos, 0);
+  const storageUsed = organizations.reduce((sum, item) => sum + item.storageUsedGB, 0);
+  const storageLimit = organizations.reduce((sum, item) => sum + item.storageLimitGB, 0);
+  const healthyServices = systemServices.filter((service) => service.status === "healthy").length;
 
   return (
     <div className="page">
       <div className="page-head">
-        <div>
-          <h2>Dashboard</h2>
-          <p>Total events and platform overview across all colleges.</p>
-        </div>
+        <div><p className="eyebrow">Platform overview</p><h2>Good morning, Aarav</h2><p>Here is what is happening across FDX today.</p></div>
+        <div className="live-chip"><span /> Live · updated just now</div>
       </div>
 
-      <div className="stat-grid">
-        <StatCard icon="colleges" label="Total colleges" value={totalColleges} hint={`${activeColleges} active`} />
-        <StatCard icon="events" label="Total events" value={totalEvents} hint="Across all colleges" />
-        <StatCard icon="students" label="Total users" value={totalUsers} hint="College accounts + students" />
-        <StatCard
-          icon="storage"
-          label="Storage used"
-          value={`${totalStorageUsed} GB`}
-          hint={`of ${totalStorageLimit} GB provisioned`}
-        />
+      <div className="stat-grid stat-grid-wide">
+        <StatCard icon="organization" label="Organizations" value={organizations.length} hint={`${organizations.filter((item) => item.status === "active").length} active`} />
+        <StatCard icon="users" label="Organization users" value={organizationUsers.length} hint="1 invite pending" />
+        <StatCard icon="events" label="Total events" value={events.reduce((sum, item) => sum + (item.id < 5 ? 1 : 0), 0) + 39} hint="Across all tenants" />
+        <StatCard icon="face" label="Photos processed" value={totalPhotos.toLocaleString()} hint="8,920 faces detected" />
+        <StatCard icon="storage" label="Storage used" value={`${storageUsed} GB`} hint={`${Math.round(storageUsed / storageLimit * 100)}% of ${storageLimit} GB`} />
+        <StatCard icon="processing" label="Processing jobs" value="26" hint="4 need attention" />
+        <StatCard icon="delivery" label="Emails sent" value="4,821" hint="98.7% delivered" />
+        <StatCard icon="health" label="System health" value={`${healthyServices}/${systemServices.length}`} hint="Kafka is degraded" />
       </div>
 
       <div className="two-col">
-        <div className="card section">
-          <div className="section-head">
-            <div>
-              <h3>Colleges by storage</h3>
-              <p>Highest usage first</p>
-            </div>
+        <section className="card section">
+          <div className="section-head"><div><h3>Organization usage</h3><p>Storage, event volume and account status</p></div><a className="text-link" href="/admin/organizations">Manage all</a></div>
+          <div className="usage-list">
+            {organizations.map((organization) => {
+              const percent = Math.round(organization.storageUsedGB / organization.storageLimitGB * 100);
+              return <div className="usage-row" key={organization.id}>
+                <div className="org-avatar">{organization.name.slice(0, 2).toUpperCase()}</div>
+                <div className="usage-main"><div><strong>{organization.name}</strong><span>{organization.type.toLowerCase()} · {organization.events} events</span></div><div className="progress-track"><span style={{ width: `${percent}%` }} /></div></div>
+                <div className="usage-value"><strong>{percent}%</strong><span>{organization.storageUsedGB}/{organization.storageLimitGB} GB</span></div>
+              </div>;
+            })}
           </div>
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>College</th>
-                  <th>Status</th>
-                  <th>Used</th>
-                  <th>Events</th>
-                </tr>
-              </thead>
-              <tbody>
-                {[...colleges]
-                  .sort((a, b) => b.storageUsedGB - a.storageUsedGB)
-                  .map((college) => (
-                    <tr key={college.id}>
-                      <td>{college.name}</td>
-                      <td><Badge status={college.status} /></td>
-                      <td>{college.storageUsedGB} GB / {college.storageLimitGB} GB</td>
-                      <td>{college.events}</td>
-                    </tr>
-                  ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
+        </section>
 
-        <div className="card section">
-          <div className="section-head">
-            <div>
-              <h3>Recent activity</h3>
-              <p>Latest platform logs</p>
-            </div>
-          </div>
+        <section className="card section">
+          <div className="section-head"><div><h3>Recent activity</h3><p>Security and operational audit trail</p></div></div>
           <div className="activity-list">
-            {superAdminLogs.slice(0, 5).map((log) => (
-              <div className="activity-row" key={log.id}>
-                <span className={`activity-dot ${log.level}`} />
-                <div>
-                  <p className="activity-action">{log.action}</p>
-                  <p className="activity-meta">{log.actor} · {log.timestamp}</p>
-                </div>
-              </div>
-            ))}
+            {superAdminLogs.slice(0, 5).map((log) => <div className="activity-row" key={log.id}><span className={`activity-dot ${log.level}`} /><div><p className="activity-action">{log.action}</p><p className="activity-detail">{log.details}</p><p className="activity-meta">{log.actor} · {log.timestamp}</p></div></div>)}
           </div>
-        </div>
+        </section>
       </div>
+
+      <section className="card section">
+        <div className="section-head"><div><h3>Service status</h3><p>Live application and infrastructure health</p></div><Badge status="healthy">Operational</Badge></div>
+        <div className="service-grid">{systemServices.map((service) => <div className="service-item" key={service.name}><span className={`service-status ${service.status}`} /><div><strong>{service.name}</strong><p>{service.detail}</p></div></div>)}</div>
+      </section>
     </div>
   );
 }

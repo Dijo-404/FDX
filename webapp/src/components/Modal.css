@@ -1,0 +1,49 @@
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(9, 18, 43, 0.58);
+  backdrop-filter: blur(4px);
+}
+
+.modal-card {
+  width: min(620px, 100%);
+  max-height: min(760px, calc(100vh - 40px));
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  background: var(--surface);
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  border-radius: var(--radius-xl);
+  box-shadow: 0 30px 80px rgba(7, 16, 48, 0.28);
+  overflow: hidden;
+}
+
+.modal-head,
+.modal-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 20px 22px;
+}
+
+.modal-head { border-bottom: 1px solid var(--border); }
+.modal-head h2 { font-size: 18px; }
+.modal-head p { margin-top: 3px; color: var(--muted); font-size: 13px; }
+.modal-body { padding: 22px; overflow-y: auto; }
+.modal-footer { justify-content: flex-end; border-top: 1px solid var(--border); }
+
+.icon-button {
+  width: 34px;
+  height: 34px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--muted);
+}
+.icon-button:hover { color: var(--ink); border-color: var(--border-input); }

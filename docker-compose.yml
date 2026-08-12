@@ -1,0 +1,138 @@
+name: fdx
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: fdx
+      POSTGRES_USER: fdx
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fdx-development}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fdx -d fdx"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  kafka:
+    image: apache/kafka:3.9.1
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  ml:
+    build:
+      context: .
+      dockerfile: face-processing/ml/Dockerfile
+    environment:
+      ML_PORT: 3000
+      ML_HOST: 0.0.0.0
+      MODELS_ROOT: /app/models
+      FDX_DEVICE: ${FDX_DEVICE:-cpu}
+    volumes:
+      - ./models:/app/models:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:3000/healthcheck', timeout=2)"]
+      interval: 15s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment: &api_environment
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://fdx:${POSTGRES_PASSWORD:-fdx-development}@postgres:5432/fdx}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}
+      ML_SERVICE_URL: ${ML_SERVICE_URL:-http://ml:3000}
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
+      STORAGE_ROOT: /data/storage
+      JWT_SECRET: ${JWT_SECRET:-replace-this-before-production}
+      FRONTEND_URL: ${FRONTEND_URL:-http://127.0.0.1:8080}
+      FDX_ENVIRONMENT: ${FDX_ENVIRONMENT:-development}
+      FDX_SUPER_ADMIN_EMAIL: ${FDX_SUPER_ADMIN_EMAIL:-superadmin@fdx.io}
+      FDX_SUPER_ADMIN_PASSWORD: ${FDX_SUPER_ADMIN_PASSWORD:-SuperAdmin@123}
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-outbox}
+      EMAIL_FROM: ${EMAIL_FROM:-FDX <noreply@fdx.local>}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      AWS_REGION: ${AWS_REGION:-ap-south-1}
+      S3_BUCKET: ${S3_BUCKET:-}
+    volumes:
+      - object_storage:/data/storage
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: ["python", "-m", "app.worker"]
+    environment:
+      <<: *api_environment
+      RUN_MIGRATIONS: "false"
+    volumes:
+      - object_storage:/data/storage
+    depends_on:
+      api: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+      ml: { condition: service_healthy }
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: webapp/Dockerfile
+    ports:
+      - "${FDX_WEB_PORT:-8080}:80"
+    depends_on:
+      api: { condition: service_healthy }
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  kafka_data:
+  object_storage:

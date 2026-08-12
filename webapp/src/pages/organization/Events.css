@@ -1,0 +1,37 @@
+.events-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 16px;
+}
+
+.event-card {
+  padding: 18px 20px;
+  display: grid;
+  gap: 10px;
+}
+
+.event-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.event-card-head h3 {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.event-date {
+  font-size: 13px;
+  color: var(--muted);
+  letter-spacing: -0.1px;
+}
+
+.event-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+}

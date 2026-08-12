@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Docker-free RetinaFace R50 + AdaFace IR101 HTTP backend.
+"""RetinaFace R50 + AdaFace IR101 HTTP backend.
 
 The response format intentionally matches the CompreFace face-processing API
 used by the existing browser frontend.
@@ -17,7 +17,6 @@ import cv2
 import numpy as np
 import onnxruntime as ort
 from flask import Flask, jsonify, request
-
 
 ROOT = Path(__file__).resolve().parents[1]
 MODEL_ROOT = Path(os.environ.get("MODELS_ROOT", ROOT / "models"))
@@ -58,8 +57,8 @@ def _preload_nvidia_libraries() -> None:
     ):
         return
     try:
-        # The GPU bootstrap installs CUDA and cuDNN wheels beside ORT. Loading
-        # from site-packages avoids depending on Arch's system CUDA version.
+        # GPU-enabled container images install CUDA and cuDNN wheels beside
+        # ONNX Runtime, avoiding a dependency on host toolkit versions.
         ort.preload_dlls(directory="")
     except Exception as exc:  # ORT can still try the system libraries.
         print(f"CUDA library preload warning: {exc}", flush=True)
@@ -83,7 +82,7 @@ def _provider_order():
     if DEVICE in {"gpu", "cuda"}:
         raise RuntimeError(
             "FDX_DEVICE=gpu was requested, but ONNX Runtime has no CUDA provider. "
-            "Run tools/bootstrap_local.sh again on the NVIDIA laptop."
+            "Rebuild the ML container with the GPU runtime dependencies."
         )
     return ["CPUExecutionProvider"]
 
@@ -105,7 +104,7 @@ ACTIVE_PROVIDER = DETECTOR_SESSION.get_providers()[0]
 if DEVICE in {"gpu", "cuda"} and ACTIVE_PROVIDER != "CUDAExecutionProvider":
     raise RuntimeError(
         "CUDA was explicitly requested, but the detector session fell back to CPU. "
-        "Check the NVIDIA driver and rerun tools/bootstrap_local.sh."
+        "Check the NVIDIA driver and rebuild the ML container."
     )
 
 
@@ -561,6 +560,10 @@ def _warm_up() -> None:
     )
 
 
+if __name__ != "__main__" and os.environ.get("ML_WARMUP_ON_IMPORT", "0") == "1":
+    _warm_up()
+
+
 if __name__ == "__main__":
     _warm_up()
-    app.run(host="127.0.0.1", port=PORT, debug=False, threaded=False)
+    app.run(host=os.environ.get("ML_HOST", "127.0.0.1"), port=PORT, debug=False, threaded=False)

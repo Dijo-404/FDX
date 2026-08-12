@@ -1,0 +1,37 @@
+.row-selected {
+  background: var(--gradient-soft);
+}
+
+.gauge-row {
+  display: flex;
+  justify-content: space-around;
+  gap: 12px;
+  padding: 8px 0;
+}
+
+.detail-fields {
+  display: grid;
+  gap: 14px;
+}
+
+.detail-stat-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+}
+
+.detail-stat-label {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.detail-stat-value {
+  margin-top: 2px;
+  font-size: 16px;
+  font-weight: 600;
+  font-feature-settings: "tnum" 1;
+  font-variant-numeric: tabular-nums;
+}

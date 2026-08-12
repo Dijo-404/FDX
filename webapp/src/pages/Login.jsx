@@ -1,15 +1,17 @@
 import { useState } from "react";
-import { Navigate, useNavigate } from "react-router-dom";
+import { Link, Navigate, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import "./Login.css";
 
 export default function Login() {
-  const { login, isAuthenticated, user } = useAuth();
+  const { login, isAuthenticated, loading, user } = useAuth();
   const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+
+  if (loading) return null;
 
   if (isAuthenticated) {
     return <Navigate to={user.role === "super_admin" ? "/admin" : "/organization"} replace />;
@@ -72,6 +74,8 @@ export default function Login() {
           <button type="submit" className="btn primary login-submit" disabled={submitting}>
             {submitting ? "Signing in..." : "Sign in"}
           </button>
+
+          <Link to="/forgot-password" className="text-link">Forgot password?</Link>
 
         </form>
       </div>

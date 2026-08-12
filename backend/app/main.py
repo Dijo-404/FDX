@@ -3,9 +3,14 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
+import json
+import logging
 import mimetypes
 import secrets
 import tempfile
+import threading
+import time
+import uuid
 import zipfile
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
@@ -13,8 +18,9 @@ from pathlib import Path, PurePosixPath
 
 import xlrd
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from openpyxl import load_workbook
 from openpyxl.utils.exceptions import InvalidFileException
 from PIL import Image, ImageOps
@@ -50,24 +56,32 @@ from .integrations import (
 )
 from .models import (
     AuditLog,
+    Consent,
     Delivery,
     EmailOutbox,
     Event,
     FaceDetection,
     FaceEnrollment,
     FaceMatch,
+    ModelRegistry,
     Organization,
     OrganizationType,
     Participant,
     Photo,
     ProcessingJob,
     User,
+    UserInvitation,
     UserRole,
     utcnow,
 )
 from .serializers import event_json, iso, organization_json, participant_json, user_json
 
 GB = 1024**3
+METRICS_LOCK = threading.Lock()
+REQUEST_METRICS = {"requests": 0, "latency_seconds": 0.0, "responses_4xx": 0, "responses_5xx": 0, "rate_limited": 0, "auth_failures": 0}
+# Reuse Uvicorn's configured service logger so JSON request records are emitted
+# consistently in containers without installing a second handler.
+logger = logging.getLogger("uvicorn.error")
 
 
 class LoginInput(BaseModel):
@@ -141,12 +155,29 @@ def bootstrap() -> None:
             raise RuntimeError("Production requires a unique JWT_SECRET of at least 32 characters")
         if settings.super_admin_password in {"SuperAdmin@123", "replace-with-a-strong-bootstrap-password"}:
             raise RuntimeError("Production requires a unique FDX_SUPER_ADMIN_PASSWORD")
-    Base.metadata.create_all(engine)
+    # Production schema ownership belongs exclusively to reviewed Alembic
+    # migrations. Local development keeps the convenience bootstrap.
+    if settings.environment != "production":
+        Base.metadata.create_all(engine)
     with SessionLocal() as db:
         existing = find_user_by_email(db, settings.super_admin_email)
         if not existing:
             db.add(User(name="FDX Super Admin", email=settings.super_admin_email.lower(), password_hash=hash_password(settings.super_admin_password), role=UserRole.SUPER_ADMIN, status="active"))
             db.add(AuditLog(actor="system", action="Platform initialized", details="Initial Super Admin account created", level="info"))
+            db.commit()
+        if not db.scalar(select(ModelRegistry).where(ModelRegistry.active.is_(True))):
+            db.add(ModelRegistry(
+                detector_name="retinaface-r50",
+                detector_version=settings.detector_model_version,
+                detector_sha256=settings.detector_model_sha256,
+                embedder_name="adaface-ir101-ms1mv2",
+                embedder_version=settings.embedder_model_version,
+                embedder_sha256=settings.embedder_model_sha256,
+                embedding_dimension=512,
+                metric="cosine",
+                threshold_profile_version=settings.threshold_profile_version,
+                active=True,
+            ))
             db.commit()
 
 
@@ -160,6 +191,91 @@ app = FastAPI(title="FDX Platform API", version="1.0.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=[settings.frontend_url, "http://127.0.0.1:5173", "http://localhost:5173"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 
+@app.middleware("http")
+async def request_context(request: Request, call_next):
+    request.state.request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    request.state.correlation_id = request.headers.get("X-Correlation-ID") or request.state.request_id
+    started = time.perf_counter()
+    response = await call_next(request)
+    elapsed = time.perf_counter() - started
+    with METRICS_LOCK:
+        REQUEST_METRICS["requests"] += 1
+        REQUEST_METRICS["latency_seconds"] += elapsed
+        if 400 <= response.status_code < 500:
+            REQUEST_METRICS["responses_4xx"] += 1
+        if response.status_code >= 500:
+            REQUEST_METRICS["responses_5xx"] += 1
+        if response.status_code == 429:
+            REQUEST_METRICS["rate_limited"] += 1
+        if response.status_code == 401 and request.url.path.startswith("/api"):
+            REQUEST_METRICS["auth_failures"] += 1
+    route = request.scope.get("route")
+    logger.info(json.dumps({
+        "timestamp": utcnow().isoformat(),
+        "level": "INFO",
+        "service": "fdx-api",
+        "request_id": request.state.request_id,
+        "correlation_id": request.state.correlation_id,
+        "method": request.method,
+        "path": getattr(route, "path", "/redacted"),
+        "status": response.status_code,
+        "duration_ms": round(elapsed * 1000, 2),
+    }, separators=(",", ":")))
+    response.headers["X-Request-ID"] = request.state.request_id
+    response.headers["X-Correlation-ID"] = request.state.correlation_id
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(self)"
+    response.headers["Content-Security-Policy"] = "default-src 'self'; img-src 'self' data: blob: https:; connect-src 'self' https:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'none'"
+    response.headers["X-Response-Time-Ms"] = f"{elapsed * 1000:.2f}"
+    if settings.environment == "production":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
+
+
+@app.exception_handler(HTTPException)
+async def http_error(request: Request, exc: HTTPException):
+    if not request.url.path.startswith("/api/v2"):
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail}, headers=exc.headers)
+    code = {
+        400: "BAD_REQUEST",
+        401: "AUTHENTICATION_REQUIRED",
+        403: "FORBIDDEN",
+        404: "RESOURCE_NOT_FOUND",
+        409: "STATE_CONFLICT",
+        413: "UPLOAD_TOO_LARGE",
+        422: "VALIDATION_ERROR",
+        429: "RATE_LIMITED",
+        503: "DEPENDENCY_UNAVAILABLE",
+    }.get(exc.status_code, "REQUEST_FAILED")
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": {"code": code, "message": str(exc.detail), "details": {}}, "meta": {"request_id": request.state.request_id}},
+        headers=exc.headers,
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(request: Request, exc: RequestValidationError):
+    if not request.url.path.startswith("/api/v2"):
+        return JSONResponse(status_code=422, content={"detail": exc.errors()})
+    return JSONResponse(
+        status_code=422,
+        content={"error": {"code": "VALIDATION_ERROR", "message": "Request validation failed.", "details": {"errors": exc.errors()}}, "meta": {"request_id": request.state.request_id}},
+    )
+
+
+@app.exception_handler(Exception)
+async def unexpected_error(request: Request, exc: Exception):
+    logger.exception("Unhandled API error", exc_info=exc)
+    if not request.url.path.startswith("/api/v2"):
+        return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+    return JSONResponse(
+        status_code=500,
+        content={"error": {"code": "INTERNAL_ERROR", "message": "The request could not be completed.", "details": {}}, "meta": {"request_id": request.state.request_id}},
+    )
+
+
 @app.get("/health")
 @app.get("/api/health")
 def health(db: Session = Depends(get_db)):
@@ -171,6 +287,41 @@ def health(db: Session = Depends(get_db)):
         *dependency_health(),
     ]
     return {"status": "healthy" if all(item["status"] == "healthy" for item in services) else "degraded", "services": services}
+
+
+@app.get("/health/live")
+def health_live():
+    return {"status": "alive"}
+
+
+@app.get("/health/ready")
+def health_ready(db: Session = Depends(get_db)):
+    db.execute(text("SELECT 1"))
+    return {"status": "ready"}
+
+
+@app.get("/health/dependencies")
+def health_dependencies(db: Session = Depends(get_db)):
+    db.execute(text("SELECT 1"))
+    services = [{"name": "PostgreSQL", "status": "healthy"}, *dependency_health()]
+    return {"status": "healthy" if all(item["status"] == "healthy" for item in services) else "degraded", "services": services}
+
+
+@app.get("/metrics", include_in_schema=False)
+def metrics():
+    """Small dependency-free Prometheus surface for API-level service metrics."""
+    with METRICS_LOCK:
+        snapshot = dict(REQUEST_METRICS)
+    values = {
+        "fdx_api_requests_total": snapshot["requests"],
+        "fdx_api_request_duration_seconds_sum": snapshot["latency_seconds"],
+        "fdx_api_responses_4xx_total": snapshot["responses_4xx"],
+        "fdx_api_responses_5xx_total": snapshot["responses_5xx"],
+        "fdx_api_rate_limited_total": snapshot["rate_limited"],
+        "fdx_api_auth_failures_total": snapshot["auth_failures"],
+    }
+    body = "\n".join(f"# TYPE {name} counter\n{name} {value}" for name, value in values.items()) + "\n"
+    return Response(content=body, media_type="text/plain; version=0.0.4")
 
 
 @app.post("/api/auth/login")
@@ -268,6 +419,7 @@ def invite_user(payload: UserInviteInput, user: User = Depends(require_super_adm
     invited = User(organization_id=organization.id, name=payload.name.strip(), email=str(payload.email).lower(), role=UserRole.ORG_ADMIN, status="invited", invite_token_hash=token_hash, invite_expires_at=utcnow() + timedelta(days=7))
     db.add(invited)
     db.flush()
+    db.add(UserInvitation(user_id=invited.id, token_hash=token_hash, expires_at=invited.invite_expires_at))
     invite_url = f"{settings.frontend_url}/accept-invite/{raw_token}"
     email = queue_email(db, organization.id, invited.email, "You have been invited to FDX", f"<p>Hello {invited.name},</p><p>You have been invited to manage {organization.name} in FDX.</p><p><a href='{invite_url}'>Set your password</a></p><p>This link expires in 7 days.</p>")
     dispatch_email(db, email)
@@ -293,6 +445,7 @@ def invite_staff(payload: StaffInviteInput, user: User = Depends(require_org_adm
     invited = User(organization_id=user.organization_id, name=payload.name.strip(), email=str(payload.email).lower(), role=UserRole.STAFF, status="invited", invite_token_hash=token_hash, invite_expires_at=utcnow() + timedelta(days=7))
     db.add(invited)
     db.flush()
+    db.add(UserInvitation(user_id=invited.id, token_hash=token_hash, expires_at=invited.invite_expires_at))
     invite_url = f"{settings.frontend_url}/accept-invite/{raw_token}"
     email = queue_email(db, user.organization_id, invited.email, f"You have been invited to {user.organization.name} on FDX", f"<p>Hello {invited.name},</p><p>You have been invited as event operations staff for {user.organization.name}.</p><p><a href='{invite_url}'>Set your password</a></p><p>This link expires in 7 days.</p>")
     dispatch_email(db, email)
@@ -752,7 +905,7 @@ def enrollment_info(token: str, db: Session = Depends(get_db)):
 
 
 @app.post("/api/public/enroll/{token}")
-def enroll_face(token: str, consent: bool = Form(...), selfie: UploadFile = File(...), db: Session = Depends(get_db)):
+def enroll_face(token: str, request: Request, consent: bool = Form(...), selfie: UploadFile = File(...), db: Session = Depends(get_db)):
     participant = db.scalar(select(Participant).where(Participant.enrollment_token_hash == hash_token(token)))
     if not participant or participant.enrollment_expires_at < utcnow():
         raise HTTPException(status_code=404, detail="Enrollment link is invalid or expired")
@@ -771,14 +924,33 @@ def enroll_face(token: str, consent: bool = Form(...), selfie: UploadFile = File
     if participant.event.organization.storage_used_bytes + added_size > participant.event.organization.storage_limit_bytes:
         raise HTTPException(status_code=413, detail="Organization storage quota would be exceeded")
     storage.put(key, content, selfie.content_type or "image/jpeg")
-    enrollment = participant.enrollment or FaceEnrollment(participant_id=participant.id, storage_key=key, embedding=result["embedding"], detector_confidence=result["box"]["probability"])
+    enrollment = participant.enrollment or FaceEnrollment(
+        participant_id=participant.id,
+        organization_id=participant.organization_id,
+        event_id=participant.event_id,
+        storage_key=key,
+        embedding=result["embedding"],
+        detector_confidence=result["box"]["probability"],
+        expires_at=datetime.combine(participant.event.expires_at, datetime.min.time(), timezone.utc),
+    )
     enrollment.storage_key = key
     enrollment.size_bytes = len(content)
     enrollment.embedding = result["embedding"]
+    enrollment.embedding_vector = result["embedding"]
     enrollment.detector_confidence = result["box"]["probability"]
     db.add(enrollment)
     participant.enrollment_status = "verified"
     participant.consented_at = utcnow()
+    db.add(Consent(
+        organization_id=participant.organization_id,
+        event_id=participant.event_id,
+        participant_id=participant.id,
+        consent_type="face_enrollment",
+        policy_version=settings.consent_policy_version,
+        accepted=True,
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+    ))
     participant.event.organization.storage_used_bytes += added_size
     audit(db, None, "Face enrollment completed", f"{participant.event.name}: {participant.email}", organization_id=participant.organization_id)
     db.commit()
@@ -841,3 +1013,8 @@ def public_gallery_download(token: str, photoIds: str | None = None, db: Session
         while content := archive_buffer.read(1024 * 1024):
             yield content
     return StreamingResponse(chunks(), media_type="application/zip", headers={"Cache-Control": "no-store", "Content-Disposition": f'attachment; filename="{base_name}-photos.zip"'}, background=BackgroundTask(archive_buffer.close))
+
+
+from .v2 import router as v2_router  # noqa: E402
+
+app.include_router(v2_router)

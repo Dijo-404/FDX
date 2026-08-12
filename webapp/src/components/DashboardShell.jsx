@@ -9,8 +9,8 @@ export default function DashboardShell({ navItems, roleLabel, title }) {
   const navigate = useNavigate();
   const [navOpen, setNavOpen] = useState(false);
 
-  function signOut() {
-    logout();
+  async function signOut() {
+    await logout();
     navigate("/login", { replace: true });
   }
 

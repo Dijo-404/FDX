@@ -53,11 +53,49 @@ class Storage:
         if self.root in target.parents:
             target.unlink(missing_ok=True)
 
+    def presign_put(self, key: str, content_type: str, expires: int = 900) -> str | None:
+        if not self.s3:
+            return None
+        return self.s3.generate_presigned_url(
+            "put_object",
+            Params={"Bucket": settings.s3_bucket, "Key": key, "ContentType": content_type},
+            ExpiresIn=expires,
+        )
+
+    def presign_get(self, key: str, expires: int = 600, filename: str | None = None) -> str | None:
+        if not self.s3:
+            return None
+        params = {"Bucket": settings.s3_bucket, "Key": key}
+        if filename:
+            params["ResponseContentDisposition"] = f'attachment; filename="{filename}"'
+        return self.s3.generate_presigned_url("get_object", Params=params, ExpiresIn=expires)
+
+    def stat(self, key: str) -> dict:
+        if self.s3:
+            result = self.s3.head_object(Bucket=settings.s3_bucket, Key=key)
+            return {
+                "size": result["ContentLength"],
+                "content_type": result.get("ContentType") or "application/octet-stream",
+                "etag": result.get("ETag", "").strip('"'),
+            }
+        target = (self.root / key).resolve()
+        if self.root not in target.parents or not target.is_file():
+            raise FileNotFoundError(key)
+        return {
+            "size": target.stat().st_size,
+            "content_type": mimetypes.guess_type(target.name)[0] or "application/octet-stream",
+            "etag": None,
+        }
+
 
 storage = Storage()
 
 
 def publish_job(payload: dict) -> bool:
+    return publish_event(settings.kafka_topic, payload)
+
+
+def publish_event(topic: str, payload: dict) -> bool:
     try:
         producer = KafkaProducer(
             bootstrap_servers=settings.kafka_bootstrap_servers.split(","),
@@ -66,7 +104,7 @@ def publish_job(payload: dict) -> bool:
             request_timeout_ms=2500,
             api_version_auto_timeout_ms=2500,
         )
-        producer.send(settings.kafka_topic, payload).get(timeout=5)
+        producer.send(topic, payload).get(timeout=5)
         producer.close()
         return True
     except KafkaError as exc:

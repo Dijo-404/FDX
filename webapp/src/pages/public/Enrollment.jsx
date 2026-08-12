@@ -17,7 +17,7 @@ export default function Enrollment() {
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    api(`/public/enroll/${token}`).then(setInfo).catch((requestError) => setError(requestError.message));
+    api(`/v2/public/enrollment/${token}`).then((response) => setInfo(response.data)).catch((requestError) => setError(requestError.message));
     return () => streamRef.current?.getTracks().forEach((track) => track.stop());
   }, [token]);
 
@@ -53,10 +53,15 @@ export default function Enrollment() {
     if (!image || !consent) return;
     setSubmitting(true);
     setError("");
-    const body = new FormData();
-    body.append("consent", "true");
-    body.append("selfie", image);
-    try { await api(`/public/enroll/${token}`, { method: "POST", body }); setDone(true); }
+    const consentBody = new FormData();
+    consentBody.append("accepted", "true");
+    const selfieBody = new FormData();
+    selfieBody.append("selfie", image);
+    try {
+      await api(`/v2/public/enrollment/${token}/consent`, { method: "POST", body: consentBody });
+      await api(`/v2/public/enrollment/${token}/complete`, { method: "POST", body: selfieBody });
+      setDone(true);
+    }
     catch (requestError) { setError(requestError.message); }
     finally { setSubmitting(false); }
   }
@@ -64,7 +69,7 @@ export default function Enrollment() {
   if (done) return <div className="public-shell"><div className="public-card card success-view"><span className="success-mark"><Icon name="check" size={28} /></span><h1>Face verified securely</h1><p>FDX will email your private gallery when matching is complete. No account is required.</p></div></div>;
   return <div className="public-shell"><main className="public-card card">
     <div className="public-brand"><span className="login-mark">FDX</span><div><p className="eyebrow">Participant verification</p><h1>Find your event photos</h1></div></div>
-    {info ? <div className="event-summary"><strong>{info.event}</strong><span>{info.organization} · For {info.participant}</span></div> : null}
+    {info ? <div className="event-summary"><strong>{info.event_name}</strong><span>{info.organization_name} · For {info.participant_name}</span></div> : null}
     {error ? <p className="login-error">{error}</p> : null}
     <div className="camera-frame">{preview ? <img src={preview} alt="Captured selfie" /> : <video ref={videoRef} autoPlay playsInline muted />}</div>
     <div className="camera-actions">{preview ? <button className="btn" onClick={() => { setImage(null); setPreview(""); }}>Retake</button> : <><button className="btn primary" onClick={camera}><Icon name="face" size={16} /> Enable camera</button><button className="btn" onClick={capture} disabled={!cameraReady}>Take selfie</button><label className="btn">Choose file<input hidden type="file" accept="image/*" capture="user" onChange={(event) => { const file = event.target.files[0]; if (file) { setImage(file); setPreview(URL.createObjectURL(file)); } }} /></label></>}</div>

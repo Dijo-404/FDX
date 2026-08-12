@@ -1,6 +1,6 @@
 # FDX
 
-FDX is a multi-tenant event-photo delivery platform implementing the workflow in [`docs/workflow.md`](docs/workflow.md). A single JWT login routes Super Admins, Organization Admins, and restricted Staff users to role-scoped React dashboards.
+FDX is a multi-tenant event-photo delivery platform implementing the product workflow in [`docs/workflow.md`](docs/workflow.md) and the V2 technical contract in [`docs/specs.md`](docs/specs.md). A single JWT login routes Super Admins, Organization Admins, and restricted Staff users to role-scoped React dashboards. The implementation map is maintained in [`docs/spec-implementation.md`](docs/spec-implementation.md).
 
 ## Architecture
 
@@ -14,6 +14,8 @@ FDX is a multi-tenant event-photo delivery platform implementing the workflow in
 - `tools/` — model integrity and end-to-end platform verification.
 
 PostgreSQL is the source of truth, Redis provides login rate limiting and health caching, Kafka distributes processing jobs, and the worker retains a PostgreSQL fallback queue. Development media uses a Docker volume; production media uses private S3 storage with generated thumbnails.
+
+The stable dashboard remains compatible with the original `/api` contract while security-sensitive and high-scale workflows use the additive `/api/v2` contract: rotating refresh sessions, import preview/confirmation, presigned upload batches, processing/review, delivery, and asynchronous gallery exports.
 
 ## Required models
 
@@ -74,6 +76,14 @@ FDX_VERIFY_FACE_IMAGE=face-processing/service/assets/warmup/einstein.jpeg \
 ```
 
 Set `FDX_VERIFY_XLS=/path/to/participants.xls` to include legacy Excel verification.
+
+Run the V2 acceptance flow (refresh replay prevention, invitations, tenant isolation, import idempotency, direct upload, real ML, private gallery, async ZIP export, and logout revocation):
+
+```sh
+FDX_VERIFY_FACE_IMAGE=/path/to/clear-face.jpg node tools/verify_v2.mjs
+```
+
+API service metrics are available at `GET /metrics`; dependency probes are exposed at `/health/live`, `/health/ready`, and `/health/dependencies`.
 
 Frontend checks:
 

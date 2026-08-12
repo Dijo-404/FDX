@@ -1,11 +1,10 @@
 """Complete workflow schema for staff, thumbnails, and mail retry."""
 
-from alembic import op
 import sqlalchemy as sa
-from sqlalchemy import inspect
-
-from app.database import Base
+from alembic import op
 from app import models  # noqa: F401
+from app.database import Base
+from sqlalchemy import inspect
 
 revision = "20260812_01"
 down_revision = None

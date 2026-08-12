@@ -35,4 +35,4 @@ AWS sends a verification message for `EmailFrom`. Confirm it, then build and pub
 
 The publish command pushes the API/worker, web, and Gunicorn ML images, uploads the private Compose manifest and models, and performs an Auto Scaling instance refresh. Point the application hostname at the `LoadBalancerDnsName` stack output. The API container applies Alembic migrations before it starts; workers do not race it.
 
-RDS deletion protection is enabled and replacement/deletion preserves a final snapshot. Disable deletion protection explicitly before intentionally deleting the stack. `storage.yml` remains available only for storage-only/manual deployments.
+RDS deletion protection is enabled and replacement/deletion preserves a final snapshot. Disable deletion protection explicitly before intentionally deleting the stack.

@@ -4,7 +4,6 @@ import json
 import logging
 import mimetypes
 from datetime import timedelta
-from pathlib import Path
 
 import boto3
 import httpx
@@ -16,7 +15,6 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 from .models import Delivery, EmailOutbox, utcnow
-
 
 logger = logging.getLogger("fdx.integrations")
 

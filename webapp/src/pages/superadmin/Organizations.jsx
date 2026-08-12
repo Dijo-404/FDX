@@ -5,7 +5,7 @@ import Icon from "../../components/Icon";
 import Modal from "../../components/Modal";
 import Toggle from "../../components/Toggle";
 import { usePlatform } from "../../context/PlatformContext";
-import "./Colleges.css";
+import "./Organizations.css";
 
 const defaultExpiry = () => { const value = new Date(); value.setFullYear(value.getFullYear() + 1); return value.toISOString().slice(0, 10); };
 const emptyForm = () => ({ name: "", type: "COLLEGE", contactName: "", contactEmail: "", phone: "", storageLimitGB: 100, retentionDays: 90, expiry: defaultExpiry() });

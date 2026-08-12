@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 
+import xlrd
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
@@ -18,20 +19,53 @@ from openpyxl import load_workbook
 from openpyxl.utils.exceptions import InvalidFileException
 from PIL import Image, ImageOps
 from pydantic import BaseModel, EmailStr, Field
-from redis import Redis
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.background import BackgroundTask
-import xlrd
 
-from .auth import check_login_rate_limit, current_user, find_user_by_email, hash_password, hash_token, new_opaque_token, require_org_admin, require_org_member, require_super_admin, token_pair, verify_password
+from .auth import (
+    check_login_rate_limit,
+    current_user,
+    find_user_by_email,
+    hash_password,
+    hash_token,
+    new_opaque_token,
+    require_org_admin,
+    require_org_member,
+    require_super_admin,
+    token_pair,
+    verify_password,
+)
 from .config import settings
 from .database import Base, SessionLocal, engine, get_db
-from .integrations import cache_delete, dependency_health, dispatch_email, ml_embedding, publish_job, queue_email, storage
-from .models import AuditLog, Delivery, EmailOutbox, Event, FaceDetection, FaceEnrollment, FaceMatch, Organization, OrganizationType, Participant, Photo, ProcessingJob, User, UserRole, utcnow
+from .integrations import (
+    cache_delete,
+    dependency_health,
+    dispatch_email,
+    ml_embedding,
+    publish_job,
+    queue_email,
+    storage,
+)
+from .models import (
+    AuditLog,
+    Delivery,
+    EmailOutbox,
+    Event,
+    FaceDetection,
+    FaceEnrollment,
+    FaceMatch,
+    Organization,
+    OrganizationType,
+    Participant,
+    Photo,
+    ProcessingJob,
+    User,
+    UserRole,
+    utcnow,
+)
 from .serializers import event_json, iso, organization_json, participant_json, user_json
-
 
 GB = 1024**3
 

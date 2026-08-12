@@ -3,8 +3,16 @@ from __future__ import annotations
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .models import Delivery, Event, FaceDetection, FaceMatch, Organization, Participant, Photo, ProcessingJob, User
-
+from .models import (
+    Delivery,
+    Event,
+    FaceDetection,
+    FaceMatch,
+    Organization,
+    Participant,
+    Photo,
+    User,
+)
 
 GB = 1024**3
 

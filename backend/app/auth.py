@@ -19,7 +19,6 @@ from .config import settings
 from .database import get_db
 from .models import User, UserRole
 
-
 bearer = HTTPBearer(auto_error=False)
 
 

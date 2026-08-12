@@ -14,8 +14,19 @@ from .config import settings
 from .database import SessionLocal
 from .integrations import dispatch_email, ml_faces, storage
 from .main import audit, bootstrap
-from .models import Delivery, EmailOutbox, Event, FaceDetection, FaceEnrollment, FaceMatch, Organization, Participant, Photo, ProcessingJob, utcnow
-
+from .models import (
+    Delivery,
+    EmailOutbox,
+    Event,
+    FaceDetection,
+    FaceEnrollment,
+    FaceMatch,
+    Organization,
+    Participant,
+    Photo,
+    ProcessingJob,
+    utcnow,
+)
 
 WORKER_NAME = f"ml-{socket.gethostname()}-{os.getpid()}"
 

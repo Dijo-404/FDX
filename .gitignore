@@ -1,9 +1,11 @@
 models/
 .venv/
-.fdx-native-backend.pid
-.fdx-native-proxy.pid
-.fdx-native-runner.pid
-.fdx-native-backend.log
+.env
+data/
+webapp/node_modules/
+webapp/dist/
+.ruff_cache/
 __pycache__/
 *.py[cod]
-gpu-version.zip
+*.log
+*.zip

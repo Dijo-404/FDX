@@ -4,7 +4,7 @@ import Icon from "../../components/Icon";
 import Modal from "../../components/Modal";
 import { usePlatform } from "../../context/PlatformContext";
 import { useAuth } from "../../context/AuthContext";
-import "../college/Events.css";
+import "./Events.css";
 
 const isoDate = (value) => value.toISOString().slice(0, 10);
 const eventDefaults = () => {

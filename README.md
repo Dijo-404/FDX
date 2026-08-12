@@ -6,7 +6,9 @@ FDX is a multi-tenant event-photo delivery platform implementing the workflow in
 
 - `webapp/` — React and Vite dashboards plus participant enrollment and private gallery pages.
 - `backend/` — FastAPI API, PostgreSQL models/Alembic migrations, authentication, storage, email, retention, and Kafka worker.
-- `face-processing/ml/` — Gunicorn-hosted RetinaFace R50 and AdaFace IR101 service.
+- `face-processing/service/` — Gunicorn-hosted face-processing inference service.
+- `face-processing/models/detection/` — RetinaFace face-detection weights.
+- `face-processing/models/recognition/` — AdaFace face-recognition weights.
 - `deploy/nginx/` — frontend hosting, reverse proxy, upload limits, and API rate limiting.
 - `deploy/aws/` — production CloudFormation and publishing workflow.
 - `tools/` — model integrity and end-to-end platform verification.
@@ -15,11 +17,11 @@ PostgreSQL is the source of truth, Redis provides login rate limiting and health
 
 ## Required models
 
-Place these files under `models/onnx/`:
+Place each ONNX model under the directory matching its role:
 
 ```text
-models/onnx/retinaface-r50.onnx
-models/onnx/adaface-ir101-ms1mv2.onnx
+face-processing/models/detection/retinaface-r50.onnx
+face-processing/models/recognition/adaface-ir101-ms1mv2.onnx
 ```
 
 Verify them with:
@@ -67,7 +69,7 @@ node tools/verify_platform.mjs
 To include the real ML enrollment/matching/gallery path:
 
 ```sh
-FDX_VERIFY_FACE_IMAGE=face-processing/ml/assets/warmup/einstein.jpeg \
+FDX_VERIFY_FACE_IMAGE=face-processing/service/assets/warmup/einstein.jpeg \
   node tools/verify_platform.mjs
 ```
 

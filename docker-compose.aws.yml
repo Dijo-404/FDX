@@ -25,7 +25,7 @@ services:
       FDX_DEVICE: cpu
       ML_WARMUP_ON_IMPORT: "1"
     volumes:
-      - /opt/fdx/models:/app/models:ro
+      - /opt/fdx/face-processing/models:/app/models:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:3000/healthcheck', timeout=3)"]
       interval: 15s

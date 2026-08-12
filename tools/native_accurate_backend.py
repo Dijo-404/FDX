@@ -19,10 +19,10 @@ import onnxruntime as ort
 from flask import Flask, jsonify, request
 
 ROOT = Path(__file__).resolve().parents[1]
-MODEL_ROOT = Path(os.environ.get("MODELS_ROOT", ROOT / "models"))
-DETECTOR_MODEL = MODEL_ROOT / "onnx" / "retinaface-r50.onnx"
-CALCULATOR_MODEL = MODEL_ROOT / "onnx" / "adaface-ir101-ms1mv2.onnx"
-WARMUP_IMAGE = ROOT / "face-processing" / "ml" / "assets" / "warmup" / "einstein.jpeg"
+MODEL_ROOT = Path(os.environ.get("MODELS_ROOT", ROOT / "face-processing" / "models"))
+DETECTOR_MODEL = MODEL_ROOT / "detection" / "retinaface-r50.onnx"
+RECOGNITION_MODEL = MODEL_ROOT / "recognition" / "adaface-ir101-ms1mv2.onnx"
+WARMUP_IMAGE = ROOT / "face-processing" / "service" / "assets" / "warmup" / "einstein.jpeg"
 PORT = int(os.environ.get("ML_PORT", "3000"))
 IMAGE_LENGTH_LIMIT = int(os.environ.get("IMG_LENGTH_LIMIT", "1280"))
 DEVICE = os.environ.get("FDX_DEVICE", "auto").strip().lower()
@@ -98,7 +98,7 @@ def _create_session(model_path: Path, providers):
 _preload_nvidia_libraries()
 REQUESTED_PROVIDERS = _provider_order()
 DETECTOR_SESSION = _create_session(DETECTOR_MODEL, REQUESTED_PROVIDERS)
-CALCULATOR_SESSION = _create_session(CALCULATOR_MODEL, REQUESTED_PROVIDERS)
+RECOGNITION_SESSION = _create_session(RECOGNITION_MODEL, REQUESTED_PROVIDERS)
 ACTIVE_PROVIDER = DETECTOR_SESSION.get_providers()[0]
 
 if DEVICE in {"gpu", "cuda"} and ACTIVE_PROVIDER != "CUDAExecutionProvider":
@@ -394,8 +394,8 @@ def _embedding(face: np.ndarray) -> tuple[np.ndarray, float]:
     input_tensor = input_tensor / 127.5 - 1.0
     flip_tensor = input_tensor[:, :, :, ::-1].copy()
     batch = np.concatenate((input_tensor, flip_tensor), axis=0)
-    embeddings, norms = CALCULATOR_SESSION.run(
-        None, {CALCULATOR_SESSION.get_inputs()[0].name: batch}
+    embeddings, norms = RECOGNITION_SESSION.run(
+        None, {RECOGNITION_SESSION.get_inputs()[0].name: batch}
     )
     norms = np.asarray(norms, dtype=np.float32).reshape(-1, 1)
     weights = norms / max(float(norms.sum()), np.finfo(np.float32).eps)

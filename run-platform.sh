@@ -4,7 +4,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$repo_root"
 
-if [[ ! -f models/onnx/retinaface-r50.onnx || ! -f models/onnx/adaface-ir101-ms1mv2.onnx ]]; then
+if [[ ! -f face-processing/models/detection/retinaface-r50.onnx || ! -f face-processing/models/recognition/adaface-ir101-ms1mv2.onnx ]]; then
   echo "FDX model files are missing. Run ./tools/verify_models.sh for details." >&2
   exit 1
 fi

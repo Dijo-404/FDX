@@ -54,14 +54,14 @@ services:
   ml:
     build:
       context: .
-      dockerfile: face-processing/ml/Dockerfile
+      dockerfile: face-processing/service/Dockerfile
     environment:
       ML_PORT: 3000
       ML_HOST: 0.0.0.0
       MODELS_ROOT: /app/models
       FDX_DEVICE: ${FDX_DEVICE:-cpu}
     volumes:
-      - ./models:/app/models:ro
+      - ./face-processing/models:/app/models:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:3000/healthcheck', timeout=2)"]
       interval: 15s

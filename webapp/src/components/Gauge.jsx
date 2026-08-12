@@ -2,7 +2,14 @@ import "./Gauge.css";
 
 let gaugeId = 0;
 
-export default function Gauge({ value, max, size = 108, strokeWidth = 10, label, sublabel }) {
+export default function Gauge({
+  value,
+  max,
+  size = 108,
+  strokeWidth = 10,
+  label,
+  sublabel,
+}) {
   const id = nextGaugeId();
   const radius = (size - strokeWidth) / 2;
   const circumference = 2 * Math.PI * radius;

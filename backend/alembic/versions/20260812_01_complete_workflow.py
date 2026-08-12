@@ -22,20 +22,43 @@ def upgrade() -> None:
     op.execute("ALTER TYPE userrole ADD VALUE IF NOT EXISTS 'STAFF'")
     photo_columns = {column["name"] for column in inspector.get_columns("photos")}
     if "thumbnail_storage_key" not in photo_columns:
-        op.add_column("photos", sa.Column("thumbnail_storage_key", sa.String(length=500), nullable=True))
+        op.add_column(
+            "photos",
+            sa.Column("thumbnail_storage_key", sa.String(length=500), nullable=True),
+        )
     if "thumbnail_size_bytes" not in photo_columns:
-        op.add_column("photos", sa.Column("thumbnail_size_bytes", sa.BigInteger(), nullable=False, server_default="0"))
+        op.add_column(
+            "photos",
+            sa.Column(
+                "thumbnail_size_bytes",
+                sa.BigInteger(),
+                nullable=False,
+                server_default="0",
+            ),
+        )
     enrollment_columns = {column["name"] for column in inspector.get_columns("face_enrollments")}
     if "size_bytes" not in enrollment_columns:
-        op.add_column("face_enrollments", sa.Column("size_bytes", sa.BigInteger(), nullable=False, server_default="0"))
+        op.add_column(
+            "face_enrollments",
+            sa.Column("size_bytes", sa.BigInteger(), nullable=False, server_default="0"),
+        )
     email_columns = {column["name"] for column in inspector.get_columns("email_outbox")}
     if "attempts" not in email_columns:
-        op.add_column("email_outbox", sa.Column("attempts", sa.Integer(), nullable=False, server_default="0"))
+        op.add_column(
+            "email_outbox",
+            sa.Column("attempts", sa.Integer(), nullable=False, server_default="0"),
+        )
     if "next_attempt_at" not in email_columns:
-        op.add_column("email_outbox", sa.Column("next_attempt_at", sa.DateTime(timezone=True), nullable=True))
+        op.add_column(
+            "email_outbox",
+            sa.Column("next_attempt_at", sa.DateTime(timezone=True), nullable=True),
+        )
         op.create_index("ix_email_outbox_next_attempt_at", "email_outbox", ["next_attempt_at"])
     if "last_attempt_at" not in email_columns:
-        op.add_column("email_outbox", sa.Column("last_attempt_at", sa.DateTime(timezone=True), nullable=True))
+        op.add_column(
+            "email_outbox",
+            sa.Column("last_attempt_at", sa.DateTime(timezone=True), nullable=True),
+        )
 
 
 def downgrade() -> None:

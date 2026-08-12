@@ -32,12 +32,34 @@ def test_cosine_similarity_is_bounded_for_normalized_embeddings():
 def test_cross_tenant_event_endpoints_return_not_found():
     suffix = new_opaque_token()[0][:12]
     with SessionLocal() as db:
-        tenant_a = Organization(name=f"Tenant A {suffix}", type=OrganizationType.COMPANY, contact_email=f"a-{suffix}@example.com")
-        tenant_b = Organization(name=f"Tenant B {suffix}", type=OrganizationType.COMPANY, contact_email=f"b-{suffix}@example.com")
+        tenant_a = Organization(
+            name=f"Tenant A {suffix}",
+            type=OrganizationType.COMPANY,
+            contact_email=f"a-{suffix}@example.com",
+        )
+        tenant_b = Organization(
+            name=f"Tenant B {suffix}",
+            type=OrganizationType.COMPANY,
+            contact_email=f"b-{suffix}@example.com",
+        )
         db.add_all([tenant_a, tenant_b])
         db.flush()
-        user_a = User(organization_id=tenant_a.id, name="Admin A", email=f"admin-a-{suffix}@example.com", password_hash=hash_password("Correct Horse Battery Staple"), role=UserRole.ORG_ADMIN, status="active")
-        event_b = Event(organization_id=tenant_b.id, name=f"Private event {suffix}", event_date=date.today(), retention_days=30, expires_at=date.today() + timedelta(days=30), status="DRAFT")
+        user_a = User(
+            organization_id=tenant_a.id,
+            name="Admin A",
+            email=f"admin-a-{suffix}@example.com",
+            password_hash=hash_password("Correct Horse Battery Staple"),
+            role=UserRole.ORG_ADMIN,
+            status="active",
+        )
+        event_b = Event(
+            organization_id=tenant_b.id,
+            name=f"Private event {suffix}",
+            event_date=date.today(),
+            retention_days=30,
+            expires_at=date.today() + timedelta(days=30),
+            status="DRAFT",
+        )
         db.add_all([user_a, event_b])
         db.commit()
         token = token_pair(user_a)["access_token"]
@@ -47,8 +69,22 @@ def test_cross_tenant_event_endpoints_return_not_found():
     headers = {"Authorization": f"Bearer {token}"}
     with TestClient(app) as client:
         assert client.get(f"/api/v2/events/{event_id}", headers=headers).status_code == 404
-        assert client.patch(f"/api/v2/events/{event_id}", headers=headers, json={"name": "Forbidden"}).status_code == 404
-        assert client.post(f"/api/v2/events/{event_id}/upload-batches", headers=headers, json={"expected_files": 1, "reserved_bytes": 1024}).status_code == 404
+        assert (
+            client.patch(
+                f"/api/v2/events/{event_id}",
+                headers=headers,
+                json={"name": "Forbidden"},
+            ).status_code
+            == 404
+        )
+        assert (
+            client.post(
+                f"/api/v2/events/{event_id}/upload-batches",
+                headers=headers,
+                json={"expected_files": 1, "reserved_bytes": 1024},
+            ).status_code
+            == 404
+        )
 
     with SessionLocal() as db:
         tenant_b_id = db.get(Event, event_id).organization_id

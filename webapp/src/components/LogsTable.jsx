@@ -26,7 +26,9 @@ export default function LogsTable({ logs, title, subtitle }) {
                 <td>{log.timestamp}</td>
                 <td>{log.actor}</td>
                 <td>
-                  <span className={`badge ${LEVEL_TONE[log.level] ?? "warning"}`}>
+                  <span
+                    className={`badge ${LEVEL_TONE[log.level] ?? "warning"}`}
+                  >
                     <span className="dot" />
                     {log.action}
                   </span>

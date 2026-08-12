@@ -66,7 +66,9 @@ class Organization(Base):
 class User(Base):
     __tablename__ = "users"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4)
-    organization_id: Mapped[str | None] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True)
+    organization_id: Mapped[str | None] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     name: Mapped[str] = mapped_column(String(120))
     email: Mapped[str] = mapped_column(String(254), unique=True, index=True)
     password_hash: Mapped[str | None] = mapped_column(String(300), nullable=True)
@@ -131,7 +133,9 @@ class FaceEnrollment(Base):
     embedding: Mapped[list] = mapped_column(JSON)
     embedding_vector: Mapped[list | None] = mapped_column(Vector(512), nullable=True)
     detector_confidence: Mapped[float] = mapped_column(Float)
-    organization_id: Mapped[str | None] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True)
+    organization_id: Mapped[str | None] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     event_id: Mapped[str | None] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(24), default="valid", index=True)
     model_name: Mapped[str] = mapped_column(String(120), default="adaface-ir101-ms1mv2")
@@ -191,7 +195,9 @@ class FaceMatch(Base):
     organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), index=True)
     event_id: Mapped[str] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"), index=True)
     detection_id: Mapped[str] = mapped_column(ForeignKey("face_detections.id", ondelete="CASCADE"), unique=True)
-    participant_id: Mapped[str | None] = mapped_column(ForeignKey("participants.id", ondelete="CASCADE"), nullable=True, index=True)
+    participant_id: Mapped[str | None] = mapped_column(
+        ForeignKey("participants.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     confidence: Mapped[float] = mapped_column(Float)
     second_best_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     margin: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -264,8 +270,12 @@ class GalleryExport(Base):
 class EmailOutbox(Base):
     __tablename__ = "email_outbox"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4)
-    organization_id: Mapped[str | None] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True)
-    delivery_id: Mapped[str | None] = mapped_column(ForeignKey("deliveries.id", ondelete="SET NULL"), nullable=True, index=True)
+    organization_id: Mapped[str | None] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    delivery_id: Mapped[str | None] = mapped_column(
+        ForeignKey("deliveries.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     recipient: Mapped[str] = mapped_column(String(254))
     subject: Mapped[str] = mapped_column(String(240))
     html: Mapped[str] = mapped_column(Text)
@@ -283,7 +293,9 @@ class EmailOutbox(Base):
 class AuditLog(Base):
     __tablename__ = "audit_logs"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4)
-    organization_id: Mapped[str | None] = mapped_column(ForeignKey("organizations.id", ondelete="SET NULL"), nullable=True, index=True)
+    organization_id: Mapped[str | None] = mapped_column(
+        ForeignKey("organizations.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     actor_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     actor: Mapped[str] = mapped_column(String(254))
     action: Mapped[str] = mapped_column(String(120), index=True)
@@ -333,6 +345,10 @@ class ParticipantEnrollmentToken(Base):
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    pending_storage_key: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    pending_content_type: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    pending_size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    pending_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -403,7 +419,9 @@ class StorageUsageLedger(Base):
     __tablename__ = "storage_usage_ledger"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4)
     organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), index=True)
-    event_id: Mapped[str | None] = mapped_column(ForeignKey("events.id", ondelete="SET NULL"), nullable=True, index=True)
+    event_id: Mapped[str | None] = mapped_column(
+        ForeignKey("events.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     photo_id: Mapped[str | None] = mapped_column(ForeignKey("photos.id", ondelete="SET NULL"), nullable=True)
     operation: Mapped[str] = mapped_column(String(24))
     bytes: Mapped[int] = mapped_column(BigInteger)
@@ -415,7 +433,9 @@ class OutboxEvent(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4)
     aggregate_type: Mapped[str] = mapped_column(String(80))
     aggregate_id: Mapped[str] = mapped_column(String(36), index=True)
-    organization_id: Mapped[str | None] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True)
+    organization_id: Mapped[str | None] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     event_type: Mapped[str] = mapped_column(String(160), index=True)
     event_version: Mapped[int] = mapped_column(Integer, default=1)
     payload: Mapped[dict] = mapped_column(JSON)

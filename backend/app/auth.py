@@ -43,7 +43,12 @@ def verify_password(password: str, encoded: str | None) -> bool:
 
         _, n, r, p, salt, digest = encoded.split("$", 5)
         candidate = hashlib.scrypt(
-            password.encode(), salt=base64.b64decode(salt), n=int(n), r=int(r), p=int(p), dklen=64
+            password.encode(),
+            salt=base64.b64decode(salt),
+            n=int(n),
+            r=int(r),
+            p=int(p),
+            dklen=64,
         )
         return hmac.compare_digest(candidate, base64.b64decode(digest))
     except (ValueError, TypeError):
@@ -68,7 +73,12 @@ def access_token(user: User, session_id: str | None = None) -> dict:
         settings.jwt_secret,
         algorithm="HS256",
     )
-    return {"token": token, "access_token": token, "expiresAt": expires.isoformat(), "expires_in": settings.access_token_minutes * 60}
+    return {
+        "token": token,
+        "access_token": token,
+        "expiresAt": expires.isoformat(),
+        "expires_in": settings.access_token_minutes * 60,
+    }
 
 
 def create_refresh_session(db: Session, user: User, request: Request) -> tuple[str, RefreshSession]:
@@ -86,7 +96,9 @@ def create_refresh_session(db: Session, user: User, request: Request) -> tuple[s
 
 
 def rotate_refresh_session(db: Session, raw_token: str, request: Request) -> tuple[User, str, RefreshSession]:
-    session = db.scalar(select(RefreshSession).where(RefreshSession.refresh_token_hash == hash_token(raw_token)).with_for_update())
+    session = db.scalar(
+        select(RefreshSession).where(RefreshSession.refresh_token_hash == hash_token(raw_token)).with_for_update()
+    )
     now = utcnow()
     if not session or session.revoked_at or session.expires_at <= now:
         raise HTTPException(status_code=401, detail="Refresh session is invalid or expired")
@@ -128,7 +140,10 @@ def current_user(
             audience=settings.jwt_audience,
         )
     except jwt.PyJWTError as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired session") from exc
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired session",
+        ) from exc
     user = db.get(User, payload.get("sub"))
     if not user or user.status != "active":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Account is not active")
@@ -136,29 +151,55 @@ def current_user(
     if session_id:
         session = db.get(RefreshSession, session_id)
         if not session or session.revoked_at or session.expires_at <= utcnow():
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session has been revoked")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Session has been revoked",
+            )
     return user
 
 
 def require_super_admin(user: User = Depends(current_user)) -> User:
     if user.role != UserRole.SUPER_ADMIN:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Super Admin permission required")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Super Admin permission required",
+        )
     return user
 
 
 def require_org_admin(user: User = Depends(current_user)) -> User:
     if user.role != UserRole.ORG_ADMIN or not user.organization_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Organization Admin permission required")
-    if not user.organization or user.organization.status != "active" or (user.organization.expires_at and user.organization.expires_at < date.today()):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Organization is suspended or expired")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Organization Admin permission required",
+        )
+    if (
+        not user.organization
+        or user.organization.status != "active"
+        or (user.organization.expires_at and user.organization.expires_at < date.today())
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Organization is suspended or expired",
+        )
     return user
 
 
 def require_org_member(user: User = Depends(current_user)) -> User:
     if user.role not in {UserRole.ORG_ADMIN, UserRole.STAFF} or not user.organization_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Organization membership required")
-    if not user.organization or user.organization.status != "active" or (user.organization.expires_at and user.organization.expires_at < date.today()):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Organization is suspended or expired")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Organization membership required",
+        )
+    if (
+        not user.organization
+        or user.organization.status != "active"
+        or (user.organization.expires_at and user.organization.expires_at < date.today())
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Organization is suspended or expired",
+        )
     return user
 
 
@@ -170,7 +211,10 @@ def check_login_rate_limit(request: Request, email: str) -> None:
         if attempts == 1:
             redis.expire(key, 60)
         if attempts > 10:
-            raise HTTPException(status_code=429, detail="Too many login attempts. Try again in one minute.")
+            raise HTTPException(
+                status_code=429,
+                detail="Too many login attempts. Try again in one minute.",
+            )
     except RedisError:
         # Database auth remains available during a cache outage; health exposes the failure.
         return

@@ -6,7 +6,12 @@ import Modal from "../../components/Modal";
 import StatCard from "../../components/StatCard";
 import { usePlatform } from "../../context/PlatformContext";
 export default function Participants() {
-  const { events, participants, validateParticipantImport, confirmParticipantImport } = usePlatform();
+  const {
+    events,
+    participants,
+    validateParticipantImport,
+    confirmParticipantImport,
+  } = usePlatform();
   const [eventId, setEventId] = useState("");
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
@@ -197,7 +202,10 @@ export default function Participants() {
             hint="Drop .csv, .xlsx or click to browse"
             accept=".csv,.xls,.xlsx,.xlsm"
             multiple={false}
-            onFiles={(files) => { setQueued(files[0]); setPreview(null); }}
+            onFiles={(files) => {
+              setQueued(files[0]);
+              setPreview(null);
+            }}
           />
           {queued ? (
             <div className="validation-summary">
@@ -209,9 +217,18 @@ export default function Participants() {
             </div>
           ) : null}
           {preview ? (
-            <div className={preview.invalid_rows ? "notice warning" : "notice success"}>
-              {preview.valid_rows} valid · {preview.duplicate_rows} duplicate · {preview.invalid_rows} invalid
-              {preview.errors?.slice(0, 5).map((row) => <p key={row.row}>Row {row.row}: {row.errors.join(", ")}</p>)}
+            <div
+              className={
+                preview.invalid_rows ? "notice warning" : "notice success"
+              }
+            >
+              {preview.valid_rows} valid · {preview.duplicate_rows} duplicate ·{" "}
+              {preview.invalid_rows} invalid
+              {preview.errors?.slice(0, 5).map((row) => (
+                <p key={row.row}>
+                  Row {row.row}: {row.errors.join(", ")}
+                </p>
+              ))}
             </div>
           ) : null}
         </div>

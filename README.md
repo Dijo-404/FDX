@@ -98,4 +98,12 @@ npm run build
 
 `deploy/aws/platform.yml` provisions the production baseline: VPC, HTTPS ALB, EC2 Auto Scaling, RDS PostgreSQL, ElastiCache Redis, MSK Kafka, ECR, S3/Glacier, SES/IAM, Secrets Manager, SSM, and scheduled Lambda retention.
 
+For an NVIDIA worker host with NVIDIA Container Toolkit installed, build the dedicated CUDA image and set `ML_IMAGE` and `FDX_DEVICE=cuda` in the production environment:
+
+```sh
+docker build -f face-processing/service/Dockerfile.gpu -t fdx-ml:gpu .
+```
+
+The regular ML Dockerfile remains the CPU image; both variants serve inference through Gunicorn.
+
 See [`deploy/aws/README.md`](deploy/aws/README.md) for deployment and image publishing commands.

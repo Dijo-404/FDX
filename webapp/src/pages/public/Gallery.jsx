@@ -15,21 +15,31 @@ export default function Gallery() {
       .catch((requestError) => setError(requestError.message));
   }, [token]);
 
-  const pollExport = useCallback(async (exportId) => {
-    for (let attempt = 0; attempt < 60; attempt += 1) {
-      const response = await api(`/v2/public/gallery/${token}/exports/${exportId}`);
-      setExportJob(response.data);
-      if (response.data.status === "READY") return response.data;
-      if (["FAILED", "EXPIRED"].includes(response.data.status)) throw new Error(response.data.error || "Gallery export failed");
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-    }
-    throw new Error("Gallery export is still being prepared. Please try again shortly.");
-  }, [token]);
+  const pollExport = useCallback(
+    async (exportId) => {
+      for (let attempt = 0; attempt < 60; attempt += 1) {
+        const response = await api(
+          `/v2/public/gallery/${token}/exports/${exportId}`,
+        );
+        setExportJob(response.data);
+        if (response.data.status === "READY") return response.data;
+        if (["FAILED", "EXPIRED"].includes(response.data.status))
+          throw new Error(response.data.error || "Gallery export failed");
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+      throw new Error(
+        "Gallery export is still being prepared. Please try again shortly.",
+      );
+    },
+    [token],
+  );
 
   async function downloadAll() {
     try {
       setError("");
-      const response = await api(`/v2/public/gallery/${token}/exports`, { method: "POST" });
+      const response = await api(`/v2/public/gallery/${token}/exports`, {
+        method: "POST",
+      });
       setExportJob(response.data);
       const ready = await pollExport(response.data.export_id);
       window.location.assign(ready.download_url);
@@ -66,13 +76,23 @@ export default function Gallery() {
           <div className="gallery-toolbar">
             <div>
               <span>{data.photos.length} matched photos</span>
-              <span>Expires {new Date(data.expires_at).toLocaleDateString()}</span>
+              <span>
+                Expires {new Date(data.expires_at).toLocaleDateString()}
+              </span>
             </div>
             {data.photos.length ? (
               <div className="gallery-actions">
-                <button className="btn primary" onClick={downloadAll} disabled={["QUEUED", "PROCESSING"].includes(exportJob?.status)}>
+                <button
+                  className="btn primary"
+                  onClick={downloadAll}
+                  disabled={["QUEUED", "PROCESSING"].includes(
+                    exportJob?.status,
+                  )}
+                >
                   <Icon name="download" size={16} />
-                  {["QUEUED", "PROCESSING"].includes(exportJob?.status) ? "Preparing ZIP…" : "Download all"}
+                  {["QUEUED", "PROCESSING"].includes(exportJob?.status)
+                    ? "Preparing ZIP…"
+                    : "Download all"}
                 </button>
               </div>
             ) : null}
@@ -80,17 +100,28 @@ export default function Gallery() {
           <main className="photo-gallery">
             {data.photos.map((photo) => (
               <figure key={photo.id}>
-                <img src={photo.thumbnail_url} alt={photo.filename} loading="lazy" />
+                <img
+                  src={photo.thumbnail_url}
+                  alt={photo.filename}
+                  loading="lazy"
+                />
                 <figcaption>
                   {photo.filename}
-                  <button className="link-button" onClick={() => downloadPhoto(photo)}>
+                  <button
+                    className="link-button"
+                    onClick={() => downloadPhoto(photo)}
+                  >
                     <Icon name="download" size={16} /> Download
                   </button>
                 </figcaption>
               </figure>
             ))}
           </main>
-          {!data.photos.length ? <div className="page-state card">No approved photos are available.</div> : null}
+          {!data.photos.length ? (
+            <div className="page-state card">
+              No approved photos are available.
+            </div>
+          ) : null}
         </>
       ) : null}
     </div>

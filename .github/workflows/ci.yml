@@ -22,6 +22,7 @@ jobs:
           cache: npm
           cache-dependency-path: webapp/package-lock.json
       - run: npm ci
+      - run: npm run format:check
       - run: npm run lint
       - run: npm run build
       - run: npm audit --audit-level=high
@@ -53,7 +54,8 @@ jobs:
           cache: pip
           cache-dependency-path: backend/requirements.txt
       - run: pip install -r backend/requirements.txt ruff pytest pip-audit
-      - run: ruff check --select F,E9 backend
+      - run: ruff check backend
+      - run: ruff format --check backend
       - run: python -m compileall -q backend/app backend/alembic
       - run: alembic -c backend/alembic.ini upgrade head
       - run: pytest -q backend/tests
@@ -69,6 +71,8 @@ jobs:
       - run: pip install cfn-lint
       - run: docker compose config --quiet
       - run: cfn-lint deploy/aws/platform.yml
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - run: find . -path './.venv' -prune -o -name '*.sh' -type f -print0 | xargs -0 shellcheck
       - run: bash -n run-platform.sh stop-platform.sh
       - run: sh -n deploy/aws/publish.sh tools/verify_models.sh backend/entrypoint.sh
 

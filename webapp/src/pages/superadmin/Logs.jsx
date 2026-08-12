@@ -1,1 +1,12 @@
-import LogsTable from "../../components/LogsTable";import {usePlatform} from "../../context/PlatformContext";export default function SuperAdminLogs(){const{logs}=usePlatform();return <LogsTable logs={logs} title="Audit logs" subtitle="Platform-wide security, retention and administrative activity."/>}
+import LogsTable from "../../components/LogsTable";
+import { usePlatform } from "../../context/PlatformContext";
+export default function SuperAdminLogs() {
+  const { logs } = usePlatform();
+  return (
+    <LogsTable
+      logs={logs}
+      title="Audit logs"
+      subtitle="Platform-wide security, retention and administrative activity."
+    />
+  );
+}

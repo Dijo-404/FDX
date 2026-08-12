@@ -7,15 +7,60 @@ import {
   useMemo,
   useState,
 } from "react";
-import { api, directUpload } from "../lib/api";
+import { api, directUpload, directUploadPart } from "../lib/api";
 import { useAuth } from "./AuthContext";
 
 const PlatformContext = createContext(null);
 const uuid = () => crypto.randomUUID();
 
 async function checksum(file) {
-  const digest = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    await file.arrayBuffer(),
+  );
+  return Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+}
+
+async function runBounded(tasks, concurrency = 6) {
+  let next = 0;
+  async function worker() {
+    while (next < tasks.length) {
+      const index = next;
+      next += 1;
+      await tasks[index]();
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, tasks.length) }, worker),
+  );
+}
+
+async function uploadTarget(target, file) {
+  if (!target.multipart) {
+    await directUpload(target.upload_url, file, target.headers);
+    return;
+  }
+  const completed = [];
+  await runBounded(
+    target.parts.map((part) => async () => {
+      const start = (part.part_number - 1) * target.part_size;
+      const bytes = file.slice(
+        start,
+        Math.min(file.size, start + target.part_size),
+      );
+      const etag = await directUploadPart(part.upload_url, bytes);
+      completed.push({ part_number: part.part_number, etag });
+    }),
+  );
+  await api(target.complete_url, {
+    method: "POST",
+    body: JSON.stringify({
+      upload_id: target.multipart_upload_id,
+      parts: completed,
+    }),
+  });
 }
 const initialState = {
   organizations: [],
@@ -170,17 +215,23 @@ export function PlatformProvider({ children }) {
       validateParticipantImport: async (eventId, file) => {
         const body = new FormData();
         body.append("file", file);
-        const response = await api(`/v2/events/${eventId}/participant-imports`, {
-          method: "POST",
-          body,
-        });
+        const response = await api(
+          `/v2/events/${eventId}/participant-imports`,
+          {
+            method: "POST",
+            body,
+          },
+        );
         return response.data;
       },
       confirmParticipantImport: async (eventId, importId) => {
-        const response = await api(`/v2/events/${eventId}/participant-imports/${importId}/confirm`, {
-          method: "POST",
-          headers: { "Idempotency-Key": uuid() },
-        });
+        const response = await api(
+          `/v2/events/${eventId}/participant-imports/${importId}/confirm`,
+          {
+            method: "POST",
+            headers: { "Idempotency-Key": uuid() },
+          },
+        );
         await refresh();
         return response.data;
       },
@@ -191,28 +242,52 @@ export function PlatformProvider({ children }) {
           files.forEach((file) => body.append("files", file));
           return mutate("/organization/photos", { method: "POST", body });
         }
-        const manifest = await Promise.all(files.map(async (file) => ({
-          filename: file.webkitRelativePath || file.name,
-          content_type: file.type,
-          size_bytes: file.size,
-          sha256: await checksum(file),
-        })));
+        const manifest = await Promise.all(
+          files.map(async (file) => ({
+            filename: file.webkitRelativePath || file.name,
+            content_type: file.type,
+            size_bytes: file.size,
+            sha256: await checksum(file),
+          })),
+        );
         const reservation = await api(`/v2/events/${eventId}/upload-batches`, {
           method: "POST",
-          body: JSON.stringify({ expected_files: files.length, reserved_bytes: files.reduce((sum, file) => sum + file.size, 0) }),
+          body: JSON.stringify({
+            expected_files: files.length,
+            reserved_bytes: files.reduce((sum, file) => sum + file.size, 0),
+          }),
         });
         const batchId = reservation.data.id;
-        const presigned = await api(`/v2/events/${eventId}/upload-batches/${batchId}/presign`, {
-          method: "POST",
-          body: JSON.stringify({ files: manifest }),
-        });
-        await Promise.all(presigned.data.files.map((target, index) => directUpload(target.upload_url, files[index], target.headers)));
-        const completed = await api(`/v2/events/${eventId}/upload-batches/${batchId}/complete`, {
-          method: "POST",
-          headers: { "Idempotency-Key": uuid() },
-        });
+        for (let offset = 0; offset < files.length; offset += 500) {
+          const chunkFiles = files.slice(offset, offset + 500);
+          const presigned = await api(
+            `/v2/events/${eventId}/upload-batches/${batchId}/presign`,
+            {
+              method: "POST",
+              body: JSON.stringify({
+                files: manifest.slice(offset, offset + 500),
+              }),
+            },
+          );
+          await runBounded(
+            presigned.data.files.map(
+              (target, index) => () => uploadTarget(target, chunkFiles[index]),
+            ),
+          );
+        }
+        const completed = await api(
+          `/v2/events/${eventId}/upload-batches/${batchId}/complete`,
+          {
+            method: "POST",
+            headers: { "Idempotency-Key": uuid() },
+          },
+        );
         await refresh();
-        return { uploaded: completed.data.jobs, jobsPublished: completed.data.jobs.length, skipped: [] };
+        return {
+          uploaded: completed.data.jobs,
+          jobsPublished: completed.data.jobs.length,
+          skipped: [],
+        };
       },
       uploadPhotosLegacy: (eventId, files) => {
         const body = new FormData();

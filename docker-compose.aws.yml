@@ -22,7 +22,7 @@ services:
   ml:
     image: ${ML_IMAGE}
     environment:
-      FDX_DEVICE: cpu
+      FDX_DEVICE: ${FDX_DEVICE:-cpu}
       ML_WARMUP_ON_IMPORT: "1"
     volumes:
       - /opt/fdx/face-processing/models:/app/models:ro

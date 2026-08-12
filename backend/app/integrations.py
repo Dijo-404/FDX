@@ -28,7 +28,12 @@ class Storage:
 
     def put(self, key: str, content: bytes, content_type: str) -> None:
         if self.s3:
-            self.s3.put_object(Bucket=settings.s3_bucket, Key=key, Body=content, ContentType=content_type)
+            self.s3.put_object(
+                Bucket=settings.s3_bucket,
+                Key=key,
+                Body=content,
+                ContentType=content_type,
+            )
             return
         target = (self.root / key).resolve()
         if self.root not in target.parents:
@@ -58,9 +63,71 @@ class Storage:
             return None
         return self.s3.generate_presigned_url(
             "put_object",
-            Params={"Bucket": settings.s3_bucket, "Key": key, "ContentType": content_type},
+            Params={
+                "Bucket": settings.s3_bucket,
+                "Key": key,
+                "ContentType": content_type,
+            },
             ExpiresIn=expires,
         )
+
+    def create_multipart_upload(
+        self,
+        key: str,
+        content_type: str,
+        size_bytes: int,
+        part_size: int,
+        expires: int = 900,
+    ) -> dict | None:
+        if not self.s3:
+            return None
+        upload = self.s3.create_multipart_upload(
+            Bucket=settings.s3_bucket,
+            Key=key,
+            ContentType=content_type,
+        )
+        upload_id = upload["UploadId"]
+        part_count = (size_bytes + part_size - 1) // part_size
+        parts = [
+            {
+                "part_number": part_number,
+                "upload_url": self.s3.generate_presigned_url(
+                    "upload_part",
+                    Params={
+                        "Bucket": settings.s3_bucket,
+                        "Key": key,
+                        "UploadId": upload_id,
+                        "PartNumber": part_number,
+                    },
+                    ExpiresIn=expires,
+                ),
+            }
+            for part_number in range(1, part_count + 1)
+        ]
+        return {"upload_id": upload_id, "part_size": part_size, "parts": parts}
+
+    def complete_multipart_upload(self, key: str, upload_id: str, parts: list[dict]) -> None:
+        if not self.s3:
+            raise RuntimeError("Multipart uploads require S3 storage")
+        self.s3.complete_multipart_upload(
+            Bucket=settings.s3_bucket,
+            Key=key,
+            UploadId=upload_id,
+            MultipartUpload={
+                "Parts": [
+                    {"PartNumber": part["part_number"], "ETag": part["etag"]}
+                    for part in sorted(parts, key=lambda item: item["part_number"])
+                ]
+            },
+        )
+
+    def abort_multipart_upload(self, key: str, upload_id: str) -> None:
+        if self.s3:
+            self.s3.abort_multipart_upload(
+                Bucket=settings.s3_bucket,
+                Key=key,
+                UploadId=upload_id,
+            )
 
     def presign_get(self, key: str, expires: int = 600, filename: str | None = None) -> str | None:
         if not self.s3:
@@ -119,7 +186,14 @@ def cache_delete(*keys: str) -> None:
         pass
 
 
-def queue_email(db: Session, organization_id: str | None, recipient: str, subject: str, html: str, delivery_id: str | None = None) -> EmailOutbox:
+def queue_email(
+    db: Session,
+    organization_id: str | None,
+    recipient: str,
+    subject: str,
+    html: str,
+    delivery_id: str | None = None,
+) -> EmailOutbox:
     item = EmailOutbox(
         organization_id=organization_id,
         delivery_id=delivery_id,
@@ -143,7 +217,12 @@ def dispatch_email(db: Session, item: EmailOutbox) -> None:
             response = httpx.post(
                 "https://api.resend.com/emails",
                 headers={"Authorization": f"Bearer {settings.resend_api_key}"},
-                json={"from": settings.email_from, "to": [item.recipient], "subject": item.subject, "html": item.html},
+                json={
+                    "from": settings.email_from,
+                    "to": [item.recipient],
+                    "subject": item.subject,
+                    "html": item.html,
+                },
                 timeout=20,
             )
             response.raise_for_status()
@@ -152,7 +231,12 @@ def dispatch_email(db: Session, item: EmailOutbox) -> None:
             response = boto3.client("sesv2", region_name=settings.s3_region).send_email(
                 FromEmailAddress=settings.email_from,
                 Destination={"ToAddresses": [item.recipient]},
-                Content={"Simple": {"Subject": {"Data": item.subject}, "Body": {"Html": {"Data": item.html}}}},
+                Content={
+                    "Simple": {
+                        "Subject": {"Data": item.subject},
+                        "Body": {"Html": {"Data": item.html}},
+                    }
+                },
             )
             item.provider_id = response.get("MessageId")
         else:
@@ -186,7 +270,12 @@ def dispatch_email(db: Session, item: EmailOutbox) -> None:
 def ml_embedding(content: bytes, filename: str, content_type: str) -> dict:
     response = httpx.post(
         f"{settings.ml_service_url}/find_faces",
-        params={"face_plugins": "calculator", "det_prob_threshold": 0.8, "limit": 1, "input_mode": "cropped"},
+        params={
+            "face_plugins": "calculator",
+            "det_prob_threshold": 0.8,
+            "limit": 1,
+            "input_mode": "cropped",
+        },
         files={"file": (filename, content, content_type)},
         timeout=300,
     )
@@ -217,13 +306,27 @@ def dependency_health() -> list[dict]:
         email_detail = f"AWS SES configured in {settings.s3_region}" if configured else "AWS SES sender is incomplete"
     else:
         configured = settings.environment != "production"
-        email_detail = "Persistent development outbox" if configured else "Production cannot use the local outbox provider"
-    services.append({"name": "Email", "detail": email_detail, "status": "healthy" if configured else "degraded"})
+        email_detail = (
+            "Persistent development outbox" if configured else "Production cannot use the local outbox provider"
+        )
+    services.append(
+        {
+            "name": "Email",
+            "detail": email_detail,
+            "status": "healthy" if configured else "degraded",
+        }
+    )
     redis = None
     try:
         redis = Redis.from_url(settings.redis_url, socket_connect_timeout=1, decode_responses=True)
         redis.ping()
-        services.append({"name": "Redis", "detail": "Cache and rate limiting available", "status": "healthy"})
+        services.append(
+            {
+                "name": "Redis",
+                "detail": "Cache and rate limiting available",
+                "status": "healthy",
+            }
+        )
     except RedisError as exc:
         services.append({"name": "Redis", "detail": str(exc), "status": "degraded"})
     if redis:
@@ -242,10 +345,21 @@ def dependency_health() -> list[dict]:
     except Exception as exc:
         dependencies.append({"name": "ML Workers", "detail": str(exc), "status": "degraded"})
     try:
-        admin = KafkaAdminClient(bootstrap_servers=settings.kafka_bootstrap_servers.split(","), security_protocol=settings.kafka_security_protocol, request_timeout_ms=2000, api_version_auto_timeout_ms=2000)
+        admin = KafkaAdminClient(
+            bootstrap_servers=settings.kafka_bootstrap_servers.split(","),
+            security_protocol=settings.kafka_security_protocol,
+            request_timeout_ms=2000,
+            api_version_auto_timeout_ms=2000,
+        )
         topics = admin.list_topics()
         admin.close()
-        dependencies.append({"name": "Kafka", "detail": f"{len(topics)} topics available", "status": "healthy"})
+        dependencies.append(
+            {
+                "name": "Kafka",
+                "detail": f"{len(topics)} topics available",
+                "status": "healthy",
+            }
+        )
     except Exception as exc:
         dependencies.append({"name": "Kafka", "detail": str(exc), "status": "degraded"})
     if redis:

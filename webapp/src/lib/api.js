@@ -12,7 +12,8 @@ function normalizeUser(user) {
 }
 
 function rememberUser(user) {
-  if (user) sessionStorage.setItem(USER_KEY, JSON.stringify(normalizeUser(user)));
+  if (user)
+    sessionStorage.setItem(USER_KEY, JSON.stringify(normalizeUser(user)));
   else sessionStorage.removeItem(USER_KEY);
 }
 
@@ -60,7 +61,9 @@ async function refreshSession() {
       .then(async (response) => {
         if (!response.ok) throw new Error("Session expired");
         const session = storeSession(await response.json());
-        window.dispatchEvent(new CustomEvent("fdx:session-refreshed", { detail: session }));
+        window.dispatchEvent(
+          new CustomEvent("fdx:session-refreshed", { detail: session }),
+        );
         return session;
       })
       .catch((error) => {
@@ -85,21 +88,35 @@ export async function initializeSession() {
 async function request(path, options = {}, retry = true) {
   const headers = new Headers(options.headers || {});
   if (accessToken) headers.set("Authorization", `Bearer ${accessToken}`);
-  if (options.body && !(options.body instanceof FormData) && !headers.has("Content-Type")) {
+  if (
+    options.body &&
+    !(options.body instanceof FormData) &&
+    !headers.has("Content-Type")
+  ) {
     headers.set("Content-Type", "application/json");
   }
-  const response = await fetch(path, { ...options, headers, credentials: "include" });
+  const response = await fetch(path, {
+    ...options,
+    headers,
+    credentials: "include",
+  });
   if (response.status === 401 && retry && !path.endsWith("/auth/refresh")) {
     await refreshSession();
     return request(path, options, false);
   }
-  const payload = response.headers.get("content-type")?.includes("application/json") ? await response.json() : null;
+  const payload = response.headers
+    .get("content-type")
+    ?.includes("application/json")
+    ? await response.json()
+    : null;
   if (!response.ok) {
     const validation = payload?.error?.details?.errors ?? payload?.detail;
     const detail = Array.isArray(validation)
       ? validation.map((item) => item.msg).join(" · ")
-      : payload?.error?.message ?? validation;
-    throw new Error(detail || payload?.message || `Request failed (${response.status})`);
+      : (payload?.error?.message ?? validation);
+    throw new Error(
+      detail || payload?.message || `Request failed (${response.status})`,
+    );
   }
   return payload;
 }
@@ -117,15 +134,30 @@ export async function directUpload(url, file, headers = {}) {
   // application cookies or the API bearer token would unnecessarily widen the
   // browser CORS contract and can cause S3 to reject an otherwise valid PUT.
   const response = await fetch(url, { method: "PUT", headers, body: file });
-  if (!response.ok) throw new Error(`Direct upload failed (${response.status})`);
+  if (!response.ok)
+    throw new Error(`Direct upload failed (${response.status})`);
   return null;
 }
 
+export async function directUploadPart(url, bytes) {
+  const response = await fetch(url, { method: "PUT", body: bytes });
+  if (!response.ok)
+    throw new Error(`Multipart upload failed (${response.status})`);
+  const etag = response.headers.get("etag");
+  if (!etag)
+    throw new Error("Object storage did not expose the multipart ETag header");
+  return etag;
+}
+
 export async function loginRequest(email, password) {
-  const payload = await request("/api/v2/auth/login", {
-    method: "POST",
-    body: JSON.stringify({ email, password }),
-  }, false);
+  const payload = await request(
+    "/api/v2/auth/login",
+    {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    },
+    false,
+  );
   return storeSession(payload);
 }
 

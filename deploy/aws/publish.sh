@@ -3,7 +3,7 @@ set -eu
 
 STACK_NAME=${1:-fdx-production}
 AWS_DEPLOY_REGION=${2:-${AWS_REGION:-ap-south-1}}
-PROJECT_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+PROJECT_ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 
 stack_output() {
   aws cloudformation describe-stacks \

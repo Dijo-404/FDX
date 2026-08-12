@@ -1,1 +1,12 @@
-import LogsTable from "../../components/LogsTable";import {usePlatform} from "../../context/PlatformContext";export default function OrganizationLogs(){const{logs}=usePlatform();return <LogsTable logs={logs} title="Audit logs" subtitle="Tenant-isolated upload, processing, matching and delivery activity."/>}
+import LogsTable from "../../components/LogsTable";
+import { usePlatform } from "../../context/PlatformContext";
+export default function OrganizationLogs() {
+  const { logs } = usePlatform();
+  return (
+    <LogsTable
+      logs={logs}
+      title="Audit logs"
+      subtitle="Tenant-isolated upload, processing, matching and delivery activity."
+    />
+  );
+}

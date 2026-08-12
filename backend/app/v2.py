@@ -111,7 +111,13 @@ EVENT_TRANSITIONS = {
 
 
 def ok(data=None, request: Request | None = None, **meta):
-    return {"data": data, "meta": {"request_id": getattr(request.state, "request_id", None) if request else None, **meta}}
+    return {
+        "data": data,
+        "meta": {
+            "request_id": getattr(request.state, "request_id", None) if request else None,
+            **meta,
+        },
+    }
 
 
 def add_audit(
@@ -184,7 +190,12 @@ def set_refresh_cookie(response: Response, token: str) -> None:
 
 
 def clear_refresh_cookie(response: Response) -> None:
-    response.delete_cookie("fdx_refresh", path="/api/v2/auth", secure=settings.environment == "production", samesite="strict")
+    response.delete_cookie(
+        "fdx_refresh",
+        path="/api/v2/auth",
+        secure=settings.environment == "production",
+        samesite="strict",
+    )
 
 
 def tenant_event(db: Session, user: User, event_id: str, lock: bool = False) -> Event:
@@ -192,14 +203,17 @@ def tenant_event(db: Session, user: User, event_id: str, lock: bool = False) -> 
     if lock:
         statement = statement.with_for_update()
     event = db.scalar(statement)
-    if not event:
+    if not event or event.status.upper() in {"DELETION_PENDING", "DELETED"}:
         raise HTTPException(status_code=404, detail="Event was not found")
     return event
 
 
 def pagination(page: int, page_size: int) -> tuple[int, int]:
     if page < 1 or page_size < 1 or page_size > 100:
-        raise HTTPException(status_code=422, detail="page must be >= 1 and page_size must be between 1 and 100")
+        raise HTTPException(
+            status_code=422,
+            detail="page must be >= 1 and page_size must be between 1 and 100",
+        )
     return (page - 1) * page_size, page_size
 
 
@@ -207,12 +221,22 @@ def reserve_idempotency(db: Session, user: User, key: str | None, body: str) -> 
     if not key:
         return None
     digest = hashlib.sha256(body.encode()).hexdigest()
-    record = db.scalar(select(IdempotencyRecord).where(IdempotencyRecord.user_id == user.id, IdempotencyRecord.key == key))
+    record = db.scalar(
+        select(IdempotencyRecord).where(IdempotencyRecord.user_id == user.id, IdempotencyRecord.key == key)
+    )
     if record:
         if record.request_hash != digest:
-            raise HTTPException(status_code=409, detail="Idempotency key was already used for a different request")
+            raise HTTPException(
+                status_code=409,
+                detail="Idempotency key was already used for a different request",
+            )
         return record
-    record = IdempotencyRecord(user_id=user.id, key=key, request_hash=digest, expires_at=utcnow() + timedelta(days=1))
+    record = IdempotencyRecord(
+        user_id=user.id,
+        key=key,
+        request_hash=digest,
+        expires_at=utcnow() + timedelta(days=1),
+    )
     db.add(record)
     db.flush()
     return record
@@ -307,12 +331,39 @@ class PresignInput(BaseModel):
     files: list[UploadObjectInput] = Field(min_length=1, max_length=1000)
 
 
+class MultipartPartInput(BaseModel):
+    part_number: int = Field(ge=1, le=10_000)
+    etag: str = Field(min_length=1, max_length=200)
+
+
+class CompleteMultipartInput(BaseModel):
+    upload_id: str = Field(min_length=1, max_length=500)
+    parts: list[MultipartPartInput] = Field(min_length=1, max_length=10_000)
+
+
+class BulkInvitationInput(BaseModel):
+    enrollment_status: list[str] = Field(default_factory=lambda: ["invited", "opened"])
+    search: str | None = Field(default=None, max_length=120)
+
+
+class EnrollmentUploadInput(BaseModel):
+    filename: str = Field(min_length=1, max_length=260)
+    content_type: str
+    size_bytes: int = Field(gt=0)
+    sha256: str = Field(pattern=r"^[a-fA-F0-9]{64}$")
+
+
 class MatchReviewInput(BaseModel):
     decision: str
 
 
 @router.post("/auth/login")
-def login(payload: LoginInput, response: Response, request: Request, db: Session = Depends(get_db)):
+def login(
+    payload: LoginInput,
+    response: Response,
+    request: Request,
+    db: Session = Depends(get_db),
+):
     email = str(payload.email).lower()
     check_login_rate_limit(request, email)
     user = find_user_by_email(db, email)
@@ -342,18 +393,34 @@ def login(payload: LoginInput, response: Response, request: Request, db: Session
 
 
 @router.post("/auth/refresh")
-def refresh(response: Response, request: Request, fdx_refresh: str | None = Cookie(default=None), db: Session = Depends(get_db)):
+def refresh(
+    response: Response,
+    request: Request,
+    fdx_refresh: str | None = Cookie(default=None),
+    db: Session = Depends(get_db),
+):
     if not fdx_refresh:
         raise HTTPException(status_code=401, detail="Refresh session is required")
     user, raw_refresh, session = rotate_refresh_session(db, fdx_refresh, request)
     tokens = access_token(user, session.id)
     db.commit()
     set_refresh_cookie(response, raw_refresh)
-    return ok({"access_token": tokens["access_token"], "expires_in": tokens["expires_in"], "user": user_v2(user)}, request)
+    return ok(
+        {
+            "access_token": tokens["access_token"],
+            "expires_in": tokens["expires_in"],
+            "user": user_v2(user),
+        },
+        request,
+    )
 
 
 @router.post("/auth/logout", status_code=204)
-def logout(response: Response, fdx_refresh: str | None = Cookie(default=None), db: Session = Depends(get_db)):
+def logout(
+    response: Response,
+    fdx_refresh: str | None = Cookie(default=None),
+    db: Session = Depends(get_db),
+):
     if fdx_refresh:
         session = db.scalar(select(RefreshSession).where(RefreshSession.refresh_token_hash == hash_token(fdx_refresh)))
         if session and not session.revoked_at:
@@ -374,34 +441,69 @@ def forgot_password(payload: ForgotPasswordInput, request: Request, db: Session 
     check_public_rate_limit(request, "forgot-password", str(payload.email).lower(), 5, 300)
     user = find_user_by_email(db, str(payload.email).lower())
     if user and user.status == "active":
-        db.query(PasswordResetToken).filter(PasswordResetToken.user_id == user.id, PasswordResetToken.consumed_at.is_(None)).delete()
+        db.query(PasswordResetToken).filter(
+            PasswordResetToken.user_id == user.id,
+            PasswordResetToken.consumed_at.is_(None),
+        ).delete()
         raw_token, token_hash = new_opaque_token()
-        db.add(PasswordResetToken(user_id=user.id, token_hash=token_hash, expires_at=utcnow() + timedelta(minutes=settings.password_reset_minutes)))
+        db.add(
+            PasswordResetToken(
+                user_id=user.id,
+                token_hash=token_hash,
+                expires_at=utcnow() + timedelta(minutes=settings.password_reset_minutes),
+            )
+        )
         url = f"{settings.frontend_url}/reset-password/{raw_token}"
-        item = queue_email(db, user.organization_id, user.email, "Reset your FDX password", f"<p><a href='{url}'>Reset password</a></p>")
+        item = queue_email(
+            db,
+            user.organization_id,
+            user.email,
+            "Reset your FDX password",
+            f"<p><a href='{url}'>Reset password</a></p>",
+        )
         dispatch_email(db, item)
         add_audit(db, user, "auth.password_reset.requested", "Password reset requested")
         db.commit()
-    return ok({"message": "If the account exists, a password reset email has been queued."}, request)
+    return ok(
+        {"message": "If the account exists, a password reset email has been queued."},
+        request,
+    )
 
 
 @router.post("/auth/reset-password")
 def reset_password(payload: ResetPasswordInput, request: Request, db: Session = Depends(get_db)):
-    token = db.scalar(select(PasswordResetToken).where(PasswordResetToken.token_hash == hash_token(payload.token)).with_for_update())
+    token = db.scalar(
+        select(PasswordResetToken).where(PasswordResetToken.token_hash == hash_token(payload.token)).with_for_update()
+    )
     if not token or token.consumed_at or token.expires_at <= utcnow():
         raise HTTPException(status_code=404, detail="Password reset token is invalid or expired")
     user = db.get(User, token.user_id)
     user.password_hash = hash_password(payload.password)
     token.consumed_at = utcnow()
-    db.query(RefreshSession).filter(RefreshSession.user_id == user.id, RefreshSession.revoked_at.is_(None)).update({"revoked_at": utcnow()})
-    add_audit(db, user, "auth.password_reset.completed", "Password changed and sessions revoked")
+    db.query(RefreshSession).filter(RefreshSession.user_id == user.id, RefreshSession.revoked_at.is_(None)).update(
+        {"revoked_at": utcnow()}
+    )
+    add_audit(
+        db,
+        user,
+        "auth.password_reset.completed",
+        "Password changed and sessions revoked",
+    )
     db.commit()
     return ok({"message": "Password reset completed."}, request)
 
 
 @router.post("/auth/invitations/{token}/accept")
-def accept_invitation(token: str, payload: PasswordInput, response: Response, request: Request, db: Session = Depends(get_db)):
-    invitation = db.scalar(select(UserInvitation).where(UserInvitation.token_hash == hash_token(token)).with_for_update())
+def accept_invitation(
+    token: str,
+    payload: PasswordInput,
+    response: Response,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    invitation = db.scalar(
+        select(UserInvitation).where(UserInvitation.token_hash == hash_token(token)).with_for_update()
+    )
     if not invitation or invitation.accepted_at or invitation.revoked_at or invitation.expires_at <= utcnow():
         raise HTTPException(status_code=404, detail="Invitation is invalid or expired")
     user = db.get(User, invitation.user_id)
@@ -413,11 +515,22 @@ def accept_invitation(token: str, payload: PasswordInput, response: Response, re
     tokens = access_token(user, session.id)
     db.commit()
     set_refresh_cookie(response, raw_refresh)
-    return ok({"access_token": tokens["access_token"], "expires_in": tokens["expires_in"], "user": user_v2(user)}, request)
+    return ok(
+        {
+            "access_token": tokens["access_token"],
+            "expires_in": tokens["expires_in"],
+            "user": user_v2(user),
+        },
+        request,
+    )
 
 
 @router.get("/admin/dashboard")
-def admin_dashboard(request: Request, _: User = Depends(require_super_admin), db: Session = Depends(get_db)):
+def admin_dashboard(
+    request: Request,
+    _: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
     def count(model, *filters):
         return db.scalar(select(func.count(model.id)).where(*filters)) or 0
 
@@ -429,12 +542,22 @@ def admin_dashboard(request: Request, _: User = Depends(require_super_admin), db
         "events_total": count(Event),
         "photos_total": count(Photo),
         "storage_used_bytes": db.scalar(select(func.coalesce(func.sum(Organization.storage_used_bytes), 0))) or 0,
-        "jobs_queued": count(ProcessingJob, ProcessingJob.status.in_(["queued", "QUEUED", "RETRY_SCHEDULED"])),
+        "jobs_queued": count(
+            ProcessingJob,
+            ProcessingJob.status.in_(["queued", "QUEUED", "RETRY_SCHEDULED"]),
+        ),
         "jobs_running": count(ProcessingJob, ProcessingJob.status.in_(["processing", "RUNNING"])),
-        "jobs_failed": count(ProcessingJob, ProcessingJob.status.in_(["failed", "FAILED", "DEAD_LETTERED"])),
+        "jobs_failed": count(
+            ProcessingJob,
+            ProcessingJob.status.in_(["failed", "FAILED", "DEAD_LETTERED"]),
+        ),
         "emails_sent": count(EmailOutbox, EmailOutbox.status == "sent"),
         "emails_failed": count(EmailOutbox, EmailOutbox.status == "failed"),
-        "expiring_events": count(Event, Event.expires_at <= date.today() + timedelta(days=7), Event.status.notin_(["expired", "DELETED"])),
+        "expiring_events": count(
+            Event,
+            Event.expires_at <= date.today() + timedelta(days=7),
+            Event.status.notin_(["expired", "DELETED"]),
+        ),
     }
     return ok(data, request)
 
@@ -442,11 +565,25 @@ def admin_dashboard(request: Request, _: User = Depends(require_super_admin), db
 @router.get("/admin/system-health")
 def system_health(request: Request, _: User = Depends(require_super_admin)):
     services = dependency_health()
-    return ok({"status": "healthy" if all(item["status"] == "healthy" for item in services) else "degraded", "services": services}, request)
+    return ok(
+        {
+            "status": "healthy" if all(item["status"] == "healthy" for item in services) else "degraded",
+            "services": services,
+        },
+        request,
+    )
 
 
 @router.get("/admin/organizations")
-def organizations(request: Request, page: int = 1, page_size: int = 50, search: str | None = None, status: str | None = None, _: User = Depends(require_super_admin), db: Session = Depends(get_db)):
+def organizations(
+    request: Request,
+    page: int = 1,
+    page_size: int = 50,
+    search: str | None = None,
+    status: str | None = None,
+    _: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
     offset, limit = pagination(page, page_size)
     filters = []
     if search:
@@ -454,12 +591,25 @@ def organizations(request: Request, page: int = 1, page_size: int = 50, search: 
     if status:
         filters.append(Organization.status == status.lower())
     total = db.scalar(select(func.count(Organization.id)).where(*filters)) or 0
-    rows = db.scalars(select(Organization).where(*filters).order_by(Organization.created_at.desc()).offset(offset).limit(limit)).all()
-    return ok([organization_json(db, row) for row in rows], request, page=page, page_size=page_size, total=total)
+    rows = db.scalars(
+        select(Organization).where(*filters).order_by(Organization.created_at.desc()).offset(offset).limit(limit)
+    ).all()
+    return ok(
+        [organization_json(db, row) for row in rows],
+        request,
+        page=page,
+        page_size=page_size,
+        total=total,
+    )
 
 
 @router.post("/admin/organizations", status_code=201)
-def create_organization(payload: OrganizationInput, request: Request, user: User = Depends(require_super_admin), db: Session = Depends(get_db)):
+def create_organization(
+    payload: OrganizationInput,
+    request: Request,
+    user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
     item = Organization(
         name=payload.name.strip(),
         type=payload.organization_type,
@@ -483,26 +633,52 @@ def create_organization(payload: OrganizationInput, request: Request, user: User
 
 
 @router.get("/admin/organizations/{organization_id}")
-def organization_detail(organization_id: str, request: Request, _: User = Depends(require_super_admin), db: Session = Depends(get_db)):
+def organization_detail(
+    organization_id: str,
+    request: Request,
+    _: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
     item = db.get(Organization, organization_id)
     if not item:
         raise HTTPException(status_code=404, detail="Organization was not found")
     data = organization_json(db, item)
     data["recent_audit"] = [
-        {"id": row.id, "action": row.action, "details": row.details, "created_at": row.created_at.isoformat()}
-        for row in db.scalars(select(AuditLog).where(AuditLog.organization_id == item.id).order_by(AuditLog.created_at.desc()).limit(20)).all()
+        {
+            "id": row.id,
+            "action": row.action,
+            "details": row.details,
+            "created_at": row.created_at.isoformat(),
+        }
+        for row in db.scalars(
+            select(AuditLog).where(AuditLog.organization_id == item.id).order_by(AuditLog.created_at.desc()).limit(20)
+        ).all()
     ]
     return ok(data, request)
 
 
 @router.patch("/admin/organizations/{organization_id}")
-def update_organization(organization_id: str, payload: OrganizationUpdate, request: Request, user: User = Depends(require_super_admin), db: Session = Depends(get_db)):
+def update_organization(
+    organization_id: str,
+    payload: OrganizationUpdate,
+    request: Request,
+    user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
     item = db.get(Organization, organization_id)
     if not item:
         raise HTTPException(status_code=404, detail="Organization was not found")
-    mapping = {"primary_email": "contact_email", "default_retention_days": "retention_days", "account_expires_at": "expires_at"}
+    mapping = {
+        "primary_email": "contact_email",
+        "default_retention_days": "retention_days",
+        "account_expires_at": "expires_at",
+    }
     for key, value in payload.model_dump(exclude_unset=True).items():
-        setattr(item, mapping.get(key, key), str(value).lower() if key == "primary_email" else value)
+        setattr(
+            item,
+            mapping.get(key, key),
+            str(value).lower() if key == "primary_email" else value,
+        )
     add_audit(db, user, "organization.updated", ", ".join(payload.model_fields_set), item.id)
     db.commit()
     return ok(organization_json(db, item), request)
@@ -515,42 +691,89 @@ def set_org_status(organization_id: str, target: str, request: Request, user: Us
     item.status = target
     if target != "active":
         session_ids = select(User.id).where(User.organization_id == item.id)
-        db.query(RefreshSession).filter(RefreshSession.user_id.in_(session_ids), RefreshSession.revoked_at.is_(None)).update({"revoked_at": utcnow()}, synchronize_session=False)
+        db.query(RefreshSession).filter(
+            RefreshSession.user_id.in_(session_ids), RefreshSession.revoked_at.is_(None)
+        ).update({"revoked_at": utcnow()}, synchronize_session=False)
     add_audit(db, user, f"organization.{target}", item.name, item.id)
     db.commit()
     return ok(organization_json(db, item), request)
 
 
 @router.post("/admin/organizations/{organization_id}/suspend")
-def suspend_organization(organization_id: str, request: Request, user: User = Depends(require_super_admin), db: Session = Depends(get_db)):
+def suspend_organization(
+    organization_id: str,
+    request: Request,
+    user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
     return set_org_status(organization_id, "suspended", request, user, db)
 
 
 @router.post("/admin/organizations/{organization_id}/activate")
-def activate_organization(organization_id: str, request: Request, user: User = Depends(require_super_admin), db: Session = Depends(get_db)):
+def activate_organization(
+    organization_id: str,
+    request: Request,
+    user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
     return set_org_status(organization_id, "active", request, user, db)
 
 
 @router.post("/admin/organizations/{organization_id}/schedule-deletion", status_code=202)
-def schedule_organization_deletion(organization_id: str, request: Request, user: User = Depends(require_super_admin), db: Session = Depends(get_db)):
+def schedule_organization_deletion(
+    organization_id: str,
+    request: Request,
+    user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
     item = db.get(Organization, organization_id)
     if not item:
         raise HTTPException(status_code=404, detail="Organization was not found")
     item.status = "deletion_pending"
     correlation = request_id(request)
-    add_outbox(db, "fdx.v2.retention.cleanup.requested", "organization", item.id, {"resource_type": "organization", "resource_id": item.id}, item.id, correlation)
+    add_outbox(
+        db,
+        "fdx.v2.retention.cleanup.requested",
+        "organization",
+        item.id,
+        {"resource_type": "organization", "resource_id": item.id},
+        item.id,
+        correlation,
+    )
     add_audit(db, user, "organization.deletion_scheduled", item.name, item.id)
     db.commit()
     return ok({"status": "DELETION_PENDING"}, request)
 
 
 @router.get("/admin/organizations/{organization_id}/storage")
-def organization_storage(organization_id: str, request: Request, _: User = Depends(require_super_admin), db: Session = Depends(get_db)):
+def organization_storage(
+    organization_id: str,
+    request: Request,
+    _: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
     item = db.get(Organization, organization_id)
     if not item:
         raise HTTPException(status_code=404, detail="Organization was not found")
-    reserved = db.scalar(select(func.coalesce(func.sum(StorageReservation.bytes), 0)).where(StorageReservation.organization_id == item.id, StorageReservation.status == "RESERVED", StorageReservation.expires_at > utcnow())) or 0
-    return ok({"storage_limit_bytes": item.storage_limit_bytes, "storage_used_bytes": item.storage_used_bytes, "storage_reserved_bytes": reserved, "storage_available_bytes": max(0, item.storage_limit_bytes - item.storage_used_bytes - reserved)}, request)
+    reserved = (
+        db.scalar(
+            select(func.coalesce(func.sum(StorageReservation.bytes), 0)).where(
+                StorageReservation.organization_id == item.id,
+                StorageReservation.status == "RESERVED",
+                StorageReservation.expires_at > utcnow(),
+            )
+        )
+        or 0
+    )
+    return ok(
+        {
+            "storage_limit_bytes": item.storage_limit_bytes,
+            "storage_used_bytes": item.storage_used_bytes,
+            "storage_reserved_bytes": reserved,
+            "storage_available_bytes": max(0, item.storage_limit_bytes - item.storage_used_bytes - reserved),
+        },
+        request,
+    )
 
 
 class StoragePolicyInput(BaseModel):
@@ -558,24 +781,53 @@ class StoragePolicyInput(BaseModel):
 
 
 @router.put("/admin/organizations/{organization_id}/storage")
-def update_organization_storage(organization_id: str, payload: StoragePolicyInput, request: Request, user: User = Depends(require_super_admin), db: Session = Depends(get_db)):
+def update_organization_storage(
+    organization_id: str,
+    payload: StoragePolicyInput,
+    request: Request,
+    user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
     item = db.get(Organization, organization_id)
     if not item:
         raise HTTPException(status_code=404, detail="Organization was not found")
     if payload.storage_limit_bytes < item.storage_used_bytes:
         raise HTTPException(status_code=422, detail="Storage limit cannot be below current usage")
     item.storage_limit_bytes = payload.storage_limit_bytes
-    add_audit(db, user, "organization.storage_policy.updated", str(payload.storage_limit_bytes), item.id)
+    add_audit(
+        db,
+        user,
+        "organization.storage_policy.updated",
+        str(payload.storage_limit_bytes),
+        item.id,
+    )
     db.commit()
-    return ok({"storage_limit_bytes": item.storage_limit_bytes, "storage_used_bytes": item.storage_used_bytes}, request)
+    return ok(
+        {
+            "storage_limit_bytes": item.storage_limit_bytes,
+            "storage_used_bytes": item.storage_used_bytes,
+        },
+        request,
+    )
 
 
 @router.get("/admin/organizations/{organization_id}/retention")
-def organization_retention(organization_id: str, request: Request, _: User = Depends(require_super_admin), db: Session = Depends(get_db)):
+def organization_retention(
+    organization_id: str,
+    request: Request,
+    _: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
     item = db.get(Organization, organization_id)
     if not item:
         raise HTTPException(status_code=404, detail="Organization was not found")
-    return ok({"default_retention_days": item.retention_days, "account_expires_at": item.expires_at.isoformat() if item.expires_at else None}, request)
+    return ok(
+        {
+            "default_retention_days": item.retention_days,
+            "account_expires_at": item.expires_at.isoformat() if item.expires_at else None,
+        },
+        request,
+    )
 
 
 class RetentionPolicyInput(BaseModel):
@@ -584,41 +836,88 @@ class RetentionPolicyInput(BaseModel):
 
 
 @router.put("/admin/organizations/{organization_id}/retention")
-def update_organization_retention(organization_id: str, payload: RetentionPolicyInput, request: Request, user: User = Depends(require_super_admin), db: Session = Depends(get_db)):
+def update_organization_retention(
+    organization_id: str,
+    payload: RetentionPolicyInput,
+    request: Request,
+    user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
     item = db.get(Organization, organization_id)
     if not item:
         raise HTTPException(status_code=404, detail="Organization was not found")
     item.retention_days = payload.default_retention_days
     item.expires_at = payload.account_expires_at
-    add_audit(db, user, "organization.retention_policy.updated", f"{payload.default_retention_days} days", item.id)
+    add_audit(
+        db,
+        user,
+        "organization.retention_policy.updated",
+        f"{payload.default_retention_days} days",
+        item.id,
+    )
     db.commit()
-    return ok({"default_retention_days": item.retention_days, "account_expires_at": item.expires_at.isoformat() if item.expires_at else None}, request)
+    return ok(
+        {
+            "default_retention_days": item.retention_days,
+            "account_expires_at": item.expires_at.isoformat() if item.expires_at else None,
+        },
+        request,
+    )
 
 
 @router.get("/admin/organizations/{organization_id}/users")
-def organization_users(organization_id: str, request: Request, _: User = Depends(require_super_admin), db: Session = Depends(get_db)):
+def organization_users(
+    organization_id: str,
+    request: Request,
+    _: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
     if not db.get(Organization, organization_id):
         raise HTTPException(status_code=404, detail="Organization was not found")
-    rows = db.scalars(select(User).where(User.organization_id == organization_id).order_by(User.created_at.desc())).all()
+    rows = db.scalars(
+        select(User).where(User.organization_id == organization_id).order_by(User.created_at.desc())
+    ).all()
     return ok([user_v2(row) for row in rows], request)
 
 
 @router.post("/admin/organizations/{organization_id}/users", status_code=201)
-def invite_organization_user(organization_id: str, payload: InviteUserInput, request: Request, user: User = Depends(require_super_admin), db: Session = Depends(get_db)):
+def invite_organization_user(
+    organization_id: str,
+    payload: InviteUserInput,
+    request: Request,
+    user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
     organization = db.get(Organization, organization_id)
     if not organization:
         raise HTTPException(status_code=404, detail="Organization was not found")
     email = str(payload.email).lower()
     if find_user_by_email(db, email):
         raise HTTPException(status_code=409, detail="Email is already registered")
-    invited = User(organization_id=organization.id, name=payload.name.strip(), email=email, role=UserRole.ORG_ADMIN, status="invited")
+    invited = User(
+        organization_id=organization.id,
+        name=payload.name.strip(),
+        email=email,
+        role=UserRole.ORG_ADMIN,
+        status="invited",
+    )
     db.add(invited)
     db.flush()
     raw_token, token_hash = new_opaque_token()
-    invitation = UserInvitation(user_id=invited.id, token_hash=token_hash, expires_at=utcnow() + timedelta(hours=settings.invitation_token_hours))
+    invitation = UserInvitation(
+        user_id=invited.id,
+        token_hash=token_hash,
+        expires_at=utcnow() + timedelta(hours=settings.invitation_token_hours),
+    )
     db.add(invitation)
     url = f"{settings.frontend_url}/accept-invite/{raw_token}"
-    mail = queue_email(db, organization.id, invited.email, f"Join {organization.name} on FDX", f"<p><a href='{url}'>Set your password</a></p>")
+    mail = queue_email(
+        db,
+        organization.id,
+        invited.email,
+        f"Join {organization.name} on FDX",
+        f"<p><a href='{url}'>Set your password</a></p>",
+    )
     dispatch_email(db, mail)
     add_audit(db, user, "user.invited", invited.email, organization.id)
     db.commit()
@@ -636,7 +935,12 @@ def admin_user_or_404(db: Session, user_id: str) -> User:
 
 
 @router.get("/admin/users/{user_id}")
-def admin_user_detail(user_id: str, request: Request, _: User = Depends(require_super_admin), db: Session = Depends(get_db)):
+def admin_user_detail(
+    user_id: str,
+    request: Request,
+    _: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
     return ok(user_v2(admin_user_or_404(db, user_id)), request)
 
 
@@ -646,7 +950,13 @@ class UserUpdate(BaseModel):
 
 
 @router.patch("/admin/users/{user_id}")
-def admin_update_user(user_id: str, payload: UserUpdate, request: Request, user: User = Depends(require_super_admin), db: Session = Depends(get_db)):
+def admin_update_user(
+    user_id: str,
+    payload: UserUpdate,
+    request: Request,
+    user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
     item = admin_user_or_404(db, user_id)
     if payload.name is not None:
         item.name = payload.name.strip()
@@ -661,33 +971,64 @@ def set_user_status(user_id: str, target: str, request: Request, actor: User, db
     item = admin_user_or_404(db, user_id)
     item.status = target
     if target != "active":
-        db.query(RefreshSession).filter(RefreshSession.user_id == item.id, RefreshSession.revoked_at.is_(None)).update({"revoked_at": utcnow()})
+        db.query(RefreshSession).filter(RefreshSession.user_id == item.id, RefreshSession.revoked_at.is_(None)).update(
+            {"revoked_at": utcnow()}
+        )
     add_audit(db, actor, f"user.{target}", item.email, item.organization_id)
     db.commit()
     return ok(user_v2(item), request)
 
 
 @router.post("/admin/users/{user_id}/suspend")
-def admin_suspend_user(user_id: str, request: Request, user: User = Depends(require_super_admin), db: Session = Depends(get_db)):
+def admin_suspend_user(
+    user_id: str,
+    request: Request,
+    user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
     return set_user_status(user_id, "suspended", request, user, db)
 
 
 @router.post("/admin/users/{user_id}/activate")
-def admin_activate_user(user_id: str, request: Request, user: User = Depends(require_super_admin), db: Session = Depends(get_db)):
+def admin_activate_user(
+    user_id: str,
+    request: Request,
+    user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
     return set_user_status(user_id, "active", request, user, db)
 
 
 @router.post("/admin/users/{user_id}/resend-invite")
-def admin_resend_invite(user_id: str, request: Request, user: User = Depends(require_super_admin), db: Session = Depends(get_db)):
+def admin_resend_invite(
+    user_id: str,
+    request: Request,
+    user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
     item = admin_user_or_404(db, user_id)
     if item.password_hash:
         raise HTTPException(status_code=409, detail="User has already activated the account")
-    db.query(UserInvitation).filter(UserInvitation.user_id == item.id, UserInvitation.accepted_at.is_(None), UserInvitation.revoked_at.is_(None)).update({"revoked_at": utcnow()})
+    db.query(UserInvitation).filter(
+        UserInvitation.user_id == item.id,
+        UserInvitation.accepted_at.is_(None),
+        UserInvitation.revoked_at.is_(None),
+    ).update({"revoked_at": utcnow()})
     raw_token, token_hash = new_opaque_token()
-    invitation = UserInvitation(user_id=item.id, token_hash=token_hash, expires_at=utcnow() + timedelta(hours=settings.invitation_token_hours))
+    invitation = UserInvitation(
+        user_id=item.id,
+        token_hash=token_hash,
+        expires_at=utcnow() + timedelta(hours=settings.invitation_token_hours),
+    )
     db.add(invitation)
     url = f"{settings.frontend_url}/accept-invite/{raw_token}"
-    mail = queue_email(db, item.organization_id, item.email, "Your FDX invitation", f"<p><a href='{url}'>Set your password</a></p>")
+    mail = queue_email(
+        db,
+        item.organization_id,
+        item.email,
+        "Your FDX invitation",
+        f"<p><a href='{url}'>Set your password</a></p>",
+    )
     dispatch_email(db, mail)
     add_audit(db, user, "user.invitation.resent", item.email, item.organization_id)
     db.commit()
@@ -698,71 +1039,243 @@ def admin_resend_invite(user_id: str, request: Request, user: User = Depends(req
 
 
 @router.get("/admin/jobs")
-def admin_jobs(request: Request, page: int = 1, page_size: int = 50, status: str | None = None, _: User = Depends(require_super_admin), db: Session = Depends(get_db)):
+def admin_jobs(
+    request: Request,
+    page: int = 1,
+    page_size: int = 50,
+    status: str | None = None,
+    _: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
     offset, limit = pagination(page, page_size)
     filters = [ProcessingJob.status == status] if status else []
     total = db.scalar(select(func.count(ProcessingJob.id)).where(*filters)) or 0
-    rows = db.scalars(select(ProcessingJob).where(*filters).order_by(ProcessingJob.created_at.desc()).offset(offset).limit(limit)).all()
-    data = [{"id": row.id, "organization_id": row.organization_id, "event_id": row.event_id, "job_type": row.job_type, "status": row.status, "attempt": row.attempt, "max_attempts": row.max_attempts, "progress_current": row.progress_current, "progress_total": row.progress_total, "error": row.error} for row in rows]
+    rows = db.scalars(
+        select(ProcessingJob).where(*filters).order_by(ProcessingJob.created_at.desc()).offset(offset).limit(limit)
+    ).all()
+    data = [
+        {
+            "id": row.id,
+            "organization_id": row.organization_id,
+            "event_id": row.event_id,
+            "job_type": row.job_type,
+            "status": row.status,
+            "attempt": row.attempt,
+            "max_attempts": row.max_attempts,
+            "progress_current": row.progress_current,
+            "progress_total": row.progress_total,
+            "error": row.error,
+        }
+        for row in rows
+    ]
     return ok(data, request, page=page, page_size=page_size, total=total)
 
 
+@router.get("/admin/jobs/{job_id}")
+def admin_job_detail(
+    job_id: str,
+    request: Request,
+    _: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    row = db.get(ProcessingJob, job_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Processing job was not found")
+    return ok(
+        {
+            "id": row.id,
+            "organization_id": row.organization_id,
+            "event_id": row.event_id,
+            "photo_id": row.photo_id,
+            "job_type": row.job_type,
+            "status": row.status,
+            "attempt": row.attempt,
+            "max_attempts": row.max_attempts,
+            "progress_current": row.progress_current,
+            "progress_total": row.progress_total,
+            "correlation_id": row.correlation_id,
+            "worker": row.worker,
+            "error": row.error,
+            "heartbeat_at": row.heartbeat_at.isoformat() if row.heartbeat_at else None,
+            "created_at": row.created_at.isoformat(),
+            "started_at": row.started_at.isoformat() if row.started_at else None,
+            "finished_at": row.completed_at.isoformat() if row.completed_at else None,
+        },
+        request,
+    )
+
+
 @router.post("/admin/jobs/{job_id}/retry", status_code=202)
-def admin_retry_job(job_id: str, request: Request, user: User = Depends(require_super_admin), db: Session = Depends(get_db)):
+def admin_retry_job(
+    job_id: str,
+    request: Request,
+    user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
     job = db.get(ProcessingJob, job_id)
     if not job or job.status not in {"failed", "FAILED", "DEAD_LETTERED"}:
         raise HTTPException(status_code=409, detail="Job is not retryable")
     job.status = "queued"
     job.error = None
     job.next_attempt_at = utcnow()
-    add_outbox(db, "fdx.v2.ml.process.requested", "processing_job", job.id, {"job_id": job.id, "media_id": job.photo_id}, job.organization_id, request_id(request))
+    add_outbox(
+        db,
+        "fdx.v2.ml.process.requested",
+        "processing_job",
+        job.id,
+        {"job_id": job.id, "media_id": job.photo_id},
+        job.organization_id,
+        request_id(request),
+    )
     add_audit(db, user, "processing.retry", job.id, job.organization_id)
     db.commit()
     return ok({"job_id": job.id, "status": "QUEUED"}, request)
 
 
 @router.get("/admin/logs")
-def admin_logs(request: Request, page: int = 1, page_size: int = 50, _: User = Depends(require_super_admin), db: Session = Depends(get_db)):
+def admin_logs(
+    request: Request,
+    page: int = 1,
+    page_size: int = 50,
+    _: User = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
     offset, limit = pagination(page, page_size)
     total = db.scalar(select(func.count(AuditLog.id))) or 0
     rows = db.scalars(select(AuditLog).order_by(AuditLog.created_at.desc()).offset(offset).limit(limit)).all()
-    return ok([{"id": row.id, "organization_id": row.organization_id, "actor": row.actor, "action": row.action, "details": row.details, "level": row.level, "created_at": row.created_at.isoformat()} for row in rows], request, page=page, page_size=page_size, total=total)
+    return ok(
+        [
+            {
+                "id": row.id,
+                "organization_id": row.organization_id,
+                "actor": row.actor,
+                "action": row.action,
+                "details": row.details,
+                "level": row.level,
+                "created_at": row.created_at.isoformat(),
+            }
+            for row in rows
+        ],
+        request,
+        page=page,
+        page_size=page_size,
+        total=total,
+    )
 
 
 @router.get("/organization")
-def current_organization(request: Request, user: User = Depends(require_org_member), db: Session = Depends(get_db)):
+def current_organization(
+    request: Request,
+    user: User = Depends(require_org_member),
+    db: Session = Depends(get_db),
+):
     return ok(organization_json(db, user.organization), request)
 
 
 @router.get("/organization/dashboard")
-def organization_dashboard(request: Request, user: User = Depends(require_org_member), db: Session = Depends(get_db)):
-    events = db.scalars(select(Event).where(Event.organization_id == user.organization_id).order_by(Event.created_at.desc())).all()
+def organization_dashboard(
+    request: Request,
+    user: User = Depends(require_org_member),
+    db: Session = Depends(get_db),
+):
+    events = db.scalars(
+        select(Event).where(Event.organization_id == user.organization_id).order_by(Event.created_at.desc())
+    ).all()
     data = {
         "organization": organization_json(db, user.organization),
         "events": [event_json(db, event) for event in events],
-        "participants": db.scalar(select(func.count(Participant.id)).where(Participant.organization_id == user.organization_id)) or 0,
+        "participants": db.scalar(
+            select(func.count(Participant.id)).where(Participant.organization_id == user.organization_id)
+        )
+        or 0,
         "photos": db.scalar(select(func.count(Photo.id)).where(Photo.organization_id == user.organization_id)) or 0,
-        "failed_jobs": db.scalar(select(func.count(ProcessingJob.id)).where(ProcessingJob.organization_id == user.organization_id, ProcessingJob.status.in_(["failed", "FAILED", "DEAD_LETTERED"]))) or 0,
+        "failed_jobs": db.scalar(
+            select(func.count(ProcessingJob.id)).where(
+                ProcessingJob.organization_id == user.organization_id,
+                ProcessingJob.status.in_(["failed", "FAILED", "DEAD_LETTERED"]),
+            )
+        )
+        or 0,
     }
     return ok(data, request)
 
 
 @router.get("/organization/usage")
-def organization_usage(request: Request, user: User = Depends(require_org_member), db: Session = Depends(get_db)):
-    reserved = db.scalar(select(func.coalesce(func.sum(StorageReservation.bytes), 0)).where(StorageReservation.organization_id == user.organization_id, StorageReservation.status == "RESERVED", StorageReservation.expires_at > utcnow())) or 0
-    return ok({"used_bytes": user.organization.storage_used_bytes, "reserved_bytes": reserved, "limit_bytes": user.organization.storage_limit_bytes, "available_bytes": max(0, user.organization.storage_limit_bytes - user.organization.storage_used_bytes - reserved)}, request)
+def organization_usage(
+    request: Request,
+    user: User = Depends(require_org_member),
+    db: Session = Depends(get_db),
+):
+    reserved = (
+        db.scalar(
+            select(func.coalesce(func.sum(StorageReservation.bytes), 0)).where(
+                StorageReservation.organization_id == user.organization_id,
+                StorageReservation.status == "RESERVED",
+                StorageReservation.expires_at > utcnow(),
+            )
+        )
+        or 0
+    )
+    return ok(
+        {
+            "used_bytes": user.organization.storage_used_bytes,
+            "reserved_bytes": reserved,
+            "limit_bytes": user.organization.storage_limit_bytes,
+            "available_bytes": max(
+                0,
+                user.organization.storage_limit_bytes - user.organization.storage_used_bytes - reserved,
+            ),
+        },
+        request,
+    )
 
 
 @router.get("/organization/logs")
-def organization_logs(request: Request, page: int = 1, page_size: int = 50, user: User = Depends(require_org_member), db: Session = Depends(get_db)):
+def organization_logs(
+    request: Request,
+    page: int = 1,
+    page_size: int = 50,
+    user: User = Depends(require_org_member),
+    db: Session = Depends(get_db),
+):
     offset, limit = pagination(page, page_size)
     total = db.scalar(select(func.count(AuditLog.id)).where(AuditLog.organization_id == user.organization_id)) or 0
-    rows = db.scalars(select(AuditLog).where(AuditLog.organization_id == user.organization_id).order_by(AuditLog.created_at.desc()).offset(offset).limit(limit)).all()
-    return ok([{"id": row.id, "actor": row.actor, "action": row.action, "details": row.details, "level": row.level, "created_at": row.created_at.isoformat()} for row in rows], request, page=page, page_size=page_size, total=total)
+    rows = db.scalars(
+        select(AuditLog)
+        .where(AuditLog.organization_id == user.organization_id)
+        .order_by(AuditLog.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+    ).all()
+    return ok(
+        [
+            {
+                "id": row.id,
+                "actor": row.actor,
+                "action": row.action,
+                "details": row.details,
+                "level": row.level,
+                "created_at": row.created_at.isoformat(),
+            }
+            for row in rows
+        ],
+        request,
+        page=page,
+        page_size=page_size,
+        total=total,
+    )
 
 
 @router.get("/events")
-def list_events(request: Request, page: int = 1, page_size: int = 50, status: str | None = None, search: str | None = None, user: User = Depends(require_org_member), db: Session = Depends(get_db)):
+def list_events(
+    request: Request,
+    page: int = 1,
+    page_size: int = 50,
+    status: str | None = None,
+    search: str | None = None,
+    user: User = Depends(require_org_member),
+    db: Session = Depends(get_db),
+):
     offset, limit = pagination(page, page_size)
     filters = [Event.organization_id == user.organization_id]
     if status:
@@ -771,12 +1284,26 @@ def list_events(request: Request, page: int = 1, page_size: int = 50, status: st
         filters.append(Event.name.ilike(f"%{search.strip()}%"))
     total = db.scalar(select(func.count(Event.id)).where(*filters)) or 0
     rows = db.scalars(select(Event).where(*filters).order_by(Event.created_at.desc()).offset(offset).limit(limit)).all()
-    return ok([event_json(db, row) for row in rows], request, page=page, page_size=page_size, total=total)
+    return ok(
+        [event_json(db, row) for row in rows],
+        request,
+        page=page,
+        page_size=page_size,
+        total=total,
+    )
 
 
 @router.post("/events", status_code=201)
-def create_event(payload: EventInput, request: Request, user: User = Depends(require_org_admin), db: Session = Depends(get_db)):
-    retention = min(payload.retention_days or user.organization.retention_days, user.organization.retention_days)
+def create_event(
+    payload: EventInput,
+    request: Request,
+    user: User = Depends(require_org_admin),
+    db: Session = Depends(get_db),
+):
+    retention = min(
+        payload.retention_days or user.organization.retention_days,
+        user.organization.retention_days,
+    )
     expires_at = (payload.starts_at + timedelta(days=retention)).date()
     item = Event(
         organization_id=user.organization_id,
@@ -799,19 +1326,33 @@ def create_event(payload: EventInput, request: Request, user: User = Depends(req
         db.flush()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=409, detail="An event with the same name and date already exists") from exc
+        raise HTTPException(
+            status_code=409,
+            detail="An event with the same name and date already exists",
+        ) from exc
     add_audit(db, user, "event.created", item.name)
     db.commit()
     return ok(event_json(db, item), request)
 
 
 @router.get("/events/{event_id}")
-def get_event(event_id: str, request: Request, user: User = Depends(require_org_member), db: Session = Depends(get_db)):
+def get_event(
+    event_id: str,
+    request: Request,
+    user: User = Depends(require_org_member),
+    db: Session = Depends(get_db),
+):
     return ok(event_json(db, tenant_event(db, user, event_id)), request)
 
 
 @router.patch("/events/{event_id}")
-def update_event(event_id: str, payload: EventUpdate, request: Request, user: User = Depends(require_org_admin), db: Session = Depends(get_db)):
+def update_event(
+    event_id: str,
+    payload: EventUpdate,
+    request: Request,
+    user: User = Depends(require_org_admin),
+    db: Session = Depends(get_db),
+):
     item = tenant_event(db, user, event_id, lock=True)
     values = payload.model_dump(exclude_unset=True)
     if "retention_days" in values:
@@ -820,7 +1361,9 @@ def update_event(event_id: str, payload: EventUpdate, request: Request, user: Us
         setattr(item, key, value)
     if payload.starts_at:
         item.event_date = payload.starts_at.date()
-    item.expires_at = (item.starts_at or datetime.combine(item.event_date, datetime.min.time(), timezone.utc)).date() + timedelta(days=item.retention_days)
+    item.expires_at = (
+        item.starts_at or datetime.combine(item.event_date, datetime.min.time(), timezone.utc)
+    ).date() + timedelta(days=item.retention_days)
     add_audit(db, user, "event.updated", f"{item.name}: {', '.join(values)}")
     db.commit()
     return ok(event_json(db, item), request)
@@ -830,7 +1373,10 @@ def transition_event(event_id: str, target: str, request: Request, user: User, d
     item = tenant_event(db, user, event_id, lock=True)
     current = item.status.upper()
     if target not in EVENT_TRANSITIONS.get(current, set()):
-        raise HTTPException(status_code=409, detail=f"Event cannot transition from {current} to {target}")
+        raise HTTPException(
+            status_code=409,
+            detail=f"Event cannot transition from {current} to {target}",
+        )
     item.status = target
     add_audit(db, user, "event.state_changed", f"{current} -> {target}")
     db.commit()
@@ -838,25 +1384,53 @@ def transition_event(event_id: str, target: str, request: Request, user: User, d
 
 
 @router.post("/events/{event_id}/open-enrollment")
-def open_enrollment(event_id: str, request: Request, user: User = Depends(require_org_admin), db: Session = Depends(get_db)):
+def open_enrollment(
+    event_id: str,
+    request: Request,
+    user: User = Depends(require_org_admin),
+    db: Session = Depends(get_db),
+):
     return transition_event(event_id, "ENROLLMENT_OPEN", request, user, db)
 
 
 @router.post("/events/{event_id}/close-enrollment")
-def close_enrollment(event_id: str, request: Request, user: User = Depends(require_org_admin), db: Session = Depends(get_db)):
+def close_enrollment(
+    event_id: str,
+    request: Request,
+    user: User = Depends(require_org_admin),
+    db: Session = Depends(get_db),
+):
     return transition_event(event_id, "READY_FOR_UPLOAD", request, user, db)
 
 
 @router.post("/events/{event_id}/archive")
-def archive_event(event_id: str, request: Request, user: User = Depends(require_org_admin), db: Session = Depends(get_db)):
+def archive_event(
+    event_id: str,
+    request: Request,
+    user: User = Depends(require_org_admin),
+    db: Session = Depends(get_db),
+):
     return transition_event(event_id, "ARCHIVED", request, user, db)
 
 
 @router.delete("/events/{event_id}", status_code=202)
-def delete_event(event_id: str, request: Request, user: User = Depends(require_org_admin), db: Session = Depends(get_db)):
+def delete_event(
+    event_id: str,
+    request: Request,
+    user: User = Depends(require_org_admin),
+    db: Session = Depends(get_db),
+):
     item = tenant_event(db, user, event_id, lock=True)
     item.status = "DELETION_PENDING"
-    add_outbox(db, "fdx.v2.retention.cleanup.requested", "event", item.id, {"resource_type": "event", "resource_id": item.id}, user.organization_id, request_id(request))
+    add_outbox(
+        db,
+        "fdx.v2.retention.cleanup.requested",
+        "event",
+        item.id,
+        {"resource_type": "event", "resource_id": item.id},
+        user.organization_id,
+        request_id(request),
+    )
     add_audit(db, user, "event.deletion_scheduled", item.name)
     db.commit()
     return ok({"id": item.id, "status": "DELETION_PENDING"}, request)
@@ -884,7 +1458,10 @@ def parse_participants(content: bytes, filename: str) -> tuple[list[dict], list[
     valid, errors, seen = [], [], set()
     for index, raw in enumerate(rows, start=2):
         normalized = {str(key).strip().lower(): value for key, value in raw.items()}
-        name, email = str(normalized.get("name") or "").strip(), str(normalized.get("email") or "").strip().lower()
+        name, email = (
+            str(normalized.get("name") or "").strip(),
+            str(normalized.get("email") or "").strip().lower(),
+        )
         row_errors = []
         if not name:
             row_errors.append("name is required")
@@ -901,13 +1478,26 @@ def parse_participants(content: bytes, filename: str) -> tuple[list[dict], list[
 
 
 @router.post("/events/{event_id}/participant-imports", status_code=201)
-def create_participant_import(event_id: str, request: Request, file: UploadFile = File(...), user: User = Depends(require_org_admin), db: Session = Depends(get_db)):
+def create_participant_import(
+    event_id: str,
+    request: Request,
+    file: UploadFile = File(...),
+    user: User = Depends(require_org_admin),
+    db: Session = Depends(get_db),
+):
     event = tenant_event(db, user, event_id)
     content = file.file.read()
     if not content:
         raise HTTPException(status_code=422, detail="Import file is empty")
     valid, errors, total = parse_participants(content, file.filename or "participants.csv")
-    existing = set(db.scalars(select(Participant.email).where(Participant.event_id == event.id, Participant.email.in_([row["email"] for row in valid]))).all())
+    existing = set(
+        db.scalars(
+            select(Participant.email).where(
+                Participant.event_id == event.id,
+                Participant.email.in_([row["email"] for row in valid]),
+            )
+        ).all()
+    )
     duplicates = [row for row in valid if row["email"] in existing]
     accepted = [row for row in valid if row["email"] not in existing]
     item = ParticipantImport(
@@ -925,34 +1515,116 @@ def create_participant_import(event_id: str, request: Request, file: UploadFile 
     )
     db.add(item)
     db.flush()
-    add_audit(db, user, "participant_import.validated", f"{item.id}: {len(accepted)} valid, {len(errors)} invalid, {len(duplicates)} duplicate")
+    add_audit(
+        db,
+        user,
+        "participant_import.validated",
+        f"{item.id}: {len(accepted)} valid, {len(errors)} invalid, {len(duplicates)} duplicate",
+    )
     db.commit()
-    return ok({"id": item.id, "status": item.status, "total_rows": total, "valid_rows": len(accepted), "invalid_rows": len(errors), "duplicate_rows": len(duplicates), "errors": errors, "duplicates": duplicates}, request)
+    return ok(
+        {
+            "id": item.id,
+            "status": item.status,
+            "total_rows": total,
+            "valid_rows": len(accepted),
+            "invalid_rows": len(errors),
+            "duplicate_rows": len(duplicates),
+            "errors": errors,
+            "duplicates": duplicates,
+        },
+        request,
+    )
 
 
 @router.get("/events/{event_id}/participant-imports")
-def list_participant_imports(event_id: str, request: Request, user: User = Depends(require_org_member), db: Session = Depends(get_db)):
+def list_participant_imports(
+    event_id: str,
+    request: Request,
+    user: User = Depends(require_org_member),
+    db: Session = Depends(get_db),
+):
     tenant_event(db, user, event_id)
-    rows = db.scalars(select(ParticipantImport).where(ParticipantImport.event_id == event_id, ParticipantImport.organization_id == user.organization_id).order_by(ParticipantImport.created_at.desc())).all()
-    return ok([{"id": row.id, "filename": row.source_filename, "status": row.status, "total_rows": row.total_rows, "valid_rows": row.valid_rows, "invalid_rows": row.invalid_rows, "duplicate_rows": row.duplicate_rows, "created_at": row.created_at.isoformat()} for row in rows], request)
+    rows = db.scalars(
+        select(ParticipantImport)
+        .where(
+            ParticipantImport.event_id == event_id,
+            ParticipantImport.organization_id == user.organization_id,
+        )
+        .order_by(ParticipantImport.created_at.desc())
+    ).all()
+    return ok(
+        [
+            {
+                "id": row.id,
+                "filename": row.source_filename,
+                "status": row.status,
+                "total_rows": row.total_rows,
+                "valid_rows": row.valid_rows,
+                "invalid_rows": row.invalid_rows,
+                "duplicate_rows": row.duplicate_rows,
+                "created_at": row.created_at.isoformat(),
+            }
+            for row in rows
+        ],
+        request,
+    )
 
 
 @router.get("/events/{event_id}/participant-imports/{import_id}")
-def get_participant_import(event_id: str, import_id: str, request: Request, user: User = Depends(require_org_member), db: Session = Depends(get_db)):
+def get_participant_import(
+    event_id: str,
+    import_id: str,
+    request: Request,
+    user: User = Depends(require_org_member),
+    db: Session = Depends(get_db),
+):
     tenant_event(db, user, event_id)
-    row = db.scalar(select(ParticipantImport).where(ParticipantImport.id == import_id, ParticipantImport.event_id == event_id, ParticipantImport.organization_id == user.organization_id))
+    row = db.scalar(
+        select(ParticipantImport).where(
+            ParticipantImport.id == import_id,
+            ParticipantImport.event_id == event_id,
+            ParticipantImport.organization_id == user.organization_id,
+        )
+    )
     if not row:
         raise HTTPException(status_code=404, detail="Participant import was not found")
-    return ok({"id": row.id, "status": row.status, "total_rows": row.total_rows, "valid_rows": row.valid_rows, "invalid_rows": row.invalid_rows, "duplicate_rows": row.duplicate_rows, "validation_report": row.validation_report}, request)
+    return ok(
+        {
+            "id": row.id,
+            "status": row.status,
+            "total_rows": row.total_rows,
+            "valid_rows": row.valid_rows,
+            "invalid_rows": row.invalid_rows,
+            "duplicate_rows": row.duplicate_rows,
+            "validation_report": row.validation_report,
+        },
+        request,
+    )
 
 
 @router.post("/events/{event_id}/participant-imports/{import_id}/confirm", status_code=201)
-def confirm_participant_import(event_id: str, import_id: str, request: Request, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"), user: User = Depends(require_org_admin), db: Session = Depends(get_db)):
+def confirm_participant_import(
+    event_id: str,
+    import_id: str,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    user: User = Depends(require_org_admin),
+    db: Session = Depends(get_db),
+):
     event = tenant_event(db, user, event_id)
     record = reserve_idempotency(db, user, idempotency_key, f"confirm-import:{import_id}")
     if record and record.response_body:
         return record.response_body
-    item = db.scalar(select(ParticipantImport).where(ParticipantImport.id == import_id, ParticipantImport.event_id == event.id, ParticipantImport.organization_id == user.organization_id).with_for_update())
+    item = db.scalar(
+        select(ParticipantImport)
+        .where(
+            ParticipantImport.id == import_id,
+            ParticipantImport.event_id == event.id,
+            ParticipantImport.organization_id == user.organization_id,
+        )
+        .with_for_update()
+    )
     if not item:
         raise HTTPException(status_code=404, detail="Participant import was not found")
     if item.status == "CONFIRMED":
@@ -960,20 +1632,53 @@ def confirm_participant_import(event_id: str, import_id: str, request: Request, 
     created, invitations = [], []
     for row in item.normalized_rows or []:
         raw_token, token_hash = new_opaque_token()
-        participant = Participant(organization_id=user.organization_id, event_id=event.id, name=row["name"], email=row["email"], enrollment_status="invited", delivery_status="pending", enrollment_token_hash=token_hash, enrollment_expires_at=utcnow() + timedelta(days=settings.enrollment_token_days))
+        participant = Participant(
+            organization_id=user.organization_id,
+            event_id=event.id,
+            name=row["name"],
+            email=row["email"],
+            enrollment_status="invited",
+            delivery_status="pending",
+            enrollment_token_hash=token_hash,
+            enrollment_expires_at=utcnow() + timedelta(days=settings.enrollment_token_days),
+        )
         db.add(participant)
         db.flush()
-        db.add(ParticipantEnrollmentToken(participant_id=participant.id, token_hash=token_hash, expires_at=participant.enrollment_expires_at))
+        db.add(
+            ParticipantEnrollmentToken(
+                participant_id=participant.id,
+                token_hash=token_hash,
+                expires_at=participant.enrollment_expires_at,
+            )
+        )
         url = f"{settings.frontend_url}/enroll/{raw_token}"
-        mail = queue_email(db, user.organization_id, participant.email, f"Find your photos from {event.name}", f"<p><a href='{url}'>Find My Photos</a></p>")
+        mail = queue_email(
+            db,
+            user.organization_id,
+            participant.email,
+            f"Find your photos from {event.name}",
+            f"<p><a href='{url}'>Find My Photos</a></p>",
+        )
         dispatch_email(db, mail)
         created.append(participant.id)
         if settings.environment == "development":
             invitations.append({"participant_id": participant.id, "url": url})
     item.status = "CONFIRMED"
     item.confirmed_at = utcnow()
-    add_audit(db, user, "participant_import.confirmed", f"{item.id}: {len(created)} participants")
-    result = ok({"import_id": item.id, "participants_created": len(created), "development_invitations": invitations}, request)
+    add_audit(
+        db,
+        user,
+        "participant_import.confirmed",
+        f"{item.id}: {len(created)} participants",
+    )
+    result = ok(
+        {
+            "import_id": item.id,
+            "participants_created": len(created),
+            "development_invitations": invitations,
+        },
+        request,
+    )
     if record:
         record.response_status = 201
         record.response_body = result
@@ -982,36 +1687,103 @@ def confirm_participant_import(event_id: str, import_id: str, request: Request, 
 
 
 @router.get("/events/{event_id}/participants")
-def participants(event_id: str, request: Request, page: int = 1, page_size: int = 50, status: str | None = None, search: str | None = None, user: User = Depends(require_org_member), db: Session = Depends(get_db)):
+def participants(
+    event_id: str,
+    request: Request,
+    page: int = 1,
+    page_size: int = 50,
+    status: str | None = None,
+    search: str | None = None,
+    user: User = Depends(require_org_member),
+    db: Session = Depends(get_db),
+):
     tenant_event(db, user, event_id)
     offset, limit = pagination(page, page_size)
-    filters = [Participant.event_id == event_id, Participant.organization_id == user.organization_id]
+    filters = [
+        Participant.event_id == event_id,
+        Participant.organization_id == user.organization_id,
+    ]
     if status:
         filters.append(Participant.enrollment_status == status)
     if search:
         filters.append((Participant.name.ilike(f"%{search}%")) | (Participant.email.ilike(f"%{search}%")))
     total = db.scalar(select(func.count(Participant.id)).where(*filters)) or 0
-    rows = db.scalars(select(Participant).where(*filters).order_by(Participant.created_at.desc()).offset(offset).limit(limit)).all()
-    return ok([{"id": row.id, "name": row.name, "email": row.email, "enrollment_status": row.enrollment_status, "delivery_status": row.delivery_status, "created_at": row.created_at.isoformat()} for row in rows], request, page=page, page_size=page_size, total=total)
+    rows = db.scalars(
+        select(Participant).where(*filters).order_by(Participant.created_at.desc()).offset(offset).limit(limit)
+    ).all()
+    return ok(
+        [
+            {
+                "id": row.id,
+                "name": row.name,
+                "email": row.email,
+                "enrollment_status": row.enrollment_status,
+                "delivery_status": row.delivery_status,
+                "created_at": row.created_at.isoformat(),
+            }
+            for row in rows
+        ],
+        request,
+        page=page,
+        page_size=page_size,
+        total=total,
+    )
 
 
 def tenant_participant(db: Session, user: User, event_id: str, participant_id: str) -> Participant:
     tenant_event(db, user, event_id)
-    item = db.scalar(select(Participant).where(Participant.id == participant_id, Participant.event_id == event_id, Participant.organization_id == user.organization_id))
+    item = db.scalar(
+        select(Participant).where(
+            Participant.id == participant_id,
+            Participant.event_id == event_id,
+            Participant.organization_id == user.organization_id,
+        )
+    )
     if not item:
         raise HTTPException(status_code=404, detail="Participant was not found")
     return item
 
 
 @router.get("/events/{event_id}/participants/{participant_id}")
-def participant_detail(event_id: str, participant_id: str, request: Request, user: User = Depends(require_org_member), db: Session = Depends(get_db)):
+def participant_detail(
+    event_id: str,
+    participant_id: str,
+    request: Request,
+    user: User = Depends(require_org_member),
+    db: Session = Depends(get_db),
+):
     item = tenant_participant(db, user, event_id, participant_id)
-    matches = db.scalar(select(func.count(FaceMatch.id)).where(FaceMatch.participant_id == item.id, FaceMatch.state.in_(["high", "approved"]))) or 0
-    return ok({"id": item.id, "name": item.name, "email": item.email, "enrollment_status": item.enrollment_status, "delivery_status": item.delivery_status, "matches": matches}, request)
+    matches = (
+        db.scalar(
+            select(func.count(FaceMatch.id)).where(
+                FaceMatch.participant_id == item.id,
+                FaceMatch.state.in_(["high", "approved"]),
+            )
+        )
+        or 0
+    )
+    return ok(
+        {
+            "id": item.id,
+            "name": item.name,
+            "email": item.email,
+            "enrollment_status": item.enrollment_status,
+            "delivery_status": item.delivery_status,
+            "matches": matches,
+        },
+        request,
+    )
 
 
 @router.patch("/events/{event_id}/participants/{participant_id}")
-def update_participant(event_id: str, participant_id: str, payload: ParticipantInput, request: Request, user: User = Depends(require_org_admin), db: Session = Depends(get_db)):
+def update_participant(
+    event_id: str,
+    participant_id: str,
+    payload: ParticipantInput,
+    request: Request,
+    user: User = Depends(require_org_admin),
+    db: Session = Depends(get_db),
+):
     item = tenant_participant(db, user, event_id, participant_id)
     item.name = payload.name.strip()
     item.email = str(payload.email).lower()
@@ -1021,19 +1793,35 @@ def update_participant(event_id: str, participant_id: str, payload: ParticipantI
 
 
 @router.delete("/events/{event_id}/participants/{participant_id}", status_code=204)
-def delete_participant(event_id: str, participant_id: str, user: User = Depends(require_org_admin), db: Session = Depends(get_db)):
+def delete_participant(
+    event_id: str,
+    participant_id: str,
+    user: User = Depends(require_org_admin),
+    db: Session = Depends(get_db),
+):
     item = tenant_participant(db, user, event_id, participant_id)
     if item.enrollment:
         storage.delete(item.enrollment.storage_key)
         user.organization.storage_used_bytes = max(0, user.organization.storage_used_bytes - item.enrollment.size_bytes)
-        db.add(StorageUsageLedger(organization_id=user.organization_id, event_id=event_id, operation="DELETE", bytes=-item.enrollment.size_bytes))
+        db.add(
+            StorageUsageLedger(
+                organization_id=user.organization_id,
+                event_id=event_id,
+                operation="DELETE",
+                bytes=-item.enrollment.size_bytes,
+            )
+        )
     add_audit(db, user, "participant.deleted", item.email)
     db.delete(item)
     db.commit()
 
 
 def send_participant_invite(db: Session, participant: Participant, user: User) -> str:
-    db.query(ParticipantEnrollmentToken).filter(ParticipantEnrollmentToken.participant_id == participant.id, ParticipantEnrollmentToken.consumed_at.is_(None), ParticipantEnrollmentToken.revoked_at.is_(None)).update({"revoked_at": utcnow()})
+    db.query(ParticipantEnrollmentToken).filter(
+        ParticipantEnrollmentToken.participant_id == participant.id,
+        ParticipantEnrollmentToken.consumed_at.is_(None),
+        ParticipantEnrollmentToken.revoked_at.is_(None),
+    ).update({"revoked_at": utcnow()})
     raw_token, token_hash = new_opaque_token()
     expires = utcnow() + timedelta(days=settings.enrollment_token_days)
     participant.enrollment_token_hash = token_hash
@@ -1041,7 +1829,13 @@ def send_participant_invite(db: Session, participant: Participant, user: User) -
     participant.enrollment_status = "invited"
     db.add(ParticipantEnrollmentToken(participant_id=participant.id, token_hash=token_hash, expires_at=expires))
     url = f"{settings.frontend_url}/enroll/{raw_token}"
-    mail = queue_email(db, participant.organization_id, participant.email, f"Find your photos from {participant.event.name}", f"<p><a href='{url}'>Find My Photos</a></p>")
+    mail = queue_email(
+        db,
+        participant.organization_id,
+        participant.email,
+        f"Find your photos from {participant.event.name}",
+        f"<p><a href='{url}'>Find My Photos</a></p>",
+    )
     dispatch_email(db, mail)
     add_audit(db, user, "participant.invitation.sent", participant.email)
     return url
@@ -1049,7 +1843,13 @@ def send_participant_invite(db: Session, participant: Participant, user: User) -
 
 @router.post("/events/{event_id}/participants/{participant_id}/send-invite")
 @router.post("/events/{event_id}/participants/{participant_id}/resend-invite")
-def participant_send_invite(event_id: str, participant_id: str, request: Request, user: User = Depends(require_org_admin), db: Session = Depends(get_db)):
+def participant_send_invite(
+    event_id: str,
+    participant_id: str,
+    request: Request,
+    user: User = Depends(require_org_admin),
+    db: Session = Depends(get_db),
+):
     item = tenant_participant(db, user, event_id, participant_id)
     url = send_participant_invite(db, item, user)
     db.commit()
@@ -1059,11 +1859,75 @@ def participant_send_invite(event_id: str, participant_id: str, request: Request
     return ok(data, request)
 
 
+@router.post("/events/{event_id}/participants/send-invites", status_code=202)
+def participant_send_invites(
+    event_id: str,
+    payload: BulkInvitationInput,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    user: User = Depends(require_org_admin),
+    db: Session = Depends(get_db),
+):
+    tenant_event(db, user, event_id)
+    body = json.dumps(payload.model_dump(), sort_keys=True)
+    idem = reserve_idempotency(db, user, idempotency_key, f"bulk-invite:{event_id}:{body}")
+    if idem and idem.response_body:
+        return idem.response_body
+    filters = [
+        Participant.event_id == event_id,
+        Participant.organization_id == user.organization_id,
+        Participant.enrollment_status.in_(payload.enrollment_status),
+    ]
+    if payload.search:
+        term = f"%{payload.search.strip()}%"
+        filters.append((Participant.name.ilike(term)) | (Participant.email.ilike(term)))
+    rows = db.scalars(select(Participant).where(*filters).order_by(Participant.created_at).limit(10_000)).all()
+    development_urls = []
+    for participant in rows:
+        url = send_participant_invite(db, participant, user)
+        if settings.environment == "development":
+            development_urls.append({"participant_id": participant.id, "url": url})
+    result = ok(
+        {
+            "status": "QUEUED",
+            "invitations_queued": len(rows),
+            "development_invitations": development_urls,
+        },
+        request,
+    )
+    if idem:
+        idem.response_status = 202
+        idem.response_body = result
+    add_audit(
+        db,
+        user,
+        "participant.invitation.bulk_queued",
+        f"{event_id}: {len(rows)} invitations",
+    )
+    db.commit()
+    return result
+
+
 @router.post("/events/{event_id}/participants", status_code=201)
-def create_participant(event_id: str, payload: ParticipantInput, request: Request, user: User = Depends(require_org_admin), db: Session = Depends(get_db)):
+def create_participant(
+    event_id: str,
+    payload: ParticipantInput,
+    request: Request,
+    user: User = Depends(require_org_admin),
+    db: Session = Depends(get_db),
+):
     event = tenant_event(db, user, event_id)
     raw_token, token_hash = new_opaque_token()
-    item = Participant(organization_id=user.organization_id, event_id=event.id, name=payload.name.strip(), email=str(payload.email).lower(), enrollment_status="invited", delivery_status="pending", enrollment_token_hash=token_hash, enrollment_expires_at=utcnow() + timedelta(days=settings.enrollment_token_days))
+    item = Participant(
+        organization_id=user.organization_id,
+        event_id=event.id,
+        name=payload.name.strip(),
+        email=str(payload.email).lower(),
+        enrollment_status="invited",
+        delivery_status="pending",
+        enrollment_token_hash=token_hash,
+        enrollment_expires_at=utcnow() + timedelta(days=settings.enrollment_token_days),
+    )
     db.add(item)
     try:
         db.flush()
@@ -1071,102 +1935,354 @@ def create_participant(event_id: str, payload: ParticipantInput, request: Reques
         db.rollback()
         raise HTTPException(status_code=409, detail="Participant email already exists in this event") from exc
     url = f"{settings.frontend_url}/enroll/{raw_token}"
-    db.add(ParticipantEnrollmentToken(participant_id=item.id, token_hash=token_hash, expires_at=item.enrollment_expires_at))
-    mail = queue_email(db, user.organization_id, item.email, f"Find your photos from {event.name}", f"<p><a href='{url}'>Find My Photos</a></p>")
+    db.add(
+        ParticipantEnrollmentToken(
+            participant_id=item.id,
+            token_hash=token_hash,
+            expires_at=item.enrollment_expires_at,
+        )
+    )
+    mail = queue_email(
+        db,
+        user.organization_id,
+        item.email,
+        f"Find your photos from {event.name}",
+        f"<p><a href='{url}'>Find My Photos</a></p>",
+    )
     dispatch_email(db, mail)
     add_audit(db, user, "participant.created", item.email)
     db.commit()
-    data = {"id": item.id, "name": item.name, "email": item.email, "enrollment_status": item.enrollment_status}
+    data = {
+        "id": item.id,
+        "name": item.name,
+        "email": item.email,
+        "enrollment_status": item.enrollment_status,
+    }
     if settings.environment == "development":
         data["development_enrollment_url"] = url
     return ok(data, request)
 
 
 @router.post("/events/{event_id}/upload-batches", status_code=201)
-def create_upload_batch(event_id: str, payload: UploadBatchInput, request: Request, user: User = Depends(require_org_member), db: Session = Depends(get_db)):
+def create_upload_batch(
+    event_id: str,
+    payload: UploadBatchInput,
+    request: Request,
+    user: User = Depends(require_org_member),
+    db: Session = Depends(get_db),
+):
     event = tenant_event(db, user, event_id, lock=True)
-    active_reserved = db.scalar(select(func.coalesce(func.sum(StorageReservation.bytes), 0)).where(StorageReservation.organization_id == user.organization_id, StorageReservation.status == "RESERVED", StorageReservation.expires_at > utcnow())) or 0
+    active_reserved = (
+        db.scalar(
+            select(func.coalesce(func.sum(StorageReservation.bytes), 0)).where(
+                StorageReservation.organization_id == user.organization_id,
+                StorageReservation.status == "RESERVED",
+                StorageReservation.expires_at > utcnow(),
+            )
+        )
+        or 0
+    )
     if payload.reserved_bytes > settings.max_upload_bytes:
         raise HTTPException(status_code=413, detail="Upload batch exceeds the configured maximum")
-    if user.organization.storage_used_bytes + active_reserved + payload.reserved_bytes > user.organization.storage_limit_bytes:
+    if (
+        user.organization.storage_used_bytes + active_reserved + payload.reserved_bytes
+        > user.organization.storage_limit_bytes
+    ):
         raise HTTPException(status_code=413, detail="Organization storage quota would be exceeded")
-    batch = UploadBatch(organization_id=user.organization_id, event_id=event.id, expected_files=payload.expected_files, reserved_bytes=payload.reserved_bytes, created_by=user.id, status="CREATED")
+    batch = UploadBatch(
+        organization_id=user.organization_id,
+        event_id=event.id,
+        expected_files=payload.expected_files,
+        reserved_bytes=payload.reserved_bytes,
+        created_by=user.id,
+        status="CREATED",
+    )
     db.add(batch)
     db.flush()
-    reservation = StorageReservation(organization_id=user.organization_id, event_id=event.id, upload_batch_id=batch.id, bytes=payload.reserved_bytes, status="RESERVED", expires_at=utcnow() + timedelta(minutes=settings.upload_reservation_minutes))
+    reservation = StorageReservation(
+        organization_id=user.organization_id,
+        event_id=event.id,
+        upload_batch_id=batch.id,
+        bytes=payload.reserved_bytes,
+        status="RESERVED",
+        expires_at=utcnow() + timedelta(minutes=settings.upload_reservation_minutes),
+    )
     db.add(reservation)
-    db.add(StorageUsageLedger(organization_id=user.organization_id, event_id=event.id, operation="RESERVE", bytes=payload.reserved_bytes))
+    db.add(
+        StorageUsageLedger(
+            organization_id=user.organization_id,
+            event_id=event.id,
+            operation="RESERVE",
+            bytes=payload.reserved_bytes,
+        )
+    )
     add_audit(db, user, "upload_batch.created", f"{batch.id}: {payload.reserved_bytes} bytes")
     db.commit()
-    return ok({"id": batch.id, "status": batch.status, "reserved_bytes": batch.reserved_bytes, "reservation_expires_at": reservation.expires_at.isoformat()}, request)
+    return ok(
+        {
+            "id": batch.id,
+            "status": batch.status,
+            "reserved_bytes": batch.reserved_bytes,
+            "reservation_expires_at": reservation.expires_at.isoformat(),
+        },
+        request,
+    )
 
 
 @router.get("/events/{event_id}/upload-batches")
-def upload_batches(event_id: str, request: Request, user: User = Depends(require_org_member), db: Session = Depends(get_db)):
+def upload_batches(
+    event_id: str,
+    request: Request,
+    user: User = Depends(require_org_member),
+    db: Session = Depends(get_db),
+):
     tenant_event(db, user, event_id)
-    rows = db.scalars(select(UploadBatch).where(UploadBatch.event_id == event_id, UploadBatch.organization_id == user.organization_id).order_by(UploadBatch.created_at.desc())).all()
-    return ok([{"id": row.id, "status": row.status, "expected_files": row.expected_files, "uploaded_files": row.uploaded_files, "reserved_bytes": row.reserved_bytes, "committed_bytes": row.committed_bytes, "created_at": row.created_at.isoformat(), "completed_at": row.completed_at.isoformat() if row.completed_at else None} for row in rows], request)
+    rows = db.scalars(
+        select(UploadBatch)
+        .where(
+            UploadBatch.event_id == event_id,
+            UploadBatch.organization_id == user.organization_id,
+        )
+        .order_by(UploadBatch.created_at.desc())
+    ).all()
+    return ok(
+        [
+            {
+                "id": row.id,
+                "status": row.status,
+                "expected_files": row.expected_files,
+                "uploaded_files": row.uploaded_files,
+                "reserved_bytes": row.reserved_bytes,
+                "committed_bytes": row.committed_bytes,
+                "created_at": row.created_at.isoformat(),
+                "completed_at": row.completed_at.isoformat() if row.completed_at else None,
+            }
+            for row in rows
+        ],
+        request,
+    )
 
 
 @router.get("/events/{event_id}/upload-batches/{batch_id}")
-def upload_batch_detail(event_id: str, batch_id: str, request: Request, user: User = Depends(require_org_member), db: Session = Depends(get_db)):
+def upload_batch_detail(
+    event_id: str,
+    batch_id: str,
+    request: Request,
+    user: User = Depends(require_org_member),
+    db: Session = Depends(get_db),
+):
     tenant_event(db, user, event_id)
-    row = db.scalar(select(UploadBatch).where(UploadBatch.id == batch_id, UploadBatch.event_id == event_id, UploadBatch.organization_id == user.organization_id))
+    row = db.scalar(
+        select(UploadBatch).where(
+            UploadBatch.id == batch_id,
+            UploadBatch.event_id == event_id,
+            UploadBatch.organization_id == user.organization_id,
+        )
+    )
     if not row:
         raise HTTPException(status_code=404, detail="Upload batch was not found")
-    return ok({"id": row.id, "status": row.status, "expected_files": row.expected_files, "uploaded_files": row.uploaded_files, "reserved_bytes": row.reserved_bytes, "committed_bytes": row.committed_bytes, "manifest": row.manifest}, request)
+    return ok(
+        {
+            "id": row.id,
+            "status": row.status,
+            "expected_files": row.expected_files,
+            "uploaded_files": row.uploaded_files,
+            "reserved_bytes": row.reserved_bytes,
+            "committed_bytes": row.committed_bytes,
+            "manifest": row.manifest,
+        },
+        request,
+    )
 
 
 @router.post("/events/{event_id}/upload-batches/{batch_id}/presign")
-def presign_uploads(event_id: str, batch_id: str, payload: PresignInput, request: Request, user: User = Depends(require_org_member), db: Session = Depends(get_db)):
+def presign_uploads(
+    event_id: str,
+    batch_id: str,
+    payload: PresignInput,
+    request: Request,
+    user: User = Depends(require_org_member),
+    db: Session = Depends(get_db),
+):
     tenant_event(db, user, event_id)
-    batch = db.scalar(select(UploadBatch).where(UploadBatch.id == batch_id, UploadBatch.event_id == event_id, UploadBatch.organization_id == user.organization_id).with_for_update())
+    batch = db.scalar(
+        select(UploadBatch)
+        .where(
+            UploadBatch.id == batch_id,
+            UploadBatch.event_id == event_id,
+            UploadBatch.organization_id == user.organization_id,
+        )
+        .with_for_update()
+    )
     if not batch or batch.status not in {"CREATED", "UPLOADING"}:
         raise HTTPException(status_code=409, detail="Upload batch cannot accept files")
+    existing_manifest = list(batch.manifest or [])
+    existing_bytes = sum(item["size_bytes"] for item in existing_manifest)
     total = sum(item.size_bytes for item in payload.files)
-    if total > batch.reserved_bytes:
+    if existing_bytes + total > batch.reserved_bytes:
         raise HTTPException(status_code=413, detail="Files exceed reserved upload bytes")
+    if len(existing_manifest) + len(payload.files) > batch.expected_files:
+        raise HTTPException(status_code=409, detail="Files exceed the upload batch manifest count")
+    existing_hashes = {item["sha256"] for item in existing_manifest}
     manifest, urls = [], []
     for item in payload.files:
         if item.content_type not in ALLOWED_IMAGE_TYPES:
             raise HTTPException(status_code=422, detail=f"Unsupported media type for {item.filename}")
+        if item.size_bytes > settings.max_media_file_bytes:
+            raise HTTPException(status_code=413, detail=f"Media file is too large: {item.filename}")
+        expected_extension = {
+            "image/jpeg": {".jpg", ".jpeg"},
+            "image/png": {".png"},
+            "image/webp": {".webp"},
+        }[item.content_type]
+        suffix = "." + item.filename.lower().rsplit(".", 1)[-1] if "." in item.filename else ""
+        if suffix not in expected_extension:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Filename extension does not match media type: {item.filename}",
+            )
+        if item.sha256.lower() in existing_hashes:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Duplicate file in upload batch: {item.filename}",
+            )
         media_id = str(uuid.uuid4())
         extension = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}[item.content_type]
         key = f"organizations/{user.organization_id}/events/{event_id}/media/original/{media_id}{extension}"
-        upload_url = storage.presign_put(key, item.content_type)
-        if not upload_url:
-            upload_url = f"/api/v2/events/{event_id}/upload-batches/{batch.id}/objects/{media_id}"
-        record = {"media_id": media_id, "filename": item.filename, "content_type": item.content_type, "size_bytes": item.size_bytes, "sha256": item.sha256.lower(), "storage_key": key}
+        record = {
+            "media_id": media_id,
+            "filename": item.filename,
+            "content_type": item.content_type,
+            "size_bytes": item.size_bytes,
+            "sha256": item.sha256.lower(),
+            "storage_key": key,
+        }
+        multipart = (
+            storage.create_multipart_upload(key, item.content_type, item.size_bytes, settings.multipart_part_bytes)
+            if item.size_bytes >= settings.multipart_threshold_bytes
+            else None
+        )
+        if multipart:
+            record["multipart_upload_id"] = multipart["upload_id"]
+            urls.append(
+                {
+                    **record,
+                    "multipart": True,
+                    "part_size": multipart["part_size"],
+                    "parts": multipart["parts"],
+                    "complete_url": f"/v2/events/{event_id}/upload-batches/{batch.id}/objects/{media_id}/complete-multipart",
+                }
+            )
+        else:
+            upload_url = storage.presign_put(key, item.content_type)
+            if not upload_url:
+                upload_url = f"/api/v2/events/{event_id}/upload-batches/{batch.id}/objects/{media_id}"
+            urls.append(
+                {
+                    **record,
+                    "multipart": False,
+                    "upload_url": upload_url,
+                    "method": "PUT",
+                    "headers": {"Content-Type": item.content_type},
+                }
+            )
         manifest.append(record)
-        urls.append({**record, "upload_url": upload_url, "method": "PUT", "headers": {"Content-Type": item.content_type}})
-    batch.manifest = manifest
+        existing_hashes.add(item.sha256.lower())
+    batch.manifest = [*existing_manifest, *manifest]
     batch.status = "UPLOADING"
     db.commit()
     return ok({"batch_id": batch.id, "files": urls, "expires_in": 900}, request)
 
 
 @router.put("/events/{event_id}/upload-batches/{batch_id}/objects/{media_id}", status_code=204)
-async def local_upload_object(event_id: str, batch_id: str, media_id: str, request: Request, user: User = Depends(require_org_member), db: Session = Depends(get_db)):
+async def local_upload_object(
+    event_id: str,
+    batch_id: str,
+    media_id: str,
+    request: Request,
+    user: User = Depends(require_org_member),
+    db: Session = Depends(get_db),
+):
     if settings.storage_backend == "s3":
         raise HTTPException(status_code=404, detail="Direct local upload endpoint is disabled")
     tenant_event(db, user, event_id)
-    batch = db.scalar(select(UploadBatch).where(UploadBatch.id == batch_id, UploadBatch.event_id == event_id, UploadBatch.organization_id == user.organization_id))
+    batch = db.scalar(
+        select(UploadBatch).where(
+            UploadBatch.id == batch_id,
+            UploadBatch.event_id == event_id,
+            UploadBatch.organization_id == user.organization_id,
+        )
+    )
     record = next((row for row in batch.manifest or [] if row["media_id"] == media_id), None) if batch else None
     if not record:
         raise HTTPException(status_code=404, detail="Upload object was not found")
     content = await request.body()
     if len(content) != record["size_bytes"] or hashlib.sha256(content).hexdigest() != record["sha256"]:
-        raise HTTPException(status_code=422, detail="Uploaded object size or checksum does not match manifest")
+        raise HTTPException(
+            status_code=422,
+            detail="Uploaded object size or checksum does not match manifest",
+        )
     storage.put(record["storage_key"], content, record["content_type"])
 
 
+@router.post("/events/{event_id}/upload-batches/{batch_id}/objects/{media_id}/complete-multipart")
+def complete_multipart_upload(
+    event_id: str,
+    batch_id: str,
+    media_id: str,
+    payload: CompleteMultipartInput,
+    request: Request,
+    user: User = Depends(require_org_member),
+    db: Session = Depends(get_db),
+):
+    tenant_event(db, user, event_id)
+    batch = db.scalar(
+        select(UploadBatch)
+        .where(
+            UploadBatch.id == batch_id,
+            UploadBatch.event_id == event_id,
+            UploadBatch.organization_id == user.organization_id,
+        )
+        .with_for_update()
+    )
+    record = next((row for row in batch.manifest or [] if row["media_id"] == media_id), None) if batch else None
+    if not record or not record.get("multipart_upload_id"):
+        raise HTTPException(status_code=404, detail="Multipart upload was not found")
+    if record["multipart_upload_id"] != payload.upload_id:
+        raise HTTPException(status_code=409, detail="Multipart upload ID does not match the manifest")
+    storage.complete_multipart_upload(
+        record["storage_key"],
+        payload.upload_id,
+        [part.model_dump() for part in payload.parts],
+    )
+    record["multipart_completed"] = True
+    batch.manifest = list(batch.manifest)
+    db.commit()
+    return ok({"media_id": media_id, "status": "UPLOADED"}, request)
+
+
 @router.post("/events/{event_id}/upload-batches/{batch_id}/complete", status_code=202)
-def complete_upload_batch(event_id: str, batch_id: str, request: Request, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"), user: User = Depends(require_org_member), db: Session = Depends(get_db)):
+def complete_upload_batch(
+    event_id: str,
+    batch_id: str,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    user: User = Depends(require_org_member),
+    db: Session = Depends(get_db),
+):
     event = tenant_event(db, user, event_id, lock=True)
     idem = reserve_idempotency(db, user, idempotency_key, f"complete-upload:{batch_id}")
     if idem and idem.response_body:
         return idem.response_body
-    batch = db.scalar(select(UploadBatch).where(UploadBatch.id == batch_id, UploadBatch.event_id == event.id, UploadBatch.organization_id == user.organization_id).with_for_update())
+    batch = db.scalar(
+        select(UploadBatch)
+        .where(
+            UploadBatch.id == batch_id,
+            UploadBatch.event_id == event.id,
+            UploadBatch.organization_id == user.organization_id,
+        )
+        .with_for_update()
+    )
     if not batch or batch.status not in {"UPLOADING", "VERIFYING"}:
         raise HTTPException(status_code=409, detail="Upload batch cannot be completed")
     batch.status = "VERIFYING"
@@ -1181,15 +2297,51 @@ def complete_upload_batch(event_id: str, batch_id: str, request: Request, idempo
         if db.scalar(select(Photo.id).where(Photo.event_id == event.id, Photo.sha256 == record["sha256"])):
             storage.delete(record["storage_key"])
             continue
-        photo = Photo(id=record["media_id"], organization_id=user.organization_id, event_id=event.id, filename=record["filename"], storage_key=record["storage_key"], content_type=record["content_type"], size_bytes=record["size_bytes"], sha256=record["sha256"], processing_status="queued")
-        job = ProcessingJob(organization_id=user.organization_id, event_id=event.id, photo_id=photo.id, job_type="ML_PROCESS", status="queued", correlation_id=request_id(request), max_attempts=5)
+        photo = Photo(
+            id=record["media_id"],
+            organization_id=user.organization_id,
+            event_id=event.id,
+            filename=record["filename"],
+            storage_key=record["storage_key"],
+            content_type=record["content_type"],
+            size_bytes=record["size_bytes"],
+            sha256=record["sha256"],
+            processing_status="queued",
+        )
+        job = ProcessingJob(
+            organization_id=user.organization_id,
+            event_id=event.id,
+            photo_id=photo.id,
+            job_type="ML_PROCESS",
+            status="queued",
+            correlation_id=request_id(request),
+            max_attempts=5,
+        )
         db.add_all([photo, job])
         db.flush()
-        add_outbox(db, "fdx.v2.ml.process.requested", "processing_job", job.id, {"job_id": job.id, "media_id": photo.id}, user.organization_id, request_id(request))
-        db.add(StorageUsageLedger(organization_id=user.organization_id, event_id=event.id, photo_id=photo.id, operation="ADD", bytes=photo.size_bytes))
+        add_outbox(
+            db,
+            "fdx.v2.ml.process.requested",
+            "processing_job",
+            job.id,
+            {"job_id": job.id, "media_id": photo.id},
+            user.organization_id,
+            request_id(request),
+        )
+        db.add(
+            StorageUsageLedger(
+                organization_id=user.organization_id,
+                event_id=event.id,
+                photo_id=photo.id,
+                operation="ADD",
+                bytes=photo.size_bytes,
+            )
+        )
         committed += photo.size_bytes
         jobs.append(job.id)
-    reservation = db.scalar(select(StorageReservation).where(StorageReservation.upload_batch_id == batch.id).with_for_update())
+    reservation = db.scalar(
+        select(StorageReservation).where(StorageReservation.upload_batch_id == batch.id).with_for_update()
+    )
     if reservation:
         reservation.status = "COMMITTED"
     batch.committed_bytes = committed
@@ -1198,8 +2350,21 @@ def complete_upload_batch(event_id: str, batch_id: str, request: Request, idempo
     batch.completed_at = utcnow()
     user.organization.storage_used_bytes += committed
     event.status = "PROCESSING"
-    add_audit(db, user, "upload_batch.completed", f"{batch.id}: {len(jobs)} media, {committed} bytes")
-    result = ok({"batch_id": batch.id, "status": batch.status, "media_created": len(jobs), "jobs": jobs}, request)
+    add_audit(
+        db,
+        user,
+        "upload_batch.completed",
+        f"{batch.id}: {len(jobs)} media, {committed} bytes",
+    )
+    result = ok(
+        {
+            "batch_id": batch.id,
+            "status": batch.status,
+            "media_created": len(jobs),
+            "jobs": jobs,
+        },
+        request,
+    )
     if idem:
         idem.response_status = 202
         idem.response_body = result
@@ -1208,17 +2373,40 @@ def complete_upload_batch(event_id: str, batch_id: str, request: Request, idempo
 
 
 @router.post("/events/{event_id}/upload-batches/{batch_id}/cancel")
-def cancel_upload_batch(event_id: str, batch_id: str, request: Request, user: User = Depends(require_org_member), db: Session = Depends(get_db)):
+def cancel_upload_batch(
+    event_id: str,
+    batch_id: str,
+    request: Request,
+    user: User = Depends(require_org_member),
+    db: Session = Depends(get_db),
+):
     tenant_event(db, user, event_id)
-    batch = db.scalar(select(UploadBatch).where(UploadBatch.id == batch_id, UploadBatch.event_id == event_id, UploadBatch.organization_id == user.organization_id).with_for_update())
+    batch = db.scalar(
+        select(UploadBatch)
+        .where(
+            UploadBatch.id == batch_id,
+            UploadBatch.event_id == event_id,
+            UploadBatch.organization_id == user.organization_id,
+        )
+        .with_for_update()
+    )
     if not batch or batch.status == "COMPLETE":
         raise HTTPException(status_code=409, detail="Upload batch cannot be cancelled")
     for record in batch.manifest or []:
+        if record.get("multipart_upload_id") and not record.get("multipart_completed"):
+            storage.abort_multipart_upload(record["storage_key"], record["multipart_upload_id"])
         storage.delete(record["storage_key"])
     reservation = db.scalar(select(StorageReservation).where(StorageReservation.upload_batch_id == batch.id))
     if reservation:
         reservation.status = "RELEASED"
-        db.add(StorageUsageLedger(organization_id=user.organization_id, event_id=event_id, operation="RELEASE", bytes=reservation.bytes))
+        db.add(
+            StorageUsageLedger(
+                organization_id=user.organization_id,
+                event_id=event_id,
+                operation="RELEASE",
+                bytes=reservation.bytes,
+            )
+        )
     batch.status = "CANCELLED"
     add_audit(db, user, "upload_batch.cancelled", batch.id)
     db.commit()
@@ -1226,49 +2414,143 @@ def cancel_upload_batch(event_id: str, batch_id: str, request: Request, user: Us
 
 
 @router.get("/events/{event_id}/media")
-def event_media(event_id: str, request: Request, page: int = 1, page_size: int = 50, user: User = Depends(require_org_member), db: Session = Depends(get_db)):
+def event_media(
+    event_id: str,
+    request: Request,
+    page: int = 1,
+    page_size: int = 50,
+    user: User = Depends(require_org_member),
+    db: Session = Depends(get_db),
+):
     tenant_event(db, user, event_id)
     offset, limit = pagination(page, page_size)
-    total = db.scalar(select(func.count(Photo.id)).where(Photo.event_id == event_id, Photo.organization_id == user.organization_id)) or 0
-    rows = db.scalars(select(Photo).where(Photo.event_id == event_id, Photo.organization_id == user.organization_id).order_by(Photo.uploaded_at.desc()).offset(offset).limit(limit)).all()
-    return ok([{"id": row.id, "filename": row.filename, "mime_type": row.content_type, "size_bytes": row.size_bytes, "sha256": row.sha256, "status": row.processing_status, "uploaded_at": row.uploaded_at.isoformat()} for row in rows], request, page=page, page_size=page_size, total=total)
+    total = (
+        db.scalar(
+            select(func.count(Photo.id)).where(
+                Photo.event_id == event_id,
+                Photo.organization_id == user.organization_id,
+            )
+        )
+        or 0
+    )
+    rows = db.scalars(
+        select(Photo)
+        .where(Photo.event_id == event_id, Photo.organization_id == user.organization_id)
+        .order_by(Photo.uploaded_at.desc())
+        .offset(offset)
+        .limit(limit)
+    ).all()
+    return ok(
+        [
+            {
+                "id": row.id,
+                "filename": row.filename,
+                "mime_type": row.content_type,
+                "size_bytes": row.size_bytes,
+                "sha256": row.sha256,
+                "status": row.processing_status,
+                "uploaded_at": row.uploaded_at.isoformat(),
+            }
+            for row in rows
+        ],
+        request,
+        page=page,
+        page_size=page_size,
+        total=total,
+    )
 
 
 def tenant_photo(db: Session, user: User, event_id: str, media_id: str) -> Photo:
     tenant_event(db, user, event_id)
-    item = db.scalar(select(Photo).where(Photo.id == media_id, Photo.event_id == event_id, Photo.organization_id == user.organization_id))
+    item = db.scalar(
+        select(Photo).where(
+            Photo.id == media_id,
+            Photo.event_id == event_id,
+            Photo.organization_id == user.organization_id,
+        )
+    )
     if not item:
         raise HTTPException(status_code=404, detail="Media was not found")
     return item
 
 
 @router.get("/events/{event_id}/media/{media_id}")
-def media_detail(event_id: str, media_id: str, request: Request, user: User = Depends(require_org_member), db: Session = Depends(get_db)):
+def media_detail(
+    event_id: str,
+    media_id: str,
+    request: Request,
+    user: User = Depends(require_org_member),
+    db: Session = Depends(get_db),
+):
     item = tenant_photo(db, user, event_id, media_id)
-    return ok({"id": item.id, "filename": item.filename, "mime_type": item.content_type, "size_bytes": item.size_bytes, "sha256": item.sha256, "status": item.processing_status, "download_url": storage.presign_get(item.storage_key) or f"/api/media/{item.id}"}, request)
+    return ok(
+        {
+            "id": item.id,
+            "filename": item.filename,
+            "mime_type": item.content_type,
+            "size_bytes": item.size_bytes,
+            "sha256": item.sha256,
+            "status": item.processing_status,
+            "download_url": storage.presign_get(item.storage_key) or f"/api/media/{item.id}",
+        },
+        request,
+    )
 
 
 @router.delete("/events/{event_id}/media/{media_id}", status_code=204)
-def delete_media(event_id: str, media_id: str, user: User = Depends(require_org_admin), db: Session = Depends(get_db)):
+def delete_media(
+    event_id: str,
+    media_id: str,
+    user: User = Depends(require_org_admin),
+    db: Session = Depends(get_db),
+):
     item = tenant_photo(db, user, event_id, media_id)
     released = item.size_bytes + item.thumbnail_size_bytes
     storage.delete(item.storage_key)
     if item.thumbnail_storage_key:
         storage.delete(item.thumbnail_storage_key)
     user.organization.storage_used_bytes = max(0, user.organization.storage_used_bytes - released)
-    db.add(StorageUsageLedger(organization_id=user.organization_id, event_id=event_id, operation="DELETE", bytes=-released))
+    db.add(
+        StorageUsageLedger(
+            organization_id=user.organization_id,
+            event_id=event_id,
+            operation="DELETE",
+            bytes=-released,
+        )
+    )
     add_audit(db, user, "media.deleted", item.filename)
     db.delete(item)
     db.commit()
 
 
 @router.post("/events/{event_id}/media/{media_id}/reprocess", status_code=202)
-def reprocess_media(event_id: str, media_id: str, request: Request, user: User = Depends(require_org_admin), db: Session = Depends(get_db)):
+def reprocess_media(
+    event_id: str,
+    media_id: str,
+    request: Request,
+    user: User = Depends(require_org_admin),
+    db: Session = Depends(get_db),
+):
     item = tenant_photo(db, user, event_id, media_id)
-    job = ProcessingJob(organization_id=user.organization_id, event_id=event_id, photo_id=item.id, job_type="ML_PROCESS", status="queued", correlation_id=request_id(request))
+    job = ProcessingJob(
+        organization_id=user.organization_id,
+        event_id=event_id,
+        photo_id=item.id,
+        job_type="ML_PROCESS",
+        status="queued",
+        correlation_id=request_id(request),
+    )
     db.add(job)
     db.flush()
-    add_outbox(db, "fdx.v2.ml.process.requested", "processing_job", job.id, {"job_id": job.id, "media_id": item.id}, user.organization_id, request_id(request))
+    add_outbox(
+        db,
+        "fdx.v2.ml.process.requested",
+        "processing_job",
+        job.id,
+        {"job_id": job.id, "media_id": item.id},
+        user.organization_id,
+        request_id(request),
+    )
     item.processing_status = "queued"
     add_audit(db, user, "media.reprocess_requested", item.filename)
     db.commit()
@@ -1276,19 +2558,41 @@ def reprocess_media(event_id: str, media_id: str, request: Request, user: User =
 
 
 @router.post("/events/{event_id}/start-processing", status_code=202)
-def start_processing(event_id: str, request: Request, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"), user: User = Depends(require_org_admin), db: Session = Depends(get_db)):
+def start_processing(
+    event_id: str,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    user: User = Depends(require_org_admin),
+    db: Session = Depends(get_db),
+):
     event = tenant_event(db, user, event_id, lock=True)
     idem = reserve_idempotency(db, user, idempotency_key, f"start-processing:{event_id}")
     if idem and idem.response_body:
         return idem.response_body
-    queued = db.scalars(select(ProcessingJob).where(ProcessingJob.event_id == event.id, ProcessingJob.status.in_(["queued", "RETRY_SCHEDULED"]))).all()
+    queued = db.scalars(
+        select(ProcessingJob).where(
+            ProcessingJob.event_id == event.id,
+            ProcessingJob.status.in_(["queued", "RETRY_SCHEDULED"]),
+        )
+    ).all()
     if not queued:
         raise HTTPException(status_code=409, detail="No media is queued for processing")
     event.status = "PROCESSING"
     for job in queued:
-        add_outbox(db, "fdx.v2.ml.process.requested", "processing_job", job.id, {"job_id": job.id, "media_id": job.photo_id}, user.organization_id, request_id(request))
+        add_outbox(
+            db,
+            "fdx.v2.ml.process.requested",
+            "processing_job",
+            job.id,
+            {"job_id": job.id, "media_id": job.photo_id},
+            user.organization_id,
+            request_id(request),
+        )
     add_audit(db, user, "processing.started", f"{event.name}: {len(queued)} jobs")
-    result = ok({"event_id": event.id, "status": event.status, "jobs_queued": len(queued)}, request)
+    result = ok(
+        {"event_id": event.id, "status": event.status, "jobs_queued": len(queued)},
+        request,
+    )
     if idem:
         idem.response_status = 202
         idem.response_body = result
@@ -1296,65 +2600,333 @@ def start_processing(event_id: str, request: Request, idempotency_key: str | Non
     return result
 
 
+@router.post("/events/{event_id}/cancel-processing", status_code=202)
+def cancel_processing(
+    event_id: str,
+    request: Request,
+    user: User = Depends(require_org_admin),
+    db: Session = Depends(get_db),
+):
+    event = tenant_event(db, user, event_id, lock=True)
+    jobs = db.scalars(
+        select(ProcessingJob)
+        .where(
+            ProcessingJob.event_id == event.id,
+            ProcessingJob.organization_id == user.organization_id,
+            ProcessingJob.status.in_(["queued", "RETRY_SCHEDULED", "processing"]),
+        )
+        .with_for_update()
+    ).all()
+    cancelled = 0
+    cancellation_requested = 0
+    for job in jobs:
+        if job.status == "processing":
+            job.status = "CANCEL_REQUESTED"
+            cancellation_requested += 1
+        else:
+            job.status = "CANCELLED"
+            job.completed_at = utcnow()
+            cancelled += 1
+            if job.photo_id:
+                photo = db.get(Photo, job.photo_id)
+                if photo:
+                    photo.processing_status = "uploaded"
+    if event.status.upper() == "PROCESSING":
+        event.status = "READY_FOR_UPLOAD"
+    add_audit(
+        db,
+        user,
+        "processing.cancelled",
+        f"{event.id}: {cancelled} cancelled, {cancellation_requested} cancellation requested",
+    )
+    db.commit()
+    return ok(
+        {
+            "event_id": event.id,
+            "cancelled": cancelled,
+            "cancellation_requested": cancellation_requested,
+        },
+        request,
+    )
+
+
 @router.get("/events/{event_id}/processing")
-def processing_summary(event_id: str, request: Request, user: User = Depends(require_org_member), db: Session = Depends(get_db)):
+def processing_summary(
+    event_id: str,
+    request: Request,
+    user: User = Depends(require_org_member),
+    db: Session = Depends(get_db),
+):
     event = tenant_event(db, user, event_id)
-    statuses = dict(db.execute(select(ProcessingJob.status, func.count(ProcessingJob.id)).where(ProcessingJob.event_id == event.id).group_by(ProcessingJob.status)).all())
+    statuses = dict(
+        db.execute(
+            select(ProcessingJob.status, func.count(ProcessingJob.id))
+            .where(ProcessingJob.event_id == event.id)
+            .group_by(ProcessingJob.status)
+        ).all()
+    )
     photos_total = db.scalar(select(func.count(Photo.id)).where(Photo.event_id == event.id)) or 0
-    photos_processed = db.scalar(select(func.count(Photo.id)).where(Photo.event_id == event.id, Photo.processing_status == "ready")) or 0
+    photos_processed = (
+        db.scalar(select(func.count(Photo.id)).where(Photo.event_id == event.id, Photo.processing_status == "ready"))
+        or 0
+    )
     faces = db.scalar(select(func.count(FaceDetection.id)).where(FaceDetection.event_id == event.id)) or 0
-    decisions = dict(db.execute(select(FaceMatch.state, func.count(FaceMatch.id)).where(FaceMatch.event_id == event.id).group_by(FaceMatch.state)).all())
-    return ok({"event_state": event.status, "photos_total": photos_total, "photos_processed": photos_processed, "photos_failed": statuses.get("failed", 0) + statuses.get("DEAD_LETTERED", 0), "faces_detected": faces, "matches_auto": decisions.get("high", 0) + decisions.get("approved", 0), "matches_review": decisions.get("review", 0), "matches_unknown": decisions.get("low", 0) + decisions.get("rejected", 0), "progress_percent": round(photos_processed * 100 / photos_total) if photos_total else 0}, request)
+    decisions = dict(
+        db.execute(
+            select(FaceMatch.state, func.count(FaceMatch.id))
+            .where(FaceMatch.event_id == event.id)
+            .group_by(FaceMatch.state)
+        ).all()
+    )
+    return ok(
+        {
+            "event_state": event.status,
+            "photos_total": photos_total,
+            "photos_processed": photos_processed,
+            "photos_failed": statuses.get("failed", 0) + statuses.get("DEAD_LETTERED", 0),
+            "faces_detected": faces,
+            "matches_auto": decisions.get("high", 0) + decisions.get("approved", 0),
+            "matches_review": decisions.get("review", 0),
+            "matches_unknown": decisions.get("low", 0) + decisions.get("rejected", 0),
+            "progress_percent": round(photos_processed * 100 / photos_total) if photos_total else 0,
+        },
+        request,
+    )
 
 
 @router.get("/events/{event_id}/processing/jobs")
-def processing_jobs(event_id: str, request: Request, user: User = Depends(require_org_member), db: Session = Depends(get_db)):
+def processing_jobs(
+    event_id: str,
+    request: Request,
+    user: User = Depends(require_org_member),
+    db: Session = Depends(get_db),
+):
     tenant_event(db, user, event_id)
-    rows = db.scalars(select(ProcessingJob).where(ProcessingJob.event_id == event_id, ProcessingJob.organization_id == user.organization_id).order_by(ProcessingJob.created_at.desc())).all()
-    return ok([{"id": row.id, "photo_id": row.photo_id, "job_type": row.job_type, "status": row.status, "attempt": row.attempt, "max_attempts": row.max_attempts, "progress_current": row.progress_current, "progress_total": row.progress_total, "error_code": "PROCESSING_FAILED" if row.error else None, "error_message": row.error, "queued_at": row.created_at.isoformat(), "started_at": row.started_at.isoformat() if row.started_at else None, "finished_at": row.completed_at.isoformat() if row.completed_at else None} for row in rows], request)
+    rows = db.scalars(
+        select(ProcessingJob)
+        .where(
+            ProcessingJob.event_id == event_id,
+            ProcessingJob.organization_id == user.organization_id,
+        )
+        .order_by(ProcessingJob.created_at.desc())
+    ).all()
+    return ok(
+        [
+            {
+                "id": row.id,
+                "photo_id": row.photo_id,
+                "job_type": row.job_type,
+                "status": row.status,
+                "attempt": row.attempt,
+                "max_attempts": row.max_attempts,
+                "progress_current": row.progress_current,
+                "progress_total": row.progress_total,
+                "error_code": "PROCESSING_FAILED" if row.error else None,
+                "error_message": row.error,
+                "queued_at": row.created_at.isoformat(),
+                "started_at": row.started_at.isoformat() if row.started_at else None,
+                "finished_at": row.completed_at.isoformat() if row.completed_at else None,
+            }
+            for row in rows
+        ],
+        request,
+    )
 
 
 @router.get("/events/{event_id}/processing/jobs/{job_id}")
-def processing_job_detail(event_id: str, job_id: str, request: Request, user: User = Depends(require_org_member), db: Session = Depends(get_db)):
+def processing_job_detail(
+    event_id: str,
+    job_id: str,
+    request: Request,
+    user: User = Depends(require_org_member),
+    db: Session = Depends(get_db),
+):
     tenant_event(db, user, event_id)
-    row = db.scalar(select(ProcessingJob).where(ProcessingJob.id == job_id, ProcessingJob.event_id == event_id, ProcessingJob.organization_id == user.organization_id))
+    row = db.scalar(
+        select(ProcessingJob).where(
+            ProcessingJob.id == job_id,
+            ProcessingJob.event_id == event_id,
+            ProcessingJob.organization_id == user.organization_id,
+        )
+    )
     if not row:
         raise HTTPException(status_code=404, detail="Processing job was not found")
-    return ok({"id": row.id, "photo_id": row.photo_id, "job_type": row.job_type, "status": row.status, "attempt": row.attempt, "max_attempts": row.max_attempts, "progress_current": row.progress_current, "progress_total": row.progress_total, "error_message": row.error, "heartbeat_at": row.heartbeat_at.isoformat() if row.heartbeat_at else None}, request)
+    return ok(
+        {
+            "id": row.id,
+            "photo_id": row.photo_id,
+            "job_type": row.job_type,
+            "status": row.status,
+            "attempt": row.attempt,
+            "max_attempts": row.max_attempts,
+            "progress_current": row.progress_current,
+            "progress_total": row.progress_total,
+            "error_message": row.error,
+            "heartbeat_at": row.heartbeat_at.isoformat() if row.heartbeat_at else None,
+        },
+        request,
+    )
 
 
 @router.post("/events/{event_id}/processing/jobs/{job_id}/retry", status_code=202)
-def retry_processing_job(event_id: str, job_id: str, request: Request, user: User = Depends(require_org_admin), db: Session = Depends(get_db)):
+def retry_processing_job(
+    event_id: str,
+    job_id: str,
+    request: Request,
+    user: User = Depends(require_org_admin),
+    db: Session = Depends(get_db),
+):
     tenant_event(db, user, event_id)
-    row = db.scalar(select(ProcessingJob).where(ProcessingJob.id == job_id, ProcessingJob.event_id == event_id, ProcessingJob.organization_id == user.organization_id).with_for_update())
+    row = db.scalar(
+        select(ProcessingJob)
+        .where(
+            ProcessingJob.id == job_id,
+            ProcessingJob.event_id == event_id,
+            ProcessingJob.organization_id == user.organization_id,
+        )
+        .with_for_update()
+    )
     if not row or row.status not in {"failed", "FAILED", "DEAD_LETTERED"}:
         raise HTTPException(status_code=409, detail="Processing job is not retryable")
     row.status = "queued"
     row.error = None
     row.next_attempt_at = utcnow()
-    add_outbox(db, "fdx.v2.ml.process.requested", "processing_job", row.id, {"job_id": row.id, "media_id": row.photo_id}, user.organization_id, request_id(request))
+    add_outbox(
+        db,
+        "fdx.v2.ml.process.requested",
+        "processing_job",
+        row.id,
+        {"job_id": row.id, "media_id": row.photo_id},
+        user.organization_id,
+        request_id(request),
+    )
     add_audit(db, user, "processing.retry", row.id)
     db.commit()
     return ok({"job_id": row.id, "status": "QUEUED"}, request)
 
 
 @router.get("/events/{event_id}/matches")
-def event_matches(event_id: str, request: Request, decision: str | None = None, participant_id: str | None = None, minimum_score: float | None = None, user: User = Depends(require_org_member), db: Session = Depends(get_db)):
+def event_matches(
+    event_id: str,
+    request: Request,
+    decision: str | None = None,
+    participant_id: str | None = None,
+    media_id: str | None = None,
+    review_required: bool | None = None,
+    minimum_score: float | None = None,
+    user: User = Depends(require_org_member),
+    db: Session = Depends(get_db),
+):
     tenant_event(db, user, event_id)
-    filters = [FaceMatch.event_id == event_id, FaceMatch.organization_id == user.organization_id]
+    filters = [
+        FaceMatch.event_id == event_id,
+        FaceMatch.organization_id == user.organization_id,
+    ]
     if decision:
         filters.append(FaceMatch.state == decision)
     if participant_id:
         filters.append(FaceMatch.participant_id == participant_id)
+    if media_id:
+        filters.append(FaceMatch.detection.has(FaceDetection.photo_id == media_id))
+    if review_required is not None:
+        filters.append(FaceMatch.state == "review" if review_required else FaceMatch.state != "review")
     if minimum_score is not None:
         filters.append(FaceMatch.confidence >= minimum_score)
     rows = db.scalars(select(FaceMatch).where(*filters).order_by(FaceMatch.created_at.desc()).limit(500)).all()
-    return ok([{"id": row.id, "participant_id": row.participant_id, "media_id": row.detection.photo_id, "similarity_score": row.confidence, "second_best_score": row.second_best_score, "margin": row.margin, "decision": row.state, "decision_source": row.decision_source, "model_name": row.model_name, "model_version": row.model_version, "threshold_profile_version": row.threshold_profile_version} for row in rows], request)
+    return ok(
+        [
+            {
+                "id": row.id,
+                "participant_id": row.participant_id,
+                "media_id": row.detection.photo_id,
+                "similarity_score": row.confidence,
+                "second_best_score": row.second_best_score,
+                "margin": row.margin,
+                "decision": row.state,
+                "decision_source": row.decision_source,
+                "model_name": row.model_name,
+                "model_version": row.model_version,
+                "threshold_profile_version": row.threshold_profile_version,
+            }
+            for row in rows
+        ],
+        request,
+    )
+
+
+@router.get("/events/{event_id}/matches/{match_id}")
+def match_detail(
+    event_id: str,
+    match_id: str,
+    request: Request,
+    user: User = Depends(require_org_member),
+    db: Session = Depends(get_db),
+):
+    tenant_event(db, user, event_id)
+    row = db.scalar(
+        select(FaceMatch).where(
+            FaceMatch.id == match_id,
+            FaceMatch.event_id == event_id,
+            FaceMatch.organization_id == user.organization_id,
+        )
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Match was not found")
+    photo = row.detection.photo
+    enrollment = row.participant.enrollment if row.participant else None
+    return ok(
+        {
+            "id": row.id,
+            "participant": {
+                "id": row.participant.id,
+                "name": row.participant.name,
+                "email": row.participant.email,
+            }
+            if row.participant
+            else None,
+            "media": {
+                "id": photo.id,
+                "filename": photo.filename,
+                "url": storage.presign_get(photo.storage_key) or f"/api/media/{photo.id}",
+            },
+            "detection": {
+                "box": row.detection.box,
+                "landmarks": row.detection.landmarks,
+                "face_width": row.detection.face_width,
+                "face_height": row.detection.face_height,
+                "quality_class": row.detection.quality_class,
+                "detector_confidence": row.detection.detector_confidence,
+            },
+            "enrollment_reference": {
+                "url": storage.presign_get(enrollment.storage_key),
+                "quality_score": enrollment.quality_score,
+            }
+            if enrollment
+            else None,
+            "similarity_score": row.confidence,
+            "second_best_score": row.second_best_score,
+            "margin": row.margin,
+            "decision": row.state,
+            "decision_source": row.decision_source,
+            "model_name": row.model_name,
+            "model_version": row.model_version,
+            "threshold_profile_version": row.threshold_profile_version,
+        },
+        request,
+    )
 
 
 def review_match(event_id: str, match_id: str, target: str, request: Request, user: User, db: Session):
     tenant_event(db, user, event_id)
-    row = db.scalar(select(FaceMatch).where(FaceMatch.id == match_id, FaceMatch.event_id == event_id, FaceMatch.organization_id == user.organization_id).with_for_update())
+    row = db.scalar(
+        select(FaceMatch)
+        .where(
+            FaceMatch.id == match_id,
+            FaceMatch.event_id == event_id,
+            FaceMatch.organization_id == user.organization_id,
+        )
+        .with_for_update()
+    )
     if not row:
         raise HTTPException(status_code=404, detail="Match was not found")
     row.state = target
@@ -1363,38 +2935,97 @@ def review_match(event_id: str, match_id: str, target: str, request: Request, us
     row.reviewed_at = utcnow()
     add_audit(db, user, f"match.{target}", row.id)
     db.commit()
-    return ok({"id": row.id, "decision": row.state, "decision_source": row.decision_source}, request)
+    return ok(
+        {"id": row.id, "decision": row.state, "decision_source": row.decision_source},
+        request,
+    )
 
 
 @router.post("/events/{event_id}/matches/{match_id}/confirm")
-def confirm_match(event_id: str, match_id: str, request: Request, user: User = Depends(require_org_admin), db: Session = Depends(get_db)):
+def confirm_match(
+    event_id: str,
+    match_id: str,
+    request: Request,
+    user: User = Depends(require_org_admin),
+    db: Session = Depends(get_db),
+):
     return review_match(event_id, match_id, "approved", request, user, db)
 
 
 @router.post("/events/{event_id}/matches/{match_id}/reject")
-def reject_match(event_id: str, match_id: str, request: Request, user: User = Depends(require_org_admin), db: Session = Depends(get_db)):
+def reject_match(
+    event_id: str,
+    match_id: str,
+    request: Request,
+    user: User = Depends(require_org_admin),
+    db: Session = Depends(get_db),
+):
     return review_match(event_id, match_id, "rejected", request, user, db)
 
 
 @router.post("/events/{event_id}/galleries/build", status_code=202)
-def build_galleries(event_id: str, request: Request, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"), user: User = Depends(require_org_admin), db: Session = Depends(get_db)):
+def build_galleries(
+    event_id: str,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    user: User = Depends(require_org_admin),
+    db: Session = Depends(get_db),
+):
     event = tenant_event(db, user, event_id, lock=True)
     idem = reserve_idempotency(db, user, idempotency_key, f"build-galleries:{event_id}")
     if idem and idem.response_body:
         return idem.response_body
-    participant_ids = db.scalars(select(FaceMatch.participant_id).where(FaceMatch.event_id == event.id, FaceMatch.organization_id == user.organization_id, FaceMatch.participant_id.is_not(None), FaceMatch.state.in_(["high", "approved"])).distinct()).all()
+    participant_ids = db.scalars(
+        select(FaceMatch.participant_id)
+        .where(
+            FaceMatch.event_id == event.id,
+            FaceMatch.organization_id == user.organization_id,
+            FaceMatch.participant_id.is_not(None),
+            FaceMatch.state.in_(["high", "approved"]),
+        )
+        .distinct()
+    ).all()
     created = 0
     for participant_id in participant_ids:
-        delivery = db.scalar(select(Delivery).where(Delivery.event_id == event.id, Delivery.participant_id == participant_id))
+        delivery = db.scalar(
+            select(Delivery).where(Delivery.event_id == event.id, Delivery.participant_id == participant_id)
+        )
         if not delivery:
             _, placeholder_hash = new_opaque_token()
-            delivery = Delivery(organization_id=user.organization_id, event_id=event.id, participant_id=participant_id, gallery_token_hash=placeholder_hash, status="ready", expires_at=datetime.combine(event.expires_at, datetime.min.time(), timezone.utc))
+            delivery = Delivery(
+                organization_id=user.organization_id,
+                event_id=event.id,
+                participant_id=participant_id,
+                gallery_token_hash=placeholder_hash,
+                status="ready",
+                expires_at=datetime.combine(event.expires_at, datetime.min.time(), timezone.utc),
+            )
             db.add(delivery)
             created += 1
-        add_outbox(db, "fdx.v2.gallery.build.requested", "participant", participant_id, {"participant_id": participant_id, "event_id": event.id}, user.organization_id, request_id(request))
+        add_outbox(
+            db,
+            "fdx.v2.gallery.build.requested",
+            "participant",
+            participant_id,
+            {"participant_id": participant_id, "event_id": event.id},
+            user.organization_id,
+            request_id(request),
+        )
     event.status = "READY_TO_DELIVER"
-    add_audit(db, user, "gallery.build_requested", f"{event.name}: {len(participant_ids)} participants")
-    result = ok({"event_id": event.id, "galleries_ready": len(participant_ids), "galleries_created": created}, request)
+    add_audit(
+        db,
+        user,
+        "gallery.build_requested",
+        f"{event.name}: {len(participant_ids)} participants",
+    )
+    result = ok(
+        {
+            "event_id": event.id,
+            "galleries_ready": len(participant_ids),
+            "galleries_created": created,
+        },
+        request,
+    )
     if idem:
         idem.response_status = 202
         idem.response_body = result
@@ -1403,20 +3034,76 @@ def build_galleries(event_id: str, request: Request, idempotency_key: str | None
 
 
 @router.get("/events/{event_id}/galleries")
-def list_galleries(event_id: str, request: Request, user: User = Depends(require_org_member), db: Session = Depends(get_db)):
+def list_galleries(
+    event_id: str,
+    request: Request,
+    user: User = Depends(require_org_member),
+    db: Session = Depends(get_db),
+):
     tenant_event(db, user, event_id)
-    rows = db.scalars(select(Delivery).where(Delivery.event_id == event_id, Delivery.organization_id == user.organization_id).order_by(Delivery.created_at.desc())).all()
-    return ok([{"id": row.id, "participant_id": row.participant_id, "participant_name": row.participant.name, "status": row.status.upper(), "access_expires_at": row.expires_at.isoformat(), "created_at": row.created_at.isoformat()} for row in rows], request)
+    rows = db.scalars(
+        select(Delivery)
+        .where(
+            Delivery.event_id == event_id,
+            Delivery.organization_id == user.organization_id,
+        )
+        .order_by(Delivery.created_at.desc())
+    ).all()
+    return ok(
+        [
+            {
+                "id": row.id,
+                "participant_id": row.participant_id,
+                "participant_name": row.participant.name,
+                "status": row.status.upper(),
+                "access_expires_at": row.expires_at.isoformat(),
+                "created_at": row.created_at.isoformat(),
+            }
+            for row in rows
+        ],
+        request,
+    )
 
 
 @router.get("/events/{event_id}/galleries/{gallery_id}")
-def gallery_detail(event_id: str, gallery_id: str, request: Request, user: User = Depends(require_org_member), db: Session = Depends(get_db)):
+def gallery_detail(
+    event_id: str,
+    gallery_id: str,
+    request: Request,
+    user: User = Depends(require_org_member),
+    db: Session = Depends(get_db),
+):
     tenant_event(db, user, event_id)
-    row = db.scalar(select(Delivery).where(Delivery.id == gallery_id, Delivery.event_id == event_id, Delivery.organization_id == user.organization_id))
+    row = db.scalar(
+        select(Delivery).where(
+            Delivery.id == gallery_id,
+            Delivery.event_id == event_id,
+            Delivery.organization_id == user.organization_id,
+        )
+    )
     if not row:
         raise HTTPException(status_code=404, detail="Gallery was not found")
-    count = db.scalar(select(func.count(FaceMatch.id)).where(FaceMatch.event_id == event_id, FaceMatch.participant_id == row.participant_id, FaceMatch.state.in_(["high", "approved"]))) or 0
-    return ok({"id": row.id, "participant_id": row.participant_id, "participant_name": row.participant.name, "status": row.status.upper(), "photos": count, "access_expires_at": row.expires_at.isoformat()}, request)
+    count = (
+        db.scalar(
+            select(func.count(FaceMatch.id)).where(
+                FaceMatch.event_id == event_id,
+                FaceMatch.participant_id == row.participant_id,
+                FaceMatch.state.in_(["high", "approved"]),
+            )
+        )
+        or 0
+    )
+    return ok(
+        {
+            "id": row.id,
+            "participant_id": row.participant_id,
+            "participant_name": row.participant.name,
+            "status": row.status.upper(),
+            "photos": count,
+            "access_expires_at": row.expires_at.isoformat(),
+        },
+        request,
+    )
 
 
 def deliver_gallery(db: Session, delivery: Delivery, user: User) -> str:
@@ -1424,28 +3111,70 @@ def deliver_gallery(db: Session, delivery: Delivery, user: User) -> str:
     delivery.gallery_token_hash = token_hash
     delivery.status = "ready"
     gallery_url = f"{settings.frontend_url}/gallery/{raw_token}"
-    count = db.scalar(select(func.count(FaceMatch.id)).where(FaceMatch.event_id == delivery.event_id, FaceMatch.participant_id == delivery.participant_id, FaceMatch.state.in_(["high", "approved"]))) or 0
-    mail = queue_email(db, delivery.organization_id, delivery.participant.email, f"Your photos from {delivery.event.name} are ready", f"<p>We found {count} photos containing you.</p><p><a href='{gallery_url}'>View My Photos</a></p>", delivery_id=delivery.id)
+    count = (
+        db.scalar(
+            select(func.count(FaceMatch.id)).where(
+                FaceMatch.event_id == delivery.event_id,
+                FaceMatch.participant_id == delivery.participant_id,
+                FaceMatch.state.in_(["high", "approved"]),
+            )
+        )
+        or 0
+    )
+    mail = queue_email(
+        db,
+        delivery.organization_id,
+        delivery.participant.email,
+        f"Your photos from {delivery.event.name} are ready",
+        f"<p>We found {count} photos containing you.</p><p><a href='{gallery_url}'>View My Photos</a></p>",
+        delivery_id=delivery.id,
+    )
     dispatch_email(db, mail)
     add_audit(db, user, "gallery.delivered", delivery.participant.email)
     return gallery_url
 
 
 @router.post("/events/{event_id}/deliveries/send", status_code=202)
-def send_deliveries(event_id: str, request: Request, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"), user: User = Depends(require_org_admin), db: Session = Depends(get_db)):
+def send_deliveries(
+    event_id: str,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    user: User = Depends(require_org_admin),
+    db: Session = Depends(get_db),
+):
     event = tenant_event(db, user, event_id, lock=True)
     idem = reserve_idempotency(db, user, idempotency_key, f"send-deliveries:{event_id}")
     if idem and idem.response_body:
         return idem.response_body
-    rows = db.scalars(select(Delivery).where(Delivery.event_id == event.id, Delivery.organization_id == user.organization_id)).all()
+    rows = db.scalars(
+        select(Delivery).where(
+            Delivery.event_id == event.id,
+            Delivery.organization_id == user.organization_id,
+        )
+    ).all()
     development_urls = []
     for row in rows:
         url = deliver_gallery(db, row, user)
-        add_outbox(db, "fdx.v2.email.send.requested", "delivery", row.id, {"delivery_id": row.id}, user.organization_id, request_id(request))
+        add_outbox(
+            db,
+            "fdx.v2.email.send.requested",
+            "delivery",
+            row.id,
+            {"delivery_id": row.id},
+            user.organization_id,
+            request_id(request),
+        )
         if settings.environment == "development":
             development_urls.append({"participant_id": row.participant_id, "url": url})
     event.status = "DELIVERING" if rows else event.status
-    result = ok({"event_id": event.id, "deliveries_queued": len(rows), "development_gallery_urls": development_urls}, request)
+    result = ok(
+        {
+            "event_id": event.id,
+            "deliveries_queued": len(rows),
+            "development_gallery_urls": development_urls,
+        },
+        request,
+    )
     if idem:
         idem.response_status = 202
         idem.response_body = result
@@ -1454,16 +3183,53 @@ def send_deliveries(event_id: str, request: Request, idempotency_key: str | None
 
 
 @router.get("/events/{event_id}/deliveries")
-def list_deliveries(event_id: str, request: Request, user: User = Depends(require_org_member), db: Session = Depends(get_db)):
+def list_deliveries(
+    event_id: str,
+    request: Request,
+    user: User = Depends(require_org_member),
+    db: Session = Depends(get_db),
+):
     tenant_event(db, user, event_id)
-    rows = db.scalars(select(Delivery).where(Delivery.event_id == event_id, Delivery.organization_id == user.organization_id).order_by(Delivery.created_at.desc())).all()
-    return ok([{"id": row.id, "participant_id": row.participant_id, "participant_name": row.participant.name, "status": row.status.upper(), "sent_at": row.sent_at.isoformat() if row.sent_at else None, "expires_at": row.expires_at.isoformat()} for row in rows], request)
+    rows = db.scalars(
+        select(Delivery)
+        .where(
+            Delivery.event_id == event_id,
+            Delivery.organization_id == user.organization_id,
+        )
+        .order_by(Delivery.created_at.desc())
+    ).all()
+    return ok(
+        [
+            {
+                "id": row.id,
+                "participant_id": row.participant_id,
+                "participant_name": row.participant.name,
+                "status": row.status.upper(),
+                "sent_at": row.sent_at.isoformat() if row.sent_at else None,
+                "expires_at": row.expires_at.isoformat(),
+            }
+            for row in rows
+        ],
+        request,
+    )
 
 
 @router.post("/events/{event_id}/participants/{participant_id}/resend-results")
-def resend_results(event_id: str, participant_id: str, request: Request, user: User = Depends(require_org_admin), db: Session = Depends(get_db)):
+def resend_results(
+    event_id: str,
+    participant_id: str,
+    request: Request,
+    user: User = Depends(require_org_admin),
+    db: Session = Depends(get_db),
+):
     tenant_participant(db, user, event_id, participant_id)
-    delivery = db.scalar(select(Delivery).where(Delivery.event_id == event_id, Delivery.participant_id == participant_id, Delivery.organization_id == user.organization_id))
+    delivery = db.scalar(
+        select(Delivery).where(
+            Delivery.event_id == event_id,
+            Delivery.participant_id == participant_id,
+            Delivery.organization_id == user.organization_id,
+        )
+    )
     if not delivery:
         raise HTTPException(status_code=409, detail="Participant gallery has not been built")
     url = deliver_gallery(db, delivery, user)
@@ -1477,62 +3243,266 @@ def resend_results(event_id: str, participant_id: str, request: Request, user: U
 @router.get("/public/enrollment/{token}")
 def public_enrollment(token: str, request: Request, db: Session = Depends(get_db)):
     check_public_rate_limit(request, "enrollment-read", token, 30)
-    token_row = db.scalar(select(ParticipantEnrollmentToken).where(ParticipantEnrollmentToken.token_hash == hash_token(token)).with_for_update())
-    participant = db.get(Participant, token_row.participant_id) if token_row else db.scalar(select(Participant).where(Participant.enrollment_token_hash == hash_token(token)))
+    token_row = db.scalar(
+        select(ParticipantEnrollmentToken)
+        .where(ParticipantEnrollmentToken.token_hash == hash_token(token))
+        .with_for_update()
+    )
+    participant = (
+        db.get(Participant, token_row.participant_id)
+        if token_row
+        else db.scalar(select(Participant).where(Participant.enrollment_token_hash == hash_token(token)))
+    )
     expires_at = token_row.expires_at if token_row else participant.enrollment_expires_at if participant else None
-    if not participant or not expires_at or expires_at <= utcnow() or (token_row and (token_row.revoked_at or token_row.consumed_at)):
+    if (
+        not participant
+        or participant.event.status.upper() in {"DELETION_PENDING", "DELETED", "EXPIRED"}
+        or not expires_at
+        or expires_at <= utcnow()
+        or (token_row and (token_row.revoked_at or token_row.consumed_at))
+    ):
         raise HTTPException(status_code=404, detail="Enrollment link is invalid or expired")
     if token_row and not token_row.opened_at:
         token_row.opened_at = utcnow()
         participant.enrollment_status = "opened"
         db.commit()
-    return ok({"organization_name": participant.event.organization.name, "event_name": participant.event.name, "participant_name": participant.name, "status": participant.enrollment_status, "expires_at": expires_at.isoformat(), "purpose": "Find event photographs containing you", "retention_days": participant.event.retention_days, "consent_policy_version": settings.consent_policy_version}, request)
+    return ok(
+        {
+            "organization_name": participant.event.organization.name,
+            "event_name": participant.event.name,
+            "participant_name": participant.name,
+            "status": participant.enrollment_status,
+            "expires_at": expires_at.isoformat(),
+            "purpose": "Find event photographs containing you",
+            "retention_days": participant.event.retention_days,
+            "consent_policy_version": settings.consent_policy_version,
+        },
+        request,
+    )
 
 
 @router.post("/public/enrollment/{token}/consent", status_code=201)
-def enrollment_consent(token: str, request: Request, accepted: bool = Form(...), db: Session = Depends(get_db)):
+def enrollment_consent(
+    token: str,
+    request: Request,
+    accepted: bool = Form(...),
+    db: Session = Depends(get_db),
+):
     check_public_rate_limit(request, "enrollment-consent", token, 10, 300)
-    token_row = db.scalar(select(ParticipantEnrollmentToken).where(ParticipantEnrollmentToken.token_hash == hash_token(token)))
-    participant = db.get(Participant, token_row.participant_id) if token_row else db.scalar(select(Participant).where(Participant.enrollment_token_hash == hash_token(token)))
+    token_row = db.scalar(
+        select(ParticipantEnrollmentToken).where(ParticipantEnrollmentToken.token_hash == hash_token(token))
+    )
+    participant = (
+        db.get(Participant, token_row.participant_id)
+        if token_row
+        else db.scalar(select(Participant).where(Participant.enrollment_token_hash == hash_token(token)))
+    )
     expires_at = token_row.expires_at if token_row else participant.enrollment_expires_at if participant else None
-    if not participant or not expires_at or expires_at <= utcnow() or (token_row and (token_row.revoked_at or token_row.consumed_at)):
+    if (
+        not participant
+        or participant.event.status.upper() in {"DELETION_PENDING", "DELETED", "EXPIRED"}
+        or not expires_at
+        or expires_at <= utcnow()
+        or (token_row and (token_row.revoked_at or token_row.consumed_at))
+    ):
         raise HTTPException(status_code=404, detail="Enrollment link is invalid or expired")
     if not accepted:
         raise HTTPException(status_code=422, detail="Consent is required")
-    consent = Consent(organization_id=participant.organization_id, event_id=participant.event_id, participant_id=participant.id, consent_type="face_enrollment", policy_version=settings.consent_policy_version, accepted=True, ip_address=request.client.host if request.client else None, user_agent=request.headers.get("user-agent"))
+    consent = Consent(
+        organization_id=participant.organization_id,
+        event_id=participant.event_id,
+        participant_id=participant.id,
+        consent_type="face_enrollment",
+        policy_version=settings.consent_policy_version,
+        accepted=True,
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+    )
     db.add(consent)
     db.commit()
-    return ok({"consent_id": consent.id, "policy_version": consent.policy_version, "accepted_at": consent.accepted_at.isoformat()}, request)
+    return ok(
+        {
+            "consent_id": consent.id,
+            "policy_version": consent.policy_version,
+            "accepted_at": consent.accepted_at.isoformat(),
+        },
+        request,
+    )
+
+
+@router.post("/public/enrollment/{token}/upload-url")
+def enrollment_upload_url(
+    token: str,
+    payload: EnrollmentUploadInput,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    check_public_rate_limit(request, "enrollment-upload-url", token, 10, 300)
+    token_row = db.scalar(
+        select(ParticipantEnrollmentToken)
+        .where(ParticipantEnrollmentToken.token_hash == hash_token(token))
+        .with_for_update()
+    )
+    participant = db.get(Participant, token_row.participant_id) if token_row else None
+    if (
+        not token_row
+        or not participant
+        or participant.event.status.upper() in {"DELETION_PENDING", "DELETED", "EXPIRED"}
+        or token_row.expires_at <= utcnow()
+        or token_row.revoked_at
+        or token_row.consumed_at
+    ):
+        raise HTTPException(status_code=404, detail="Enrollment link is invalid or expired")
+    if payload.content_type not in ALLOWED_IMAGE_TYPES:
+        raise HTTPException(status_code=422, detail="A JPEG, PNG, or WEBP selfie is required")
+    if payload.size_bytes > settings.max_enrollment_bytes:
+        raise HTTPException(status_code=413, detail="Enrollment image exceeds the configured maximum")
+    expected_extensions = {
+        "image/jpeg": {".jpg", ".jpeg"},
+        "image/png": {".png"},
+        "image/webp": {".webp"},
+    }
+    suffix = "." + payload.filename.lower().rsplit(".", 1)[-1] if "." in payload.filename else ""
+    if suffix not in expected_extensions[payload.content_type]:
+        raise HTTPException(status_code=422, detail="Filename extension does not match the image type")
+    if token_row.pending_storage_key:
+        storage.delete(token_row.pending_storage_key)
+    extension = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}[payload.content_type]
+    key = f"organizations/{participant.organization_id}/events/{participant.event_id}/enrollment-pending/{token_row.id}/{uuid.uuid4()}{extension}"
+    token_row.pending_storage_key = key
+    token_row.pending_content_type = payload.content_type
+    token_row.pending_size_bytes = payload.size_bytes
+    token_row.pending_sha256 = payload.sha256.lower()
+    upload_url = storage.presign_put(key, payload.content_type) or f"/api/v2/public/enrollment/{token}/upload"
+    db.commit()
+    return ok(
+        {
+            "upload_url": upload_url,
+            "method": "PUT",
+            "headers": {"Content-Type": payload.content_type},
+            "expires_in": 900,
+        },
+        request,
+    )
+
+
+@router.put("/public/enrollment/{token}/upload", status_code=204)
+async def enrollment_local_upload(token: str, request: Request, db: Session = Depends(get_db)):
+    check_public_rate_limit(request, "enrollment-upload", token, 10, 300)
+    if storage.s3:
+        raise HTTPException(status_code=404, detail="Direct upload endpoint is unavailable")
+    token_row = db.scalar(
+        select(ParticipantEnrollmentToken)
+        .where(ParticipantEnrollmentToken.token_hash == hash_token(token))
+        .with_for_update()
+    )
+    participant = db.get(Participant, token_row.participant_id) if token_row else None
+    if (
+        not token_row
+        or not participant
+        or not token_row.pending_storage_key
+        or token_row.expires_at <= utcnow()
+        or token_row.revoked_at
+        or token_row.consumed_at
+    ):
+        raise HTTPException(status_code=404, detail="Enrollment upload is invalid or expired")
+    content = await request.body()
+    if len(content) != token_row.pending_size_bytes or hashlib.sha256(content).hexdigest() != token_row.pending_sha256:
+        raise HTTPException(status_code=422, detail="Enrollment upload does not match its manifest")
+    storage.put(token_row.pending_storage_key, content, token_row.pending_content_type)
+    db.commit()
+    return Response(status_code=204)
 
 
 @router.post("/public/enrollment/{token}/complete")
-def complete_enrollment(token: str, request: Request, selfie: UploadFile = File(...), db: Session = Depends(get_db)):
+def complete_enrollment(
+    token: str,
+    request: Request,
+    selfie: UploadFile | None = File(default=None),
+    db: Session = Depends(get_db),
+):
     check_public_rate_limit(request, "enrollment-complete", token, 10, 300)
-    token_row = db.scalar(select(ParticipantEnrollmentToken).where(ParticipantEnrollmentToken.token_hash == hash_token(token)).with_for_update())
-    participant = db.get(Participant, token_row.participant_id) if token_row else db.scalar(select(Participant).where(Participant.enrollment_token_hash == hash_token(token)))
+    token_row = db.scalar(
+        select(ParticipantEnrollmentToken)
+        .where(ParticipantEnrollmentToken.token_hash == hash_token(token))
+        .with_for_update()
+    )
+    participant = (
+        db.get(Participant, token_row.participant_id)
+        if token_row
+        else db.scalar(select(Participant).where(Participant.enrollment_token_hash == hash_token(token)))
+    )
     expires_at = token_row.expires_at if token_row else participant.enrollment_expires_at if participant else None
-    if not participant or not expires_at or expires_at <= utcnow() or (token_row and (token_row.revoked_at or token_row.consumed_at)):
+    if (
+        not participant
+        or participant.event.status.upper() in {"DELETION_PENDING", "DELETED", "EXPIRED"}
+        or not expires_at
+        or expires_at <= utcnow()
+        or (token_row and (token_row.revoked_at or token_row.consumed_at))
+    ):
         raise HTTPException(status_code=404, detail="Enrollment link is invalid or expired")
-    consent = db.scalar(select(Consent).where(Consent.participant_id == participant.id, Consent.accepted.is_(True)).order_by(Consent.accepted_at.desc()))
+    consent = db.scalar(
+        select(Consent)
+        .where(Consent.participant_id == participant.id, Consent.accepted.is_(True))
+        .order_by(Consent.accepted_at.desc())
+    )
     if not consent:
         raise HTTPException(status_code=422, detail="Consent must be recorded before enrollment")
-    content = selfie.file.read()
-    content_type = selfie.content_type or "application/octet-stream"
+    if selfie:
+        content = selfie.file.read()
+        content_type = selfie.content_type or "application/octet-stream"
+        filename = selfie.filename or "selfie.jpg"
+    elif token_row and token_row.pending_storage_key:
+        try:
+            info = storage.stat(token_row.pending_storage_key)
+            content, stored_type = storage.read(token_row.pending_storage_key)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=409, detail="Enrollment upload has not completed") from exc
+        if (
+            info["size"] != token_row.pending_size_bytes
+            or hashlib.sha256(content).hexdigest() != token_row.pending_sha256
+        ):
+            raise HTTPException(status_code=422, detail="Enrollment upload does not match its manifest")
+        content_type = token_row.pending_content_type or stored_type
+        filename = token_row.pending_storage_key.rsplit("/", 1)[-1]
+    else:
+        raise HTTPException(status_code=422, detail="An enrollment upload is required")
     if not content or content_type not in ALLOWED_IMAGE_TYPES:
         raise HTTPException(status_code=422, detail="A JPEG, PNG, or WEBP selfie is required")
+    if len(content) > settings.max_enrollment_bytes:
+        raise HTTPException(status_code=413, detail="Enrollment image exceeds the configured maximum")
     try:
         with Image.open(io.BytesIO(content)) as image:
+            if image.width * image.height > settings.max_image_pixels:
+                raise ValueError("Enrollment image exceeds the pixel limit")
             image.verify()
-        result = ml_embedding(content, selfie.filename or "selfie.jpg", content_type)
+        result = ml_embedding(content, filename, content_type)
+        face_width = int(result["box"].get("x_max", 0) - result["box"].get("x_min", 0))
+        face_height = int(result["box"].get("y_max", 0) - result["box"].get("y_min", 0))
+        if (
+            min(face_width, face_height) < settings.minimum_face_size
+            or result["box"]["probability"] < settings.minimum_detector_confidence
+        ):
+            raise ValueError("Enrollment face is too small or unclear")
     except Exception as exc:
         raise HTTPException(status_code=422, detail="A clear, usable face could not be enrolled") from exc
     previous_size = participant.enrollment.size_bytes if participant.enrollment else 0
     additional = len(content) - previous_size
-    if participant.event.organization.storage_used_bytes + additional > participant.event.organization.storage_limit_bytes:
+    if (
+        participant.event.organization.storage_used_bytes + additional
+        > participant.event.organization.storage_limit_bytes
+    ):
         raise HTTPException(status_code=413, detail="Organization storage quota would be exceeded")
-    key = f"organizations/{participant.organization_id}/events/{participant.event_id}/enrollment/{participant.id}/{uuid.uuid4()}.jpg"
+    extension = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}[content_type]
+    key = f"organizations/{participant.organization_id}/events/{participant.event_id}/enrollment/{participant.id}/{uuid.uuid4()}{extension}"
     storage.put(key, content, content_type)
-    enrollment = participant.enrollment or FaceEnrollment(participant_id=participant.id, storage_key=key, embedding=result["embedding"], detector_confidence=result["box"]["probability"])
+    previous_key = participant.enrollment.storage_key if participant.enrollment else None
+    enrollment = participant.enrollment or FaceEnrollment(
+        participant_id=participant.id,
+        storage_key=key,
+        embedding=result["embedding"],
+        detector_confidence=result["box"]["probability"],
+    )
     enrollment.organization_id = participant.organization_id
     enrollment.event_id = participant.event_id
     enrollment.storage_key = key
@@ -1541,6 +3511,7 @@ def complete_enrollment(token: str, request: Request, selfie: UploadFile = File(
     enrollment.embedding_vector = result["embedding"]
     enrollment.embedding_dimension = len(result["embedding"])
     enrollment.detector_confidence = result["box"]["probability"]
+    enrollment.quality_score = min(1.0, min(face_width, face_height) / settings.low_resolution_face_size)
     enrollment.model_name = "adaface-ir101-ms1mv2"
     enrollment.model_version = settings.embedder_model_version
     enrollment.status = "valid"
@@ -1549,27 +3520,76 @@ def complete_enrollment(token: str, request: Request, selfie: UploadFile = File(
     participant.enrollment_status = "verified"
     participant.consented_at = consent.accepted_at
     participant.event.organization.storage_used_bytes += additional
-    db.add(StorageUsageLedger(organization_id=participant.organization_id, event_id=participant.event_id, operation="ADD", bytes=additional))
+    db.add(
+        StorageUsageLedger(
+            organization_id=participant.organization_id,
+            event_id=participant.event_id,
+            operation="ADD",
+            bytes=additional,
+        )
+    )
     if token_row:
         token_row.consumed_at = utcnow()
+        pending_key = token_row.pending_storage_key
+        token_row.pending_storage_key = None
+        token_row.pending_content_type = None
+        token_row.pending_size_bytes = None
+        token_row.pending_sha256 = None
     add_audit(db, None, "enrollment.completed", participant.email, participant.organization_id)
     db.commit()
-    return ok({"status": "ENROLLED", "embedding_dimension": enrollment.embedding_dimension, "model_name": enrollment.model_name, "model_version": enrollment.model_version}, request)
+    if previous_key and previous_key != key:
+        storage.delete(previous_key)
+    if token_row and pending_key and pending_key != key:
+        storage.delete(pending_key)
+    return ok(
+        {
+            "status": "ENROLLED",
+            "embedding_dimension": enrollment.embedding_dimension,
+            "model_name": enrollment.model_name,
+            "model_version": enrollment.model_version,
+        },
+        request,
+    )
 
 
 @router.get("/public/gallery/{token}")
 def public_gallery(token: str, request: Request, db: Session = Depends(get_db)):
     check_public_rate_limit(request, "gallery-read", token, 60)
     delivery = db.scalar(select(Delivery).where(Delivery.gallery_token_hash == hash_token(token)))
-    if not delivery or delivery.expires_at <= utcnow():
+    if (
+        not delivery
+        or delivery.event.status.upper() in {"DELETION_PENDING", "DELETED", "EXPIRED"}
+        or delivery.expires_at <= utcnow()
+    ):
         raise HTTPException(status_code=404, detail="Gallery link is invalid or expired")
-    rows = db.scalars(select(FaceMatch).where(FaceMatch.participant_id == delivery.participant_id, FaceMatch.event_id == delivery.event_id, FaceMatch.state.in_(["high", "approved"]))).all()
+    rows = db.scalars(
+        select(FaceMatch).where(
+            FaceMatch.participant_id == delivery.participant_id,
+            FaceMatch.event_id == delivery.event_id,
+            FaceMatch.state.in_(["high", "approved"]),
+        )
+    ).all()
     photos = {row.detection.photo.id: row.detection.photo for row in rows}
     data = []
     for photo in photos.values():
         signed = storage.presign_get(photo.thumbnail_storage_key or photo.storage_key)
-        data.append({"id": photo.id, "filename": photo.filename, "thumbnail_url": signed or f"/api/public/gallery/{token}/photos/{photo.id}/thumbnail", "download_endpoint": f"/api/v2/public/gallery/{token}/download-url"})
-    return ok({"event_name": delivery.event.name, "organization_name": delivery.event.organization.name, "expires_at": delivery.expires_at.isoformat(), "photos": data}, request)
+        data.append(
+            {
+                "id": photo.id,
+                "filename": photo.filename,
+                "thumbnail_url": signed or f"/api/public/gallery/{token}/photos/{photo.id}/thumbnail",
+                "download_endpoint": f"/api/v2/public/gallery/{token}/download-url",
+            }
+        )
+    return ok(
+        {
+            "event_name": delivery.event.name,
+            "organization_name": delivery.event.organization.name,
+            "expires_at": delivery.expires_at.isoformat(),
+            "photos": data,
+        },
+        request,
+    )
 
 
 class DownloadInput(BaseModel):
@@ -1580,28 +3600,53 @@ class DownloadInput(BaseModel):
 def gallery_download_url(token: str, payload: DownloadInput, request: Request, db: Session = Depends(get_db)):
     check_public_rate_limit(request, "gallery-download", token, 60)
     delivery = db.scalar(select(Delivery).where(Delivery.gallery_token_hash == hash_token(token)))
-    if not delivery or delivery.expires_at <= utcnow():
+    if (
+        not delivery
+        or delivery.event.status.upper() in {"DELETION_PENDING", "DELETED", "EXPIRED"}
+        or delivery.expires_at <= utcnow()
+    ):
         raise HTTPException(status_code=404, detail="Gallery link is invalid or expired")
-    match = db.scalar(select(FaceMatch).join(FaceDetection).where(FaceMatch.participant_id == delivery.participant_id, FaceMatch.event_id == delivery.event_id, FaceDetection.photo_id == payload.media_id, FaceMatch.state.in_(["high", "approved"])))
+    match = db.scalar(
+        select(FaceMatch)
+        .join(FaceDetection)
+        .where(
+            FaceMatch.participant_id == delivery.participant_id,
+            FaceMatch.event_id == delivery.event_id,
+            FaceDetection.photo_id == payload.media_id,
+            FaceMatch.state.in_(["high", "approved"]),
+        )
+    )
     if not match:
         raise HTTPException(status_code=404, detail="Photo was not found")
     photo = match.detection.photo
-    url = storage.presign_get(photo.storage_key, filename=photo.filename) or f"/api/public/gallery/{token}/photos/{photo.id}"
+    url = (
+        storage.presign_get(photo.storage_key, filename=photo.filename)
+        or f"/api/public/gallery/{token}/photos/{photo.id}"
+    )
     return ok({"url": url, "expires_in": 600}, request)
 
 
+@router.post("/public/gallery/{token}/download-all", status_code=202)
 @router.post("/public/gallery/{token}/exports", status_code=202)
 def create_gallery_export(token: str, request: Request, db: Session = Depends(get_db)):
     check_public_rate_limit(request, "gallery-export", token, 5, 300)
     delivery = db.scalar(select(Delivery).where(Delivery.gallery_token_hash == hash_token(token)))
-    if not delivery or delivery.expires_at <= utcnow():
+    if (
+        not delivery
+        or delivery.event.status.upper() in {"DELETION_PENDING", "DELETED", "EXPIRED"}
+        or delivery.expires_at <= utcnow()
+    ):
         raise HTTPException(status_code=404, detail="Gallery link is invalid or expired")
-    existing = db.scalar(select(GalleryExport).where(
-        GalleryExport.participant_id == delivery.participant_id,
-        GalleryExport.event_id == delivery.event_id,
-        GalleryExport.status.in_(["QUEUED", "PROCESSING", "READY"]),
-        GalleryExport.expires_at > utcnow(),
-    ).order_by(GalleryExport.created_at.desc()))
+    existing = db.scalar(
+        select(GalleryExport)
+        .where(
+            GalleryExport.participant_id == delivery.participant_id,
+            GalleryExport.event_id == delivery.event_id,
+            GalleryExport.status.in_(["QUEUED", "PROCESSING", "READY"]),
+            GalleryExport.expires_at > utcnow(),
+        )
+        .order_by(GalleryExport.created_at.desc())
+    )
     if existing:
         return ok({"export_id": existing.id, "status": existing.status}, request)
     job = ProcessingJob(
@@ -1623,7 +3668,15 @@ def create_gallery_export(token: str, request: Request, db: Session = Depends(ge
     )
     db.add(export)
     db.flush()
-    add_outbox(db, "fdx.v2.gallery.export.requested", "gallery_export", export.id, {"job_id": job.id, "export_id": export.id}, delivery.organization_id, request_id(request))
+    add_outbox(
+        db,
+        "fdx.v2.gallery.export.requested",
+        "gallery_export",
+        export.id,
+        {"job_id": job.id, "export_id": export.id},
+        delivery.organization_id,
+        request_id(request),
+    )
     db.commit()
     return ok({"export_id": export.id, "status": export.status}, request)
 
@@ -1632,19 +3685,39 @@ def create_gallery_export(token: str, request: Request, db: Session = Depends(ge
 def gallery_export_status(token: str, export_id: str, request: Request, db: Session = Depends(get_db)):
     check_public_rate_limit(request, "gallery-export-status", token, 60)
     delivery = db.scalar(select(Delivery).where(Delivery.gallery_token_hash == hash_token(token)))
-    if not delivery or delivery.expires_at <= utcnow():
+    if (
+        not delivery
+        or delivery.event.status.upper() in {"DELETION_PENDING", "DELETED", "EXPIRED"}
+        or delivery.expires_at <= utcnow()
+    ):
         raise HTTPException(status_code=404, detail="Gallery link is invalid or expired")
-    item = db.scalar(select(GalleryExport).where(
-        GalleryExport.id == export_id,
-        GalleryExport.event_id == delivery.event_id,
-        GalleryExport.participant_id == delivery.participant_id,
-    ))
+    item = db.scalar(
+        select(GalleryExport).where(
+            GalleryExport.id == export_id,
+            GalleryExport.event_id == delivery.event_id,
+            GalleryExport.participant_id == delivery.participant_id,
+        )
+    )
     if not item or item.expires_at <= utcnow():
         raise HTTPException(status_code=404, detail="Gallery export was not found or has expired")
-    url = storage.presign_get(item.storage_key, filename=f"{delivery.event.name}-photos.zip") if item.status == "READY" and item.storage_key else None
+    url = (
+        storage.presign_get(item.storage_key, filename=f"{delivery.event.name}-photos.zip")
+        if item.status == "READY" and item.storage_key
+        else None
+    )
     if item.status == "READY" and not url:
         url = f"/api/v2/public/gallery/{token}/exports/{item.id}/download"
-    return ok({"export_id": item.id, "status": item.status, "size_bytes": item.size_bytes, "download_url": url, "expires_at": item.expires_at.isoformat(), "error": item.error}, request)
+    return ok(
+        {
+            "export_id": item.id,
+            "status": item.status,
+            "size_bytes": item.size_bytes,
+            "download_url": url,
+            "expires_at": item.expires_at.isoformat(),
+            "error": item.error,
+        },
+        request,
+    )
 
 
 @router.get("/public/gallery/{token}/exports/{export_id}/download")
@@ -1652,11 +3725,33 @@ def download_gallery_export(token: str, export_id: str, request: Request, db: Se
     check_public_rate_limit(request, "gallery-export-download", token, 20, 300)
     delivery = db.scalar(select(Delivery).where(Delivery.gallery_token_hash == hash_token(token)))
     item = db.scalar(select(GalleryExport).where(GalleryExport.id == export_id))
-    if not delivery or delivery.expires_at <= utcnow() or not item or item.participant_id != delivery.participant_id or item.event_id != delivery.event_id or item.status != "READY" or item.expires_at <= utcnow() or not item.storage_key:
+    if (
+        not delivery
+        or delivery.event.status.upper() in {"DELETION_PENDING", "DELETED", "EXPIRED"}
+        or delivery.expires_at <= utcnow()
+        or not item
+        or item.participant_id != delivery.participant_id
+        or item.event_id != delivery.event_id
+        or item.status != "READY"
+        or item.expires_at <= utcnow()
+        or not item.storage_key
+    ):
         raise HTTPException(status_code=404, detail="Gallery export was not found or has expired")
     content, _ = storage.read(item.storage_key)
-    filename = "".join(character if character.isalnum() or character in "-_" else "-" for character in delivery.event.name).strip("-") or "fdx-gallery"
-    return Response(content=content, media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="{filename}.zip"', "Cache-Control": "private, no-store"})
+    filename = (
+        "".join(
+            character if character.isalnum() or character in "-_" else "-" for character in delivery.event.name
+        ).strip("-")
+        or "fdx-gallery"
+    )
+    return Response(
+        content=content,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}.zip"',
+            "Cache-Control": "private, no-store",
+        },
+    )
 
 
 def verify_webhook_signature(body: bytes, signature: str | None) -> None:
@@ -1680,11 +3775,22 @@ async def process_email_webhook(provider: str, request: Request, signature: str 
     provider_event_id = str(payload.get("id") or payload.get("event_id") or "")
     if not provider_event_id:
         raise HTTPException(status_code=422, detail="Webhook event ID is required")
-    if db.scalar(select(WebhookEvent.id).where(WebhookEvent.provider == provider, WebhookEvent.provider_event_id == provider_event_id)):
+    if db.scalar(
+        select(WebhookEvent.id).where(
+            WebhookEvent.provider == provider,
+            WebhookEvent.provider_event_id == provider_event_id,
+        )
+    ):
         return ok({"status": "DUPLICATE"}, request)
     db.add(WebhookEvent(provider=provider, provider_event_id=provider_event_id, payload=payload))
-    provider_message_id = payload.get("data", {}).get("email_id") or payload.get("mail", {}).get("messageId") or payload.get("message_id")
-    item = db.scalar(select(EmailOutbox).where(EmailOutbox.provider_id == provider_message_id)) if provider_message_id else None
+    provider_message_id = (
+        payload.get("data", {}).get("email_id") or payload.get("mail", {}).get("messageId") or payload.get("message_id")
+    )
+    item = (
+        db.scalar(select(EmailOutbox).where(EmailOutbox.provider_id == provider_message_id))
+        if provider_message_id
+        else None
+    )
     if item:
         event_type = str(payload.get("type") or payload.get("eventType") or "").lower()
         if any(value in event_type for value in ("delivered", "delivery")):
@@ -1703,10 +3809,18 @@ async def process_email_webhook(provider: str, request: Request, signature: str 
 
 
 @router.post("/webhooks/email/resend")
-async def resend_webhook(request: Request, x_fdx_webhook_signature: str | None = Header(default=None, alias="X-FDX-Webhook-Signature"), db: Session = Depends(get_db)):
+async def resend_webhook(
+    request: Request,
+    x_fdx_webhook_signature: str | None = Header(default=None, alias="X-FDX-Webhook-Signature"),
+    db: Session = Depends(get_db),
+):
     return await process_email_webhook("resend", request, x_fdx_webhook_signature, db)
 
 
 @router.post("/webhooks/email/ses")
-async def ses_webhook(request: Request, x_fdx_webhook_signature: str | None = Header(default=None, alias="X-FDX-Webhook-Signature"), db: Session = Depends(get_db)):
+async def ses_webhook(
+    request: Request,
+    x_fdx_webhook_signature: str | None = Header(default=None, alias="X-FDX-Webhook-Signature"),
+    db: Session = Depends(get_db),
+):
     return await process_email_webhook("ses", request, x_fdx_webhook_signature, db)

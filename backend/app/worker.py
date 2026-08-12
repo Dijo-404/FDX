@@ -29,6 +29,7 @@ from .models import (
     Organization,
     OutboxEvent,
     Participant,
+    ParticipantEnrollmentToken,
     Photo,
     ProcessingJob,
     RefreshSession,
@@ -43,9 +44,21 @@ from .models import (
 WORKER_NAME = f"ml-{socket.gethostname()}-{os.getpid()}"
 
 
+class PermanentJobError(Exception):
+    """An invalid input that must not consume the transient retry budget."""
+
+
 def process_gallery_export(job_id: str) -> None:
     with SessionLocal() as db:
-        job = db.scalar(select(ProcessingJob).where(ProcessingJob.id == job_id, ProcessingJob.job_type == "GALLERY_EXPORT", ProcessingJob.status.in_(["queued", "RETRY_SCHEDULED"])).with_for_update(skip_locked=True))
+        job = db.scalar(
+            select(ProcessingJob)
+            .where(
+                ProcessingJob.id == job_id,
+                ProcessingJob.job_type == "GALLERY_EXPORT",
+                ProcessingJob.status.in_(["queued", "RETRY_SCHEDULED"]),
+            )
+            .with_for_update(skip_locked=True)
+        )
         if not job or (job.next_attempt_at and job.next_attempt_at > utcnow()):
             return
         item = db.scalar(select(GalleryExport).where(GalleryExport.processing_job_id == job.id).with_for_update())
@@ -59,11 +72,13 @@ def process_gallery_export(job_id: str) -> None:
         item.status = "PROCESSING"
         db.commit()
         try:
-            matches = db.scalars(select(FaceMatch).where(
-                FaceMatch.event_id == item.event_id,
-                FaceMatch.participant_id == item.participant_id,
-                FaceMatch.state.in_(["high", "approved"]),
-            )).all()
+            matches = db.scalars(
+                select(FaceMatch).where(
+                    FaceMatch.event_id == item.event_id,
+                    FaceMatch.participant_id == item.participant_id,
+                    FaceMatch.state.in_(["high", "approved"]),
+                )
+            ).all()
             photos = {match.detection.photo.id: match.detection.photo for match in matches}
             archive = io.BytesIO()
             with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as bundle:
@@ -72,6 +87,13 @@ def process_gallery_export(job_id: str) -> None:
                     filename = os.path.basename(photo.filename).replace("..", "_") or f"photo-{index}.jpg"
                     bundle.writestr(f"{index:04d}-{photo.id[:8]}-{filename}", content)
             content = archive.getvalue()
+            db.refresh(job)
+            if job.status == "CANCEL_REQUESTED":
+                job.status = "CANCELLED"
+                job.completed_at = utcnow()
+                item.status = "CANCELLED"
+                db.commit()
+                return
             organization = db.get(Organization, item.organization_id)
             if organization.storage_used_bytes + len(content) > organization.storage_limit_bytes:
                 raise ValueError("Organization storage quota would be exceeded by the gallery export")
@@ -83,7 +105,14 @@ def process_gallery_export(job_id: str) -> None:
             item.completed_at = utcnow()
             item.error = None
             organization.storage_used_bytes += len(content)
-            db.add(StorageUsageLedger(organization_id=item.organization_id, event_id=item.event_id, operation="ADD", bytes=len(content)))
+            db.add(
+                StorageUsageLedger(
+                    organization_id=item.organization_id,
+                    event_id=item.event_id,
+                    operation="ADD",
+                    bytes=len(content),
+                )
+            )
             job.status = "completed"
             job.progress = 100
             job.progress_current = 100
@@ -99,12 +128,23 @@ def process_gallery_export(job_id: str) -> None:
             if job:
                 job.status = "RETRY_SCHEDULED" if retryable else "DEAD_LETTERED"
                 job.error = str(exc)
-                job.next_attempt_at = utcnow() + timedelta(seconds=retry_delays[min(job.attempt, len(retry_delays) - 1)]) if retryable else None
+                job.next_attempt_at = (
+                    utcnow() + timedelta(seconds=retry_delays[min(job.attempt, len(retry_delays) - 1)])
+                    if retryable
+                    else None
+                )
                 job.completed_at = None if retryable else utcnow()
             if item:
                 item.status = "QUEUED" if retryable else "FAILED"
                 item.error = str(exc)
-            audit(db, None, "Gallery export failed", f"{job_id}: {exc}", "danger", item.organization_id if item else None)
+            audit(
+                db,
+                None,
+                "Gallery export failed",
+                f"{job_id}: {exc}",
+                "danger",
+                item.organization_id if item else None,
+            )
             db.commit()
 
 
@@ -122,7 +162,14 @@ def process_job(job_id: str) -> None:
         process_gallery_export(job_id)
         return
     with SessionLocal() as db:
-        job = db.scalar(select(ProcessingJob).where(ProcessingJob.id == job_id, ProcessingJob.status.in_(["queued", "RETRY_SCHEDULED"])).with_for_update(skip_locked=True))
+        job = db.scalar(
+            select(ProcessingJob)
+            .where(
+                ProcessingJob.id == job_id,
+                ProcessingJob.status.in_(["queued", "RETRY_SCHEDULED"]),
+            )
+            .with_for_update(skip_locked=True)
+        )
         if not job:
             return
         if job.next_attempt_at and job.next_attempt_at > utcnow():
@@ -140,12 +187,14 @@ def process_job(job_id: str) -> None:
         try:
             content, content_type = storage.read(photo.storage_key)
             if hashlib.sha256(content).hexdigest() != photo.sha256:
-                raise ValueError("Media checksum does not match the verified upload manifest")
+                raise PermanentJobError("Media checksum does not match the verified upload manifest")
             with Image.open(io.BytesIO(content)) as source:
                 detected_type = Image.MIME.get(source.format)
+                if source.width * source.height > settings.max_image_pixels:
+                    raise PermanentJobError("Media exceeds the configured pixel limit")
                 source.verify()
             if detected_type not in {"image/jpeg", "image/png", "image/webp"} or detected_type != photo.content_type:
-                raise ValueError("Media magic bytes do not match the declared content type")
+                raise PermanentJobError("Media magic bytes do not match the declared content type")
             if not photo.thumbnail_storage_key:
                 with Image.open(io.BytesIO(content)) as source:
                     thumbnail = ImageOps.exif_transpose(source).convert("RGB")
@@ -153,17 +202,46 @@ def process_job(job_id: str) -> None:
                     output = io.BytesIO()
                     thumbnail.save(output, format="WEBP", quality=82, method=6)
                 thumbnail_content = output.getvalue()
-                thumbnail_key = f"organizations/{job.organization_id}/events/{job.event_id}/media/thumbnails/{photo.id}.webp"
+                thumbnail_key = (
+                    f"organizations/{job.organization_id}/events/{job.event_id}/media/thumbnails/{photo.id}.webp"
+                )
                 storage.put(thumbnail_key, thumbnail_content, "image/webp")
                 photo.thumbnail_storage_key = thumbnail_key
                 photo.thumbnail_size_bytes = len(thumbnail_content)
                 organization = db.get(Organization, job.organization_id)
                 organization.storage_used_bytes += len(thumbnail_content)
-                db.add(StorageUsageLedger(organization_id=job.organization_id, event_id=job.event_id, photo_id=photo.id, operation="ADD", bytes=len(thumbnail_content)))
+                db.add(
+                    StorageUsageLedger(
+                        organization_id=job.organization_id,
+                        event_id=job.event_id,
+                        photo_id=photo.id,
+                        operation="ADD",
+                        bytes=len(thumbnail_content),
+                    )
+                )
             results = ml_faces(content, photo.filename, content_type)
-            enrollments = db.scalars(select(FaceEnrollment).join(Participant).where(Participant.event_id == job.event_id)).all()
+            db.refresh(job)
+            if job.status == "CANCEL_REQUESTED":
+                job.status = "CANCELLED"
+                job.completed_at = utcnow()
+                photo.processing_status = "uploaded"
+                db.commit()
+                return
+            enrollments = db.scalars(
+                select(FaceEnrollment).join(Participant).where(Participant.event_id == job.event_id)
+            ).all()
             for face_index, result in enumerate(results):
                 box = result["box"]
+                face_width = max(0, int(box.get("x_max", 0) - box.get("x_min", 0)))
+                face_height = max(0, int(box.get("y_max", 0) - box.get("y_min", 0)))
+                minimum_dimension = min(face_width, face_height)
+                probability = float(box["probability"])
+                if minimum_dimension < settings.minimum_face_size or probability < settings.minimum_detector_confidence:
+                    quality_class = "REJECTED"
+                elif minimum_dimension < settings.low_resolution_face_size:
+                    quality_class = "LOW_RESOLUTION"
+                else:
+                    quality_class = "GOOD"
                 detection = FaceDetection(
                     organization_id=job.organization_id,
                     event_id=job.event_id,
@@ -171,67 +249,128 @@ def process_job(job_id: str) -> None:
                     face_index=face_index,
                     box=box,
                     landmarks=result.get("landmarks"),
-                    face_width=max(0, int(box.get("x_max", 0) - box.get("x_min", 0))),
-                    face_height=max(0, int(box.get("y_max", 0) - box.get("y_min", 0))),
+                    face_width=face_width,
+                    face_height=face_height,
                     embedding=result["embedding"],
                     embedding_vector=result["embedding"],
-                    detector_confidence=box["probability"],
+                    detector_confidence=probability,
+                    quality_class=quality_class,
                     model_name="retinaface-r50",
                     model_version=settings.detector_model_version,
                 )
                 db.add(detection)
                 db.flush()
-                ranked = sorted(((cosine(result["embedding"], enrollment.embedding), enrollment.participant_id) for enrollment in enrollments), reverse=True)
+                ranked = sorted(
+                    (
+                        (
+                            cosine(result["embedding"], enrollment.embedding),
+                            enrollment.participant_id,
+                        )
+                        for enrollment in enrollments
+                    ),
+                    reverse=True,
+                )
                 best_score, participant_id = ranked[0] if ranked else (0.0, None)
                 runner_up = ranked[1][0] if len(ranked) > 1 else -1.0
                 # A conservative margin prevents lookalikes from being assigned automatically.
                 margin = best_score - runner_up
-                if best_score >= settings.match_auto_threshold and margin >= settings.match_runner_up_margin:
+                threshold_boost = settings.low_resolution_threshold_boost if quality_class == "LOW_RESOLUTION" else 0.0
+                if quality_class == "REJECTED":
+                    state = "low"
+                    participant_id = None
+                elif (
+                    best_score >= settings.match_auto_threshold + threshold_boost
+                    and margin >= settings.match_runner_up_margin
+                ):
                     state = "high"
-                elif best_score >= settings.match_review_threshold:
+                elif best_score >= settings.match_review_threshold + threshold_boost:
                     state = "review"
                 else:
                     state = "low"
                     participant_id = None
-                db.add(FaceMatch(
-                    organization_id=job.organization_id,
-                    event_id=job.event_id,
-                    detection_id=detection.id,
-                    participant_id=participant_id,
-                    confidence=max(0.0, best_score),
-                    second_best_score=runner_up if runner_up >= 0 else None,
-                    margin=margin if ranked else None,
-                    state=state,
-                    decision_source="AUTO",
-                    model_name="adaface-ir101-ms1mv2",
-                    model_version=settings.embedder_model_version,
-                    threshold_profile_version=settings.threshold_profile_version,
-                ))
+                db.add(
+                    FaceMatch(
+                        organization_id=job.organization_id,
+                        event_id=job.event_id,
+                        detection_id=detection.id,
+                        participant_id=participant_id,
+                        confidence=max(0.0, best_score),
+                        second_best_score=runner_up if runner_up >= 0 else None,
+                        margin=margin if ranked else None,
+                        state=state,
+                        decision_source="AUTO",
+                        model_name="adaface-ir101-ms1mv2",
+                        model_version=settings.embedder_model_version,
+                        threshold_profile_version=settings.threshold_profile_version,
+                    )
+                )
             job.status = "completed"
             job.progress = 100
             job.progress_current = 100
             job.completed_at = utcnow()
             job.heartbeat_at = utcnow()
             photo.processing_status = "ready"
-            db.add(OutboxEvent(
-                aggregate_type="processing_job",
-                aggregate_id=job.id,
-                organization_id=job.organization_id,
-                event_type="fdx.v2.ml.process.completed",
-                event_version=1,
-                correlation_id=job.correlation_id or job.id,
-                payload={"job_id": job.id, "media_id": photo.id, "faces_detected": len(results)},
-            ))
+            db.add(
+                OutboxEvent(
+                    aggregate_type="processing_job",
+                    aggregate_id=job.id,
+                    organization_id=job.organization_id,
+                    event_type="fdx.v2.ml.process.completed",
+                    event_version=1,
+                    correlation_id=job.correlation_id or job.id,
+                    payload={
+                        "job_id": job.id,
+                        "media_id": photo.id,
+                        "faces_detected": len(results),
+                    },
+                )
+            )
             db.flush()
-            remaining = db.scalar(select(func.count(ProcessingJob.id)).where(ProcessingJob.event_id == job.event_id, ProcessingJob.status.in_(["queued", "processing"]))) or 0
+            remaining = (
+                db.scalar(
+                    select(func.count(ProcessingJob.id)).where(
+                        ProcessingJob.event_id == job.event_id,
+                        ProcessingJob.status.in_(["queued", "processing", "RETRY_SCHEDULED", "CANCEL_REQUESTED"]),
+                    )
+                )
+                or 0
+            )
             if remaining == 0:
                 event = db.get(Event, job.event_id)
                 event.status = "ready"
-                participant_ids = db.scalars(select(FaceMatch.participant_id).where(FaceMatch.event_id == event.id, FaceMatch.participant_id.is_not(None), FaceMatch.state == "high").distinct()).all()
+                participant_ids = db.scalars(
+                    select(FaceMatch.participant_id)
+                    .where(
+                        FaceMatch.event_id == event.id,
+                        FaceMatch.participant_id.is_not(None),
+                        FaceMatch.state == "high",
+                    )
+                    .distinct()
+                ).all()
                 for participant_id in participant_ids:
-                    if not db.scalar(select(Delivery).where(Delivery.event_id == event.id, Delivery.participant_id == participant_id)):
-                        db.add(Delivery(organization_id=job.organization_id, event_id=event.id, participant_id=participant_id, gallery_token_hash=os.urandom(32).hex(), status="ready", expires_at=datetime.combine(event.expires_at, datetime.min.time(), timezone.utc)))
-                audit(db, None, "Event processing completed", event.name, organization_id=job.organization_id)
+                    if not db.scalar(
+                        select(Delivery).where(
+                            Delivery.event_id == event.id,
+                            Delivery.participant_id == participant_id,
+                        )
+                    ):
+                        db.add(
+                            Delivery(
+                                organization_id=job.organization_id,
+                                event_id=event.id,
+                                participant_id=participant_id,
+                                gallery_token_hash=os.urandom(32).hex(),
+                                status="ready",
+                                expires_at=datetime.combine(event.expires_at, datetime.min.time(), timezone.utc),
+                            )
+                        )
+                audit(
+                    db,
+                    None,
+                    "Event processing completed",
+                    event.name,
+                    organization_id=job.organization_id,
+                )
             db.commit()
         except Exception as exc:
             db.rollback()
@@ -239,46 +378,94 @@ def process_job(job_id: str) -> None:
             photo = db.get(Photo, job.photo_id) if job else None
             if job:
                 retry_delays = [0, 30, 120, 600, 1800]
-                retryable = job.attempt < job.max_attempts
+                retryable = not isinstance(exc, PermanentJobError) and job.attempt < job.max_attempts
                 job.status = "RETRY_SCHEDULED" if retryable else "DEAD_LETTERED"
                 job.error = str(exc)
-                job.next_attempt_at = utcnow() + timedelta(seconds=retry_delays[min(job.attempt, len(retry_delays) - 1)]) if retryable else None
+                job.next_attempt_at = (
+                    utcnow() + timedelta(seconds=retry_delays[min(job.attempt, len(retry_delays) - 1)])
+                    if retryable
+                    else None
+                )
                 job.completed_at = None if retryable else utcnow()
                 if not retryable:
-                    db.add(OutboxEvent(
-                        aggregate_type="processing_job",
-                        aggregate_id=job.id,
-                        organization_id=job.organization_id,
-                        event_type="fdx.v2.ml.process.dlq",
-                        event_version=1,
-                        correlation_id=job.correlation_id or job.id,
-                        payload={"job_id": job.id, "media_id": job.photo_id, "error": str(exc)},
-                    ))
+                    db.add(
+                        OutboxEvent(
+                            aggregate_type="processing_job",
+                            aggregate_id=job.id,
+                            organization_id=job.organization_id,
+                            event_type="fdx.v2.ml.process.dlq",
+                            event_version=1,
+                            correlation_id=job.correlation_id or job.id,
+                            payload={
+                                "job_id": job.id,
+                                "media_id": job.photo_id,
+                                "error": str(exc),
+                            },
+                        )
+                    )
             if photo:
                 photo.processing_status = "queued" if job and job.status == "RETRY_SCHEDULED" else "failed"
-            audit(db, None, "Processing job failed", f"{job_id}: {exc}", "danger", job.organization_id if job else None)
+            audit(
+                db,
+                None,
+                "Processing job failed",
+                f"{job_id}: {exc}",
+                "danger",
+                job.organization_id if job else None,
+            )
             db.commit()
 
 
 def run_retention() -> None:
     with SessionLocal() as db:
-        expired_exports = db.scalars(select(GalleryExport).where(GalleryExport.expires_at <= utcnow(), GalleryExport.storage_key.is_not(None))).all()
+        expired_exports = db.scalars(
+            select(GalleryExport).where(
+                GalleryExport.expires_at <= utcnow(),
+                GalleryExport.storage_key.is_not(None),
+            )
+        ).all()
         for item in expired_exports:
             storage.delete(item.storage_key)
             organization = db.get(Organization, item.organization_id)
             if organization:
                 organization.storage_used_bytes = max(0, organization.storage_used_bytes - item.size_bytes)
-            db.add(StorageUsageLedger(organization_id=item.organization_id, event_id=item.event_id, operation="DELETE", bytes=-item.size_bytes))
+            db.add(
+                StorageUsageLedger(
+                    organization_id=item.organization_id,
+                    event_id=item.event_id,
+                    operation="DELETE",
+                    bytes=-item.size_bytes,
+                )
+            )
             item.storage_key = None
             item.size_bytes = 0
             item.status = "EXPIRED"
-        expired_organizations = db.scalars(select(Organization).where(Organization.expires_at < datetime.now(timezone.utc).date(), Organization.status == "active")).all()
+        expired_organizations = db.scalars(
+            select(Organization).where(
+                Organization.expires_at < datetime.now(timezone.utc).date(),
+                Organization.status == "active",
+            )
+        ).all()
         for organization in expired_organizations:
             organization.status = "expired"
             user_ids = select(User.id).where(User.organization_id == organization.id)
-            db.query(RefreshSession).filter(RefreshSession.user_id.in_(user_ids), RefreshSession.revoked_at.is_(None)).update({"revoked_at": utcnow()}, synchronize_session=False)
-            audit(db, None, "Organization account expired", organization.name, organization_id=organization.id)
-        expired_events = db.scalars(select(Event).where((Event.expires_at <= date.today()) | (Event.status.in_(["DELETION_PENDING", "deletion_pending"])), Event.status.notin_(["expired", "DELETED"]))).all()
+            db.query(RefreshSession).filter(
+                RefreshSession.user_id.in_(user_ids),
+                RefreshSession.revoked_at.is_(None),
+            ).update({"revoked_at": utcnow()}, synchronize_session=False)
+            audit(
+                db,
+                None,
+                "Organization account expired",
+                organization.name,
+                organization_id=organization.id,
+            )
+        expired_events = db.scalars(
+            select(Event).where(
+                (Event.expires_at <= date.today()) | (Event.status.in_(["DELETION_PENDING", "deletion_pending"])),
+                Event.status.notin_(["expired", "DELETED"]),
+            )
+        ).all()
         for event in expired_events:
             deletion_requested = event.status.upper() == "DELETION_PENDING"
             photos = db.scalars(select(Photo).where(Photo.event_id == event.id)).all()
@@ -287,28 +474,68 @@ def run_retention() -> None:
                 storage.delete(photo.storage_key)
                 if photo.thumbnail_storage_key:
                     storage.delete(photo.thumbnail_storage_key)
-            enrollments = db.scalars(select(FaceEnrollment).join(Participant).where(Participant.event_id == event.id)).all()
+            enrollments = db.scalars(
+                select(FaceEnrollment).join(Participant).where(Participant.event_id == event.id)
+            ).all()
             for enrollment in enrollments:
                 storage.delete(enrollment.storage_key)
             released += sum(enrollment.size_bytes for enrollment in enrollments)
-            exports = db.scalars(select(GalleryExport).where(GalleryExport.event_id == event.id, GalleryExport.storage_key.is_not(None))).all()
+            pending_tokens = db.scalars(
+                select(ParticipantEnrollmentToken)
+                .join(Participant)
+                .where(
+                    Participant.event_id == event.id,
+                    ParticipantEnrollmentToken.pending_storage_key.is_not(None),
+                )
+            ).all()
+            for token in pending_tokens:
+                storage.delete(token.pending_storage_key)
+            exports = db.scalars(
+                select(GalleryExport).where(
+                    GalleryExport.event_id == event.id,
+                    GalleryExport.storage_key.is_not(None),
+                )
+            ).all()
             for export in exports:
                 storage.delete(export.storage_key)
             released += sum(export.size_bytes for export in exports)
             if photos:
                 db.execute(delete(Photo).where(Photo.id.in_([photo.id for photo in photos])))
             if enrollments:
-                db.execute(delete(FaceEnrollment).where(FaceEnrollment.id.in_([enrollment.id for enrollment in enrollments])))
+                db.execute(
+                    delete(FaceEnrollment).where(FaceEnrollment.id.in_([enrollment.id for enrollment in enrollments]))
+                )
             db.execute(delete(Participant).where(Participant.event_id == event.id))
             organization = db.get(Organization, event.organization_id)
             organization.storage_used_bytes = max(0, organization.storage_used_bytes - released)
-            db.add(StorageUsageLedger(organization_id=organization.id, event_id=event.id, operation="DELETE", bytes=-released))
+            db.add(
+                StorageUsageLedger(
+                    organization_id=organization.id,
+                    event_id=event.id,
+                    operation="DELETE",
+                    bytes=-released,
+                )
+            )
             event.status = "DELETED" if deletion_requested else "expired"
-            audit(db, None, "Retention cleanup completed", f"{event.name}: {len(photos)} photos removed", organization_id=event.organization_id)
+            audit(
+                db,
+                None,
+                "Retention cleanup completed",
+                f"{event.name}: {len(photos)} photos removed",
+                organization_id=event.organization_id,
+            )
         db.flush()
         deleting_organizations = db.scalars(select(Organization).where(Organization.status == "deletion_pending")).all()
         for organization in deleting_organizations:
-            active_events = db.scalar(select(func.count(Event.id)).where(Event.organization_id == organization.id, Event.status.notin_(["DELETED", "expired"]))) or 0
+            active_events = (
+                db.scalar(
+                    select(func.count(Event.id)).where(
+                        Event.organization_id == organization.id,
+                        Event.status.notin_(["DELETED", "expired"]),
+                    )
+                )
+                or 0
+            )
             if active_events:
                 continue
             # Remove event-owned imports and workflow records first so their
@@ -318,7 +545,13 @@ def run_retention() -> None:
             db.execute(delete(User).where(User.organization_id == organization.id))
             organization.status = "deleted"
             organization.storage_used_bytes = 0
-            audit(db, None, "Organization deletion completed", organization.name, organization_id=organization.id)
+            audit(
+                db,
+                None,
+                "Organization deletion completed",
+                organization.name,
+                organization_id=organization.id,
+            )
         db.commit()
 
 
@@ -332,14 +565,29 @@ def main() -> None:
     last_outbox_poll = 0.0
     last_reservation_poll = 0.0
     last_notification_poll = 0.0
+    last_recovery_poll = 0.0
+    last_reconciliation = 0.0
     while True:
         now = time.monotonic()
         if consumer is None and now - last_consumer_attempt > 5:
             last_consumer_attempt = now
             try:
-                consumer = KafkaConsumer(settings.kafka_topic, "fdx.v2.ml.process.requested", "fdx.v2.gallery.export.requested", bootstrap_servers=settings.kafka_bootstrap_servers.split(","), security_protocol=settings.kafka_security_protocol, group_id="fdx-workers", auto_offset_reset="earliest", enable_auto_commit=True, value_deserializer=lambda value: __import__("json").loads(value.decode()))
+                consumer = KafkaConsumer(
+                    settings.kafka_topic,
+                    "fdx.v2.ml.process.requested",
+                    "fdx.v2.gallery.export.requested",
+                    bootstrap_servers=settings.kafka_bootstrap_servers.split(","),
+                    security_protocol=settings.kafka_security_protocol,
+                    group_id="fdx-workers",
+                    auto_offset_reset="earliest",
+                    enable_auto_commit=True,
+                    value_deserializer=lambda value: __import__("json").loads(value.decode()),
+                )
             except KafkaError:
-                print("Waiting for Kafka; PostgreSQL fallback remains active...", flush=True)
+                print(
+                    "Waiting for Kafka; PostgreSQL fallback remains active...",
+                    flush=True,
+                )
         if settings.retention_scheduler_enabled and now - last_retention > settings.retention_poll_seconds:
             run_retention()
             last_retention = now
@@ -358,6 +606,12 @@ def main() -> None:
         if now - last_notification_poll > 3600:
             send_scheduled_notifications()
             last_notification_poll = now
+        if now - last_recovery_poll > 60:
+            recover_stuck_jobs()
+            last_recovery_poll = now
+        if now - last_reconciliation > 86400:
+            reconcile_storage_usage()
+            last_reconciliation = now
         if consumer is None:
             time.sleep(1)
             continue
@@ -377,7 +631,16 @@ def main() -> None:
 
 def retry_failed_emails() -> None:
     with SessionLocal() as db:
-        pending = db.scalars(select(EmailOutbox).where(EmailOutbox.status == "failed", EmailOutbox.attempts < settings.email_max_attempts, EmailOutbox.next_attempt_at <= utcnow()).order_by(EmailOutbox.next_attempt_at).limit(25)).all()
+        pending = db.scalars(
+            select(EmailOutbox)
+            .where(
+                EmailOutbox.status == "failed",
+                EmailOutbox.attempts < settings.email_max_attempts,
+                EmailOutbox.next_attempt_at <= utcnow(),
+            )
+            .order_by(EmailOutbox.next_attempt_at)
+            .limit(25)
+        ).all()
         for item in pending:
             dispatch_email(db, item)
         db.commit()
@@ -389,17 +652,21 @@ def send_scheduled_notifications() -> None:
         today = utcnow().date()
 
         def send_once(organization_id: str, recipient: str, subject: str, html: str) -> None:
-            existing = db.scalar(select(EmailOutbox.id).where(EmailOutbox.recipient == recipient, EmailOutbox.subject == subject))
+            existing = db.scalar(
+                select(EmailOutbox.id).where(EmailOutbox.recipient == recipient, EmailOutbox.subject == subject)
+            )
             if existing:
                 return
             item = queue_email(db, organization_id, recipient, subject, html)
             dispatch_email(db, item)
 
-        reminders = db.scalars(select(Participant).where(
-            Participant.enrollment_status.in_(["invited", "opened"]),
-            Participant.enrollment_expires_at > utcnow(),
-            Participant.created_at <= utcnow() - timedelta(hours=24),
-        )).all()
+        reminders = db.scalars(
+            select(Participant).where(
+                Participant.enrollment_status.in_(["invited", "opened"]),
+                Participant.enrollment_expires_at > utcnow(),
+                Participant.created_at <= utcnow() - timedelta(hours=24),
+            )
+        ).all()
         for participant in reminders:
             send_once(
                 participant.organization_id,
@@ -414,28 +681,70 @@ def send_scheduled_notifications() -> None:
             if organization.expires_at:
                 days = (organization.expires_at - today).days
                 if days in {7, 1}:
-                    send_once(organization.id, administrator.email, f"FDX account expires in {days} day(s) [{organization.id}]", "<p>Your Organization's FDX access is approaching its configured expiry date.</p>")
-            events = db.scalars(select(Event).where(Event.organization_id == organization.id, Event.expires_at.in_([today + timedelta(days=7), today + timedelta(days=1)]), Event.status.notin_(["expired", "DELETED"]))).all()
+                    send_once(
+                        organization.id,
+                        administrator.email,
+                        f"FDX account expires in {days} day(s) [{organization.id}]",
+                        "<p>Your Organization's FDX access is approaching its configured expiry date.</p>",
+                    )
+            events = db.scalars(
+                select(Event).where(
+                    Event.organization_id == organization.id,
+                    Event.expires_at.in_([today + timedelta(days=7), today + timedelta(days=1)]),
+                    Event.status.notin_(["expired", "DELETED"]),
+                )
+            ).all()
             for event in events:
                 days = (event.expires_at - today).days
-                send_once(organization.id, administrator.email, f"Event data expires in {days} day(s) [{event.id}]", f"<p>Media and biometric data for {event.name} will be removed by its retention policy.</p>")
-            permanent_failures = db.scalars(select(EmailOutbox).where(EmailOutbox.organization_id == organization.id, EmailOutbox.status == "failed", EmailOutbox.attempts >= settings.email_max_attempts)).all()
+                send_once(
+                    organization.id,
+                    administrator.email,
+                    f"Event data expires in {days} day(s) [{event.id}]",
+                    f"<p>Media and biometric data for {event.name} will be removed by its retention policy.</p>",
+                )
+            permanent_failures = db.scalars(
+                select(EmailOutbox).where(
+                    EmailOutbox.organization_id == organization.id,
+                    EmailOutbox.status == "failed",
+                    EmailOutbox.attempts >= settings.email_max_attempts,
+                )
+            ).all()
             for failure in permanent_failures:
-                send_once(organization.id, administrator.email, f"FDX email delivery requires attention [{failure.id}]", f"<p>A message to {failure.recipient} could not be delivered after bounded retries.</p>")
+                send_once(
+                    organization.id,
+                    administrator.email,
+                    f"FDX email delivery requires attention [{failure.id}]",
+                    f"<p>A message to {failure.recipient} could not be delivered after bounded retries.</p>",
+                )
         db.commit()
 
 
 def process_pending_jobs() -> None:
     """Use PostgreSQL as a durable fallback when Kafka publication is interrupted."""
     with SessionLocal() as db:
-        job_ids = db.scalars(select(ProcessingJob.id).where(ProcessingJob.status.in_(["queued", "RETRY_SCHEDULED"]), (ProcessingJob.next_attempt_at.is_(None)) | (ProcessingJob.next_attempt_at <= utcnow()), ProcessingJob.created_at <= utcnow() - timedelta(seconds=5)).order_by(ProcessingJob.created_at).limit(10)).all()
+        job_ids = db.scalars(
+            select(ProcessingJob.id)
+            .where(
+                ProcessingJob.status.in_(["queued", "RETRY_SCHEDULED"]),
+                (ProcessingJob.next_attempt_at.is_(None)) | (ProcessingJob.next_attempt_at <= utcnow()),
+                ProcessingJob.created_at <= utcnow() - timedelta(seconds=5),
+            )
+            .order_by(ProcessingJob.created_at)
+            .limit(10)
+        ).all()
     for job_id in job_ids:
         process_job(job_id)
 
 
 def publish_outbox_events() -> None:
     with SessionLocal() as db:
-        rows = db.scalars(select(OutboxEvent).where(OutboxEvent.published_at.is_(None)).order_by(OutboxEvent.created_at).with_for_update(skip_locked=True).limit(50)).all()
+        rows = db.scalars(
+            select(OutboxEvent)
+            .where(OutboxEvent.published_at.is_(None))
+            .order_by(OutboxEvent.created_at)
+            .with_for_update(skip_locked=True)
+            .limit(50)
+        ).all()
         for row in rows:
             envelope = {
                 "event_id": row.id,
@@ -460,15 +769,125 @@ def publish_outbox_events() -> None:
 
 def expire_storage_reservations() -> None:
     with SessionLocal() as db:
-        rows = db.scalars(select(StorageReservation).where(StorageReservation.status == "RESERVED", StorageReservation.expires_at <= utcnow()).with_for_update(skip_locked=True)).all()
+        rows = db.scalars(
+            select(StorageReservation)
+            .where(
+                StorageReservation.status == "RESERVED",
+                StorageReservation.expires_at <= utcnow(),
+            )
+            .with_for_update(skip_locked=True)
+        ).all()
         for row in rows:
             row.status = "EXPIRED"
-            db.add(StorageUsageLedger(organization_id=row.organization_id, event_id=row.event_id, operation="RELEASE", bytes=row.bytes))
+            db.add(
+                StorageUsageLedger(
+                    organization_id=row.organization_id,
+                    event_id=row.event_id,
+                    operation="RELEASE",
+                    bytes=row.bytes,
+                )
+            )
             batch = db.get(UploadBatch, row.upload_batch_id)
             if batch and batch.status not in {"COMPLETE", "CANCELLED"}:
                 batch.status = "CANCELLED"
                 for record in batch.manifest or []:
+                    if record.get("multipart_upload_id") and not record.get("multipart_completed"):
+                        storage.abort_multipart_upload(record["storage_key"], record["multipart_upload_id"])
                     storage.delete(record["storage_key"])
+        db.commit()
+
+
+def recover_stuck_jobs() -> None:
+    """Return abandoned work to the bounded retry queue."""
+    with SessionLocal() as db:
+        cutoff = utcnow() - timedelta(minutes=10)
+        rows = db.scalars(
+            select(ProcessingJob)
+            .where(
+                ProcessingJob.status.in_(["processing", "CANCEL_REQUESTED"]),
+                ProcessingJob.heartbeat_at < cutoff,
+            )
+            .with_for_update(skip_locked=True)
+        ).all()
+        for job in rows:
+            if job.status == "CANCEL_REQUESTED":
+                job.status = "CANCELLED"
+                job.completed_at = utcnow()
+            elif job.attempt < job.max_attempts:
+                job.status = "RETRY_SCHEDULED"
+                job.next_attempt_at = utcnow()
+                job.error = "Worker heartbeat expired; job recovered"
+            else:
+                job.status = "DEAD_LETTERED"
+                job.completed_at = utcnow()
+                job.error = "Worker heartbeat expired after maximum attempts"
+            if job.photo_id:
+                photo = db.get(Photo, job.photo_id)
+                if photo:
+                    photo.processing_status = (
+                        "uploaded"
+                        if job.status == "CANCELLED"
+                        else "queued"
+                        if job.status == "RETRY_SCHEDULED"
+                        else "failed"
+                    )
+            audit(
+                db,
+                None,
+                "Processing job recovered",
+                f"{job.id}: {job.status}",
+                organization_id=job.organization_id,
+            )
+        db.commit()
+
+
+def reconcile_storage_usage() -> None:
+    """Rebuild tenant storage counters from authoritative database records."""
+    with SessionLocal() as db:
+        for organization in db.scalars(select(Organization)).all():
+            media_bytes = (
+                db.scalar(
+                    select(func.coalesce(func.sum(Photo.size_bytes + Photo.thumbnail_size_bytes), 0)).where(
+                        Photo.organization_id == organization.id
+                    )
+                )
+                or 0
+            )
+            enrollment_bytes = (
+                db.scalar(
+                    select(func.coalesce(func.sum(FaceEnrollment.size_bytes), 0)).where(
+                        FaceEnrollment.organization_id == organization.id
+                    )
+                )
+                or 0
+            )
+            export_bytes = (
+                db.scalar(
+                    select(func.coalesce(func.sum(GalleryExport.size_bytes), 0)).where(
+                        GalleryExport.organization_id == organization.id,
+                        GalleryExport.storage_key.is_not(None),
+                    )
+                )
+                or 0
+            )
+            actual = int(media_bytes + enrollment_bytes + export_bytes)
+            delta = actual - organization.storage_used_bytes
+            if delta:
+                organization.storage_used_bytes = actual
+                db.add(
+                    StorageUsageLedger(
+                        organization_id=organization.id,
+                        operation="RECONCILE",
+                        bytes=delta,
+                    )
+                )
+                audit(
+                    db,
+                    None,
+                    "Storage usage reconciled",
+                    f"adjusted by {delta} bytes",
+                    organization_id=organization.id,
+                )
         db.commit()
 
 

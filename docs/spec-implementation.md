@@ -10,17 +10,17 @@ This document maps the authoritative requirements in [`specs.md`](specs.md) to e
 | Tenant isolation | Organization identity is taken only from the authenticated user. Tenant-owned event, participant, media, job, match, gallery, delivery, usage, and log queries include that tenant. The mandatory cross-tenant GET/PATCH/presign test is automated. |
 | Organizations and users | Super Admin dashboard, organization lifecycle, storage/retention/account-expiry policy, administrator invitation, activation/suspension, job visibility, and audit views. |
 | Events and participants | Backend event state machine; event lifecycle endpoints; CSV/XLS/XLSX/XLSM validation; invalid/duplicate preview; explicit idempotent confirmation; participant CRUD and invitation delivery. |
-| Public enrollment | High-entropy hashed single-use tokens, expiry, Redis/NGINX rate limits, explicit versioned consent record, image validation, RetinaFace/AdaFace enrollment, 512-value pgvector-compatible embedding, quota accounting, and token consumption. |
-| Uploads and private media | Storage reservation, quota lock, manifest/checksum, direct presigned S3 PUT (local authenticated fallback), completion verification, duplicate hash suppression, private object keys, asynchronous WebP thumbnails, signed reads, and usage ledger. |
-| Kafka/outbox/jobs | Transactional outbox, versioned correlation envelope, idempotent locked consumers, PostgreSQL fallback queue, bounded exponential retry, heartbeat/progress, dead-letter state, manual retry, and failure visibility. |
-| ML and matching | RetinaFace R50 + AdaFace IR101, checksum/model registry, normalized 512-dimensional embeddings, cosine score, runner-up margin, configurable auto/review thresholds, model/threshold reproducibility fields, manual confirm/reject audit. |
+| Public enrollment | High-entropy hashed single-use tokens, expiry, Redis/NGINX rate limits, explicit versioned consent record, browser-to-S3 presigned upload with a private local fallback, size/pixel/magic-byte/face-quality validation, RetinaFace/AdaFace enrollment, 512-value pgvector-compatible embedding, quota accounting, replacement cleanup, and token consumption. |
+| Uploads and private media | Storage reservation, quota lock, chunked manifests, checksum and type validation, bounded browser concurrency, single-part and multipart presigned S3 uploads (local authenticated fallback), completion verification, duplicate hash suppression, private object keys, asynchronous WebP thumbnails, signed reads, and usage ledger. |
+| Kafka/outbox/jobs | Transactional outbox, versioned correlation envelope, idempotent locked consumers, PostgreSQL fallback queue, bounded exponential retry, heartbeat/progress, stuck-job recovery, cooperative event cancellation, dead-letter state, manual retry, and tenant/global job visibility. |
+| ML and matching | RetinaFace R50 + AdaFace IR101, checksum/model registry, normalized 512-dimensional embeddings, cosine score, runner-up margin, configurable auto/review thresholds, rejected/low-resolution face policy, model/threshold reproducibility fields, match detail/filtering, and manual confirm/reject audit. |
 | Galleries and delivery | Tenant-scoped gallery construction, expiring hashed gallery token, authorized per-photo signed download, provider-backed result email, delivery/webhook status, and worker-generated expiring private ZIP export. |
 | Email | Provider adapter for Resend, SES, or persistent development outbox; invitation, enrollment, reminder, result, password reset, account/event-expiry warning, bounded retry, delivery-failure alert, and signed idempotent webhook ingestion. |
-| Retention/deletion | Scheduled reservation expiry, event/account expiry, asynchronous event/organization deletion, session/link invalidation through parent lifecycle, originals/thumbnails/exports/enrollments removal, storage release, and audit trail. |
+| Retention/deletion | Scheduled reservation expiry, orphaned multipart cleanup, event/account expiry, asynchronous event/organization deletion, immediate session/link invalidation through parent lifecycle, originals/thumbnails/exports/enrollments/pending uploads removal, periodic storage reconciliation, storage release, and audit trail. |
 | Observability/security | Request/correlation IDs, redacted route-template JSON logs, Prometheus-format API counters, dependency probes, CSP/HSTS/content-type/referrer/permissions headers, CORS allowlist, and V2 error envelope. |
 | Frontend | In-memory access token plus refresh cookie, one login and role routing, forgot/reset/invite pages, import preview/confirm, direct folder upload through V2, public V2 enrollment, private thumbnail gallery, per-photo download, and async Download All status. |
-| Deployment | Dockerized web/API/worker/Gunicorn ML, NGINX routing/rate limits, pgvector PostgreSQL, local Compose, and AWS CloudFormation for ALB/ASG/EC2/RDS/ElastiCache/MSK/S3/Glacier/SES/Secrets Manager/IAM/EventBridge/Lambda. |
-| CI and migrations | Forward Alembic migrations, pgvector migration service, frontend lint/build/audit, backend lint/compile/tests/dependency audit, Compose/CloudFormation/shell validation, and container builds. Production does not auto-create schema. |
+| Deployment | Dockerized web/API/worker/Gunicorn ML, CPU and NVIDIA CUDA ML images, NGINX routing/rate limits, pgvector PostgreSQL, local Compose, and AWS CloudFormation for ALB/ASG/EC2/RDS/ElastiCache/MSK/S3/Glacier/SES/Secrets Manager/IAM/EventBridge/Lambda. S3 enforces private access, TLS, encryption, browser CORS, multipart cleanup, and lifecycle policy. |
+| CI and migrations | Forward Alembic migrations, pgvector migration service, Prettier and frontend lint/build/audit, Ruff lint/format/compile/tests/dependency audit, Compose/CloudFormation/ShellCheck validation, and container builds. Production does not auto-create schema. |
 
 ## Automated acceptance evidence
 
@@ -31,7 +31,12 @@ This document maps the authoritative requirements in [`specs.md`](specs.md) to e
 - invalid import preview and idempotent confirmation;
 - consent, one-time enrollment, real 512-dimensional ML enrollment;
 - checksummed direct upload and idempotent completion;
+- bulk invitations and participant direct-upload enrollment;
+- global job detail, match detail/filtering, queued-job cancellation, and the exact Download All contract;
 - real detection/matching, private gallery isolation, signed download, and asynchronous ZIP output.
+
+The 2026-08-13 verification run also passed Ruff lint/format, Python compilation, four backend security tests, Prettier, Oxlint, the Vite production build, npm audit, pip-audit, ShellCheck, shell syntax checks, Compose configuration, CloudFormation lint, migration `20260813_05`, both live workflow suites, and both ONNX checksum checks.
+An automated OpenAPI comparison found every API method/path declared in sections 52–63 of `specs.md` (the apparent `POST /api/v2/auth/login]` mismatch is only the Markdown link-closing bracket) and 96 implemented V2 operations in total.
 
 `tools/verify_platform.mjs` preserves regression coverage for the original dashboard API, restricted Staff permissions, Excel compatibility, secure thumbnails, email state, event details, deletion, and storage release. `backend/tests` runs unit and API tenant-isolation tests in CI.
 

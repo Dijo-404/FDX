@@ -173,17 +173,12 @@ def audit(
 
 def bootstrap() -> None:
     if settings.environment == "production":
-        insecure_jwt_values = {
-            "change-this-development-secret",
-            "replace-this-before-production",
-        }
-        if len(settings.jwt_secret) < 32 or settings.jwt_secret in insecure_jwt_values:
+        if len(settings.jwt_secret) < 32:
             raise RuntimeError("Production requires a unique JWT_SECRET of at least 32 characters")
-        if settings.super_admin_password in {
-            "SuperAdmin@123",
-            "replace-with-a-strong-bootstrap-password",
-        }:
-            raise RuntimeError("Production requires a unique FDX_SUPER_ADMIN_PASSWORD")
+        if len(settings.super_admin_password) < 12:
+            raise RuntimeError("Production requires FDX_SUPER_ADMIN_PASSWORD of at least 12 characters")
+        if settings.email_provider in {"resend", "ses"} and len(settings.email_webhook_secret) < 32:
+            raise RuntimeError("Production email providers require EMAIL_WEBHOOK_SECRET of at least 32 characters")
     # Production schema ownership belongs exclusively to reviewed Alembic
     # migrations. Local development keeps the convenience bootstrap.
     if settings.environment != "production":

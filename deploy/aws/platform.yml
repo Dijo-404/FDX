@@ -160,6 +160,10 @@ Resources:
     Type: AWS::SecretsManager::Secret
     Properties:
       GenerateSecretString: { SecretStringTemplate: !Sub '{"email":"${SuperAdminEmail}"}', GenerateStringKey: password, PasswordLength: 32, ExcludePunctuation: true }
+  EmailWebhookSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      GenerateSecretString: { SecretStringTemplate: '{}', GenerateStringKey: value, PasswordLength: 64, ExcludePunctuation: true }
 
   DatabaseSubnetGroup:
     Type: AWS::RDS::DBSubnetGroup
@@ -231,7 +235,7 @@ Resources:
               - { Effect: Allow, Action: [s3:ListBucket], Resource: !GetAtt MediaBucket.Arn }
               - { Effect: Allow, Action: [ses:SendEmail], Resource: '*' }
               - { Effect: Allow, Action: [kafka:GetBootstrapBrokers], Resource: !Ref KafkaCluster }
-              - { Effect: Allow, Action: [secretsmanager:GetSecretValue], Resource: [!Ref DatabaseSecret, !Ref JwtSecret, !Ref AdminSecret] }
+              - { Effect: Allow, Action: [secretsmanager:GetSecretValue], Resource: [!Ref DatabaseSecret, !Ref JwtSecret, !Ref AdminSecret, !Ref EmailWebhookSecret] }
               - { Effect: Allow, Action: [ecr:GetAuthorizationToken], Resource: '*' }
               - { Effect: Allow, Action: [ecr:BatchGetImage, ecr:GetDownloadUrlForLayer, ecr:BatchCheckLayerAvailability], Resource: [!GetAtt ApiRepository.Arn, !GetAtt WebRepository.Arn, !GetAtt MlRepository.Arn] }
   InstanceProfile:
@@ -279,6 +283,7 @@ Resources:
             DB_SECRET=$(aws secretsmanager get-secret-value --secret-id ${DatabaseSecret} --query SecretString --output text --region ${AWS::Region})
             JWT_SECRET_VALUE=$(aws secretsmanager get-secret-value --secret-id ${JwtSecret} --query SecretString --output text --region ${AWS::Region})
             ADMIN_SECRET_VALUE=$(aws secretsmanager get-secret-value --secret-id ${AdminSecret} --query SecretString --output text --region ${AWS::Region})
+            EMAIL_WEBHOOK_SECRET_VALUE=$(aws secretsmanager get-secret-value --secret-id ${EmailWebhookSecret} --query SecretString --output text --region ${AWS::Region})
             KAFKA_BROKERS=$(aws kafka get-bootstrap-brokers --cluster-arn ${KafkaCluster} --query BootstrapBrokerStringTls --output text --region ${AWS::Region})
             cat >/opt/fdx/.env <<ENV
             API_IMAGE=${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ApiRepository}:latest
@@ -294,6 +299,7 @@ Resources:
             FDX_SUPER_ADMIN_EMAIL=$(echo "$ADMIN_SECRET_VALUE" | jq -r .email)
             FDX_SUPER_ADMIN_PASSWORD=$(echo "$ADMIN_SECRET_VALUE" | jq -r .password)
             EMAIL_FROM=${EmailFrom}
+            EMAIL_WEBHOOK_SECRET=$(echo "$EMAIL_WEBHOOK_SECRET_VALUE" | jq -r .value)
             ENV
             aws ecr get-login-password --region ${AWS::Region} | docker login --username AWS --password-stdin ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com
             cd /opt/fdx

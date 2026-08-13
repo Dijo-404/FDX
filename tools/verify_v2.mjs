@@ -1,6 +1,18 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 
+try {
+  process.loadEnvFile?.(".env");
+} catch (error) {
+  if (error?.code !== "ENOENT") throw error;
+}
+
+function requiredEnvironment(name) {
+  const value = process.env[name];
+  if (!value) throw new Error(`${name} must be set in the environment or .env`);
+  return value;
+}
+
 const origin = process.env.FDX_ORIGIN || "http://127.0.0.1:8080";
 const base = `${origin}/api/v2`;
 const facePath = process.env.FDX_VERIFY_FACE_IMAGE;
@@ -10,6 +22,8 @@ if (!facePath)
   );
 const face = readFileSync(facePath);
 const faceDigest = createHash("sha256").update(face).digest("hex");
+const superAdminPassword = requiredEnvironment("FDX_SUPER_ADMIN_PASSWORD");
+const verificationPassword = requiredEnvironment("FDX_VERIFICATION_PASSWORD");
 
 function cookie(response) {
   return response.headers.get("set-cookie")?.split(";", 1)[0] || "";
@@ -45,7 +59,7 @@ const login = await call("/auth/login", {
   method: "POST",
   body: JSON.stringify({
     email: process.env.FDX_SUPER_ADMIN_EMAIL || "superadmin@fdx.io",
-    password: process.env.FDX_SUPER_ADMIN_PASSWORD || "SuperAdmin@123",
+    password: superAdminPassword,
   }),
 });
 const firstAccess = login.data.access_token;
@@ -94,11 +108,11 @@ async function createOrganization(label) {
     .pop();
   const accepted = await call(`/auth/invitations/${invitationToken}/accept`, {
     method: "POST",
-    body: JSON.stringify({ password: "VerificationPass@123" }),
+    body: JSON.stringify({ password: verificationPassword }),
   });
   await call(`/auth/invitations/${invitationToken}/accept`, {
     method: "POST",
-    body: JSON.stringify({ password: "VerificationPass@123" }),
+    body: JSON.stringify({ password: verificationPassword }),
     expected: 404,
   });
   return {

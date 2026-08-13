@@ -40,7 +40,7 @@ Docker with the Compose plugin is required.
 ./run-platform.sh
 ```
 
-The first run creates `.env` from `.env.example`. Open `http://127.0.0.1:8080` and sign in with the Super Admin credentials configured in `.env`.
+The first run creates a private `.env` and generates random PostgreSQL, JWT, Super Admin, and verification credentials. No credential has a source-code default. Open `http://127.0.0.1:8080` and sign in with the Super Admin credentials stored in `.env`.
 
 Stop without deleting persistent volumes:
 
@@ -82,6 +82,8 @@ Run the V2 acceptance flow (refresh replay prevention, invitations, tenant isola
 ```sh
 FDX_VERIFY_FACE_IMAGE=/path/to/clear-face.jpg node tools/verify_v2.mjs
 ```
+
+Both verification tools read their credentials from the private `.env`; they contain no fallback passwords.
 
 API service metrics are available at `GET /metrics`; dependency probes are exposed at `/health/live`, `/health/ready`, and `/health/dependencies`.
 

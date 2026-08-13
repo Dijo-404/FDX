@@ -35,7 +35,7 @@ jobs:
         env:
           POSTGRES_DB: fdx
           POSTGRES_USER: fdx
-          POSTGRES_PASSWORD: fdx-ci
+          POSTGRES_HOST_AUTH_METHOD: trust
         ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U fdx -d fdx"
@@ -43,7 +43,7 @@ jobs:
           --health-timeout 5s
           --health-retries 20
     env:
-      DATABASE_URL: postgresql+psycopg://fdx:fdx-ci@127.0.0.1:5432/fdx
+      DATABASE_URL: postgresql+psycopg://fdx@127.0.0.1:5432/fdx
       FDX_ENVIRONMENT: test
       PYTHONPATH: backend
     steps:
@@ -53,6 +53,10 @@ jobs:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: backend/requirements.txt
+      - name: Generate ephemeral test credentials
+        run: |
+          echo "JWT_SECRET=$(openssl rand -hex 48)" >> "$GITHUB_ENV"
+          echo "FDX_SUPER_ADMIN_PASSWORD=Fdx-$(openssl rand -hex 24)" >> "$GITHUB_ENV"
       - run: pip install -r backend/requirements.txt ruff pytest pip-audit
       - run: ruff check backend
       - run: ruff format --check backend
@@ -69,7 +73,12 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install cfn-lint
-      - run: docker compose config --quiet
+      - name: Validate Compose configuration with ephemeral credentials
+        run: |
+          POSTGRES_PASSWORD="$(openssl rand -hex 24)" \
+          JWT_SECRET="$(openssl rand -hex 48)" \
+          FDX_SUPER_ADMIN_PASSWORD="Fdx-$(openssl rand -hex 24)" \
+          docker compose config --quiet
       - run: cfn-lint deploy/aws/platform.yml
       - run: sudo apt-get update && sudo apt-get install -y shellcheck
       - run: find . -path './.venv' -prune -o -name '*.sh' -type f -print0 | xargs -0 shellcheck

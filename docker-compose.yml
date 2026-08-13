@@ -6,7 +6,7 @@ services:
     environment:
       POSTGRES_DB: fdx
       POSTGRES_USER: fdx
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fdx-development}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -75,13 +75,13 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     environment: &api_environment
-      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://fdx:${POSTGRES_PASSWORD:-fdx-development}@postgres:5432/fdx}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://fdx:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/fdx}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}
       ML_SERVICE_URL: ${ML_SERVICE_URL:-http://ml:3000}
       STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
       STORAGE_ROOT: /data/storage
-      JWT_SECRET: ${JWT_SECRET:-replace-this-before-production}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
       JWT_ISSUER: ${JWT_ISSUER:-fdx}
       JWT_AUDIENCE: ${JWT_AUDIENCE:-fdx-web}
       ACCESS_TOKEN_MINUTES: ${ACCESS_TOKEN_MINUTES:-15}
@@ -89,7 +89,7 @@ services:
       FRONTEND_URL: ${FRONTEND_URL:-http://127.0.0.1:8080}
       FDX_ENVIRONMENT: ${FDX_ENVIRONMENT:-development}
       FDX_SUPER_ADMIN_EMAIL: ${FDX_SUPER_ADMIN_EMAIL:-superadmin@fdx.io}
-      FDX_SUPER_ADMIN_PASSWORD: ${FDX_SUPER_ADMIN_PASSWORD:-SuperAdmin@123}
+      FDX_SUPER_ADMIN_PASSWORD: ${FDX_SUPER_ADMIN_PASSWORD:?Set FDX_SUPER_ADMIN_PASSWORD in .env}
       EMAIL_PROVIDER: ${EMAIL_PROVIDER:-outbox}
       EMAIL_FROM: ${EMAIL_FROM:-FDX <noreply@fdx.local>}
       RESEND_API_KEY: ${RESEND_API_KEY:-}

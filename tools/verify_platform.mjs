@@ -1,10 +1,22 @@
 import { readFileSync } from "node:fs";
 
+try {
+  process.loadEnvFile?.(".env");
+} catch (error) {
+  if (error?.code !== "ENOENT") throw error;
+}
+
+function requiredEnvironment(name) {
+  const value = process.env[name];
+  if (!value) throw new Error(`${name} must be set in the environment or .env`);
+  return value;
+}
+
 const base = process.env.FDX_BASE_URL || "http://127.0.0.1:8080/api";
 const superAdminEmail =
   process.env.FDX_SUPER_ADMIN_EMAIL || "superadmin@fdx.io";
-const superAdminPassword =
-  process.env.FDX_SUPER_ADMIN_PASSWORD || "SuperAdmin@123";
+const superAdminPassword = requiredEnvironment("FDX_SUPER_ADMIN_PASSWORD");
+const verificationPassword = requiredEnvironment("FDX_VERIFICATION_PASSWORD");
 
 async function request(path, options = {}) {
   const response = await fetch(`${base}${path}`, options);
@@ -64,7 +76,7 @@ const accepted = await request(
   {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ password: "VerificationPass@123" }),
+    body: JSON.stringify({ password: verificationPassword }),
   },
 );
 const orgHeaders = {
@@ -87,7 +99,7 @@ const staffSession = await request(
   {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ password: "VerificationPass@123" }),
+    body: JSON.stringify({ password: verificationPassword }),
   },
 );
 const staffHeaders = { authorization: `Bearer ${staffSession.token}` };

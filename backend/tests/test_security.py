@@ -1,3 +1,4 @@
+import secrets
 from datetime import date, timedelta
 
 from app.auth import hash_password, new_opaque_token, token_pair, verify_password
@@ -8,11 +9,13 @@ from app.worker import cosine
 from fastapi.testclient import TestClient
 from sqlalchemy import delete
 
+TEST_PASSWORD = f"Test-{secrets.token_urlsafe(24)}"
+
 
 def test_argon2_password_round_trip():
-    encoded = hash_password("Correct Horse Battery Staple")
+    encoded = hash_password(TEST_PASSWORD)
     assert encoded.startswith("$argon2id$")
-    assert verify_password("Correct Horse Battery Staple", encoded)
+    assert verify_password(TEST_PASSWORD, encoded)
     assert not verify_password("wrong password", encoded)
 
 
@@ -48,7 +51,7 @@ def test_cross_tenant_event_endpoints_return_not_found():
             organization_id=tenant_a.id,
             name="Admin A",
             email=f"admin-a-{suffix}@example.com",
-            password_hash=hash_password("Correct Horse Battery Staple"),
+            password_hash=hash_password(TEST_PASSWORD),
             role=UserRole.ORG_ADMIN,
             status="active",
         )

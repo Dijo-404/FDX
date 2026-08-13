@@ -7,14 +7,21 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def required_env(name: str) -> str:
+    value = os.getenv(name, "").strip()
+    if not value:
+        raise RuntimeError(f"{name} must be set in the environment")
+    return value
+
+
 @dataclass(frozen=True)
 class Settings:
-    database_url: str = os.getenv("DATABASE_URL", "postgresql+psycopg://fdx:fdx@127.0.0.1:5432/fdx")
+    database_url: str = required_env("DATABASE_URL")
     redis_url: str = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
     kafka_bootstrap_servers: str = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "127.0.0.1:9092")
     kafka_topic: str = os.getenv("KAFKA_TOPIC", "fdx.photo.processing")
     kafka_security_protocol: str = os.getenv("KAFKA_SECURITY_PROTOCOL", "PLAINTEXT")
-    jwt_secret: str = os.getenv("JWT_SECRET", "change-this-development-secret")
+    jwt_secret: str = required_env("JWT_SECRET")
     jwt_issuer: str = os.getenv("JWT_ISSUER", "fdx-api")
     jwt_audience: str = os.getenv("JWT_AUDIENCE", "fdx-web")
     access_token_minutes: int = int(os.getenv("ACCESS_TOKEN_MINUTES", "15"))
@@ -33,7 +40,7 @@ class Settings:
     email_from: str = os.getenv("EMAIL_FROM", "FDX <noreply@fdx.local>")
     resend_api_key: str = os.getenv("RESEND_API_KEY", "")
     super_admin_email: str = os.getenv("FDX_SUPER_ADMIN_EMAIL", "superadmin@fdx.io")
-    super_admin_password: str = os.getenv("FDX_SUPER_ADMIN_PASSWORD", "SuperAdmin@123")
+    super_admin_password: str = required_env("FDX_SUPER_ADMIN_PASSWORD")
     environment: str = os.getenv("FDX_ENVIRONMENT", "development")
     retention_scheduler_enabled: bool = os.getenv("RETENTION_SCHEDULER_ENABLED", "true").lower() in {"1", "true", "yes"}
     retention_poll_seconds: int = int(os.getenv("RETENTION_POLL_SECONDS", "60"))
@@ -65,7 +72,6 @@ class Settings:
         "FDX_EMBEDDER_MODEL_SHA256",
         "c594643ebe011c2534dd870d4abb0635ec27ce58e50b53f40b8d888a395e575e",
     )
-    resend_webhook_secret: str = os.getenv("RESEND_WEBHOOK_SECRET", "")
     email_webhook_secret: str = os.getenv("EMAIL_WEBHOOK_SECRET", "")
 
 

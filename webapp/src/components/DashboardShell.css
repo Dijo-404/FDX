@@ -1,7 +1,8 @@
 .shell-root {
   display: grid;
   grid-template-columns: 250px 1fr;
-  min-height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
 }
 
 .shell-sidebar {
@@ -9,37 +10,30 @@
   grid-template-rows: auto 1fr auto;
   padding: 22px 16px;
   gap: 8px;
-  background: linear-gradient(175deg, #1a2559 0%, #141b42 55%, #0f1430 100%);
-  color: #e8ebf7;
+  background: var(--brand-dark);
+  color: var(--on-primary);
 }
 
 .shell-logo {
   display: flex;
-  align-items: center;
-  gap: 11px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
   padding: 4px 6px 20px;
   margin-bottom: 8px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.1);
 }
 
-.shell-logo-mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 34px;
-  height: 34px;
-  border-radius: var(--radius-md);
-  background: var(--violet-500);
-  color: var(--on-primary);
-  font-weight: 700;
-  font-size: 12px;
-  letter-spacing: 0.02em;
-  box-shadow: 0 2px 8px rgba(83, 58, 253, 0.4);
+.shell-logo-image {
+  display: block;
+  width: 142px;
+  height: auto;
+  flex: none;
 }
 
 .shell-logo-role {
-  font-size: 12.5px;
-  font-weight: 500;
+  font-size: 11.5px;
+  font-weight: 300;
   color: rgba(232, 235, 247, 0.72);
   letter-spacing: 0.01em;
 }
@@ -54,7 +48,7 @@
 .shell-nav-label {
   padding: 10px 12px 6px;
   font-size: 10.5px;
-  font-weight: 600;
+  font-weight: 400;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: rgba(232, 235, 247, 0.5);
@@ -75,17 +69,17 @@
   border-left: 2px solid transparent;
   color: rgba(232, 235, 247, 0.8);
   font-size: 13.5px;
-  font-weight: 500;
+  font-weight: 300;
   text-decoration: none;
   transition:
-    background 0.2s cubic-bezier(0.16, 1, 0.3, 1),
-    color 0.2s cubic-bezier(0.16, 1, 0.3, 1),
-    border-color 0.2s cubic-bezier(0.16, 1, 0.3, 1),
-    transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    background 0.15s ease,
+    color 0.15s ease,
+    border-color 0.15s ease,
+    transform 0.15s ease;
 }
 
 .shell-nav-item svg {
-  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: transform 0.15s ease;
   flex: none;
 }
 
@@ -100,14 +94,10 @@
 }
 
 .shell-nav-item.active {
-  background: linear-gradient(
-    90deg,
-    rgba(102, 94, 253, 0.26),
-    rgba(102, 94, 253, 0.08)
-  );
+  background: rgba(102, 94, 253, 0.22);
   border-left-color: var(--indigo-500);
   color: #fff;
-  font-weight: 600;
+  font-weight: 400;
 }
 
 .shell-logout {
@@ -122,21 +112,29 @@
   background: transparent;
   color: rgba(232, 235, 247, 0.68);
   font-size: 13.5px;
-  font-weight: 500;
+  font-weight: 300;
   transition:
     background 0.2s ease,
-    color 0.2s ease;
+    color 0.2s ease,
+    transform 0.15s ease;
 }
 
 .shell-logout:hover {
   background: rgba(255, 255, 255, 0.055);
   color: #fff;
+  transform: translateX(2px);
+}
+
+.shell-logout:active {
+  transform: translateX(1px) scale(0.98);
 }
 
 .shell-main {
   min-width: 0;
+  min-height: 0;
   display: grid;
   grid-template-rows: auto 1fr;
+  background: var(--bg);
 }
 
 .shell-topbar {
@@ -158,6 +156,13 @@
 
 .shell-menu {
   display: none;
+  transition:
+    opacity 0.12s ease,
+    transform 0.12s ease;
+}
+
+.shell-menu:active {
+  transform: scale(0.92);
 }
 .shell-alert {
   position: relative;
@@ -175,8 +180,8 @@
 }
 
 .shell-topbar h1 {
-  font-size: 19px;
-  font-weight: 600;
+  font-size: 22px;
+  font-weight: 300;
   letter-spacing: -0.2px;
 }
 
@@ -220,16 +225,178 @@
   justify-content: center;
   width: 36px;
   height: 36px;
+  padding: 0;
+  border: 0;
   border-radius: 50%;
   background: var(--violet-500);
   color: var(--on-primary);
   font-weight: 400;
   font-size: 14px;
+  transition:
+    opacity 0.12s ease,
+    transform 0.12s ease;
+}
+
+.shell-avatar:hover {
+  transform: scale(1.06);
+}
+
+.shell-avatar:active {
+  transform: scale(0.94);
+}
+
+.shell-avatar:focus-visible {
+  outline: 3px solid rgba(83, 58, 253, 0.25);
+  outline-offset: 3px;
+}
+
+.account-popover {
+  z-index: 60;
+  width: min(320px, calc(100vw - 32px));
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+}
+
+.account-popover[data-state="open"] {
+  animation: popover-in 0.16s ease-out;
+}
+
+.account-popover[data-state="closed"] {
+  animation: popover-out 0.12s ease-out;
+}
+
+.account-popover:focus {
+  outline: none;
+}
+
+.account-popover-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.account-popover-avatar {
+  display: inline-grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--violet-500);
+  color: var(--on-primary);
+  font-size: 16px;
+}
+
+.account-popover-head > div {
+  display: grid;
+  min-width: 0;
+}
+
+.account-popover-head strong,
+.account-popover-head span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-popover-head strong {
+  font-size: 14px;
+}
+
+.account-popover-head span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.account-popover-details {
+  display: grid;
+  gap: 10px;
+  padding: 14px 0;
+}
+
+.account-popover-details > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.account-popover-details span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.account-popover-details strong {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 400;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-status {
+  color: var(--success);
+  text-transform: capitalize;
+}
+
+.account-signout {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 36px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-muted);
+  color: var(--ink-soft);
+  font-size: 12px;
+  transition:
+    border-color 0.12s ease,
+    color 0.12s ease,
+    background 0.12s ease,
+    transform 0.12s ease;
+}
+
+.account-signout:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+  transform: translateY(-1px);
+}
+
+.account-signout:active {
+  transform: scale(0.98);
+}
+
+.account-signout:focus-visible {
+  outline: 3px solid rgba(234, 34, 97, 0.14);
+  outline-offset: 2px;
+}
+
+.account-popover-arrow {
+  fill: var(--surface);
 }
 
 .shell-content {
+  min-height: 0;
   padding: 24px 28px 40px;
   overflow-y: auto;
+  background-color: var(--bg);
+  background-image: var(--gradient-mesh);
+  background-repeat: no-repeat;
+  background-position: center top;
+  background-size: 100% 360px;
+}
+
+.shell-content-dashboard {
+  overflow-y: hidden;
+  padding-bottom: 24px;
 }
 
 @media (max-width: 900px) {
@@ -244,7 +411,7 @@
     width: min(290px, 86vw);
     grid-template-rows: auto 1fr auto;
     transform: translateX(-102%);
-    transition: transform 0.2s ease;
+    transition: transform 0.16s ease;
   }
 
   .shell-sidebar.open {
@@ -272,6 +439,10 @@
   }
   .shell-content {
     padding: 20px 18px 32px;
+  }
+
+  .shell-content-dashboard {
+    overflow-y: auto;
   }
 
   .shell-logout span {

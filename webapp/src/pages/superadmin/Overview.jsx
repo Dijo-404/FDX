@@ -1,5 +1,5 @@
-import Badge from "../../components/Badge";
 import PageState from "../../components/PageState";
+import Icon from "../../components/Icon";
 import StatCard from "../../components/StatCard";
 import { useAuth } from "../../context/AuthContext";
 import { usePlatform } from "../../context/PlatformContext";
@@ -9,21 +9,18 @@ export default function SuperAdminOverview() {
   const { dashboard, loading, error } = usePlatform();
   const stats = dashboard?.stats;
   return (
-    <div className="page">
+    <div className="page dashboard-page admin-dashboard">
       <div className="page-head">
         <div>
           <p className="eyebrow">Platform overview</p>
           <h2>Good morning, {user?.name?.split(" ")[0]}</h2>
           <p>Live operational data from the FDX platform.</p>
         </div>
-        <div className="live-chip">
-          <span /> Live platform data
-        </div>
       </div>
       <PageState loading={loading} error={error}>
         {stats ? (
           <>
-            <div className="stat-grid stat-grid-wide">
+            <div className="stat-grid">
               <StatCard
                 icon="organization"
                 label="Organizations"
@@ -48,36 +45,8 @@ export default function SuperAdminOverview() {
                 value={stats.photos.toLocaleString()}
                 hint="Across all tenants"
               />
-              <StatCard
-                icon="storage"
-                label="Storage used"
-                value={`${stats.storageUsedGB} GB`}
-                hint={`of ${stats.storageLimitGB} GB`}
-              />
-              <StatCard
-                icon="processing"
-                label="Processing jobs"
-                value={stats.processingJobs}
-                hint={`${stats.failedJobs} failed`}
-              />
-              <StatCard
-                icon="delivery"
-                label="Emails sent"
-                value={stats.emailsSent}
-                hint="Enrollment and galleries"
-              />
-              <StatCard
-                icon="health"
-                label="System health"
-                value={
-                  dashboard.services.every((x) => x.status === "healthy")
-                    ? "Healthy"
-                    : "Degraded"
-                }
-                hint="Live dependency checks"
-              />
             </div>
-            <div className="two-col">
+            <div className="two-col admin-dashboard-workspace">
               <section className="card section">
                 <div className="section-head">
                   <div>
@@ -90,7 +59,7 @@ export default function SuperAdminOverview() {
                 </div>
                 {dashboard.organizations.length ? (
                   <div className="usage-list">
-                    {dashboard.organizations.map((org) => {
+                    {dashboard.organizations.slice(0, 5).map((org) => {
                       const percent = org.storageLimitGB
                         ? Math.round(
                             (org.storageUsedGB / org.storageLimitGB) * 100,
@@ -130,21 +99,80 @@ export default function SuperAdminOverview() {
                   </p>
                 )}
               </section>
-              <section className="card section">
-                <div className="section-head">
+              <section className="card section platform-pulse">
+                <div className="section-head platform-pulse-head">
                   <div>
-                    <h3>Recent activity</h3>
-                    <p>Security and operational audit trail</p>
+                    <h3>Platform pulse</h3>
+                    <p>Capacity, delivery and infrastructure</p>
+                  </div>
+                  <a className="text-link" href="/admin/system">
+                    System health
+                  </a>
+                </div>
+                <div className="pulse-grid">
+                  <div className="pulse-item">
+                    <span className="pulse-icon">
+                      <Icon name="storage" size={18} />
+                    </span>
+                    <div>
+                      <span>Storage used</span>
+                      <strong>{stats.storageUsedGB} GB</strong>
+                      <small>of {stats.storageLimitGB} GB</small>
+                    </div>
+                  </div>
+                  <div className="pulse-item">
+                    <span className="pulse-icon">
+                      <Icon name="processing" size={18} />
+                    </span>
+                    <div>
+                      <span>Processing jobs</span>
+                      <strong>{stats.processingJobs}</strong>
+                      <small>{stats.failedJobs} failed</small>
+                    </div>
+                  </div>
+                  <div className="pulse-item">
+                    <span className="pulse-icon">
+                      <Icon name="delivery" size={18} />
+                    </span>
+                    <div>
+                      <span>Emails sent</span>
+                      <strong>{stats.emailsSent}</strong>
+                      <small>Enrollment and galleries</small>
+                    </div>
+                  </div>
+                  <div className="pulse-item">
+                    <span className="pulse-icon">
+                      <Icon name="health" size={18} />
+                    </span>
+                    <div>
+                      <span>System health</span>
+                      <strong>
+                        {dashboard.services.every(
+                          (service) => service.status === "healthy",
+                        )
+                          ? "Healthy"
+                          : "Degraded"}
+                      </strong>
+                      <small>Live dependency checks</small>
+                    </div>
                   </div>
                 </div>
+                <div className="activity-summary-head">
+                  <div>
+                    <h4>Recent activity</h4>
+                    <p>Latest security and operational events</p>
+                  </div>
+                  <a className="text-link" href="/admin/logs">
+                    View all
+                  </a>
+                </div>
                 {dashboard.logs.length ? (
-                  <div className="activity-list">
-                    {dashboard.logs.map((log) => (
+                  <div className="activity-list activity-list-compact">
+                    {dashboard.logs.slice(0, 3).map((log) => (
                       <div className="activity-row" key={log.id}>
                         <span className={`activity-dot ${log.level}`} />
-                        <div>
+                        <div className="activity-content">
                           <p className="activity-action">{log.action}</p>
-                          <p className="activity-detail">{log.details}</p>
                           <p className="activity-meta">
                             {log.actor} ·{" "}
                             {new Date(log.timestamp).toLocaleString()}
@@ -158,32 +186,6 @@ export default function SuperAdminOverview() {
                 )}
               </section>
             </div>
-            <section className="card section">
-              <div className="section-head">
-                <div>
-                  <h3>Service status</h3>
-                  <p>Live application and infrastructure health</p>
-                </div>
-                <Badge
-                  status={
-                    dashboard.services.every((x) => x.status === "healthy")
-                      ? "healthy"
-                      : "degraded"
-                  }
-                />
-              </div>
-              <div className="service-grid">
-                {dashboard.services.map((service) => (
-                  <div className="service-item" key={service.name}>
-                    <span className={`service-status ${service.status}`} />
-                    <div>
-                      <strong>{service.name}</strong>
-                      <p>{service.detail}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </section>
           </>
         ) : null}
       </PageState>

@@ -6,7 +6,7 @@
 
 .gauge-value {
   font-size: 18px;
-  font-weight: 600;
+  font-weight: 300;
   fill: var(--ink);
   font-feature-settings: "tnum" 1;
 }

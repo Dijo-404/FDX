@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 104" role="img" aria-labelledby="title description">
+  <title id="title">FDX</title>
+  <desc id="description">FDX face delivery platform logo</desc>
+  <defs>
+    <linearGradient id="scanner" x1="0" y1="0" x2="92" y2="104" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0877ff" />
+      <stop offset="1" stop-color="#10b9f2" />
+    </linearGradient>
+  </defs>
+
+  <g fill="none" stroke="url(#scanner)" stroke-linecap="round" stroke-width="9">
+    <path d="M8 34V21C8 13 14 7 22 7h17" />
+    <path d="M61 7h12c8 0 14 6 14 14v17" />
+    <path d="M87 66v17c0 8-6 14-14 14H61" />
+    <path d="M39 97H22c-8 0-14-6-14-14V68" />
+  </g>
+
+  <circle cx="37" cy="48" r="12" fill="#f5f7ff" />
+  <path d="M18 83c2-14 10-21 19-21s17 7 20 21H18Z" fill="#f5f7ff" />
+
+  <g fill="url(#scanner)">
+    <rect x="58" y="39" width="10" height="10" rx="2" />
+    <rect x="69" y="52" width="14" height="14" rx="3" />
+    <rect x="58" y="68" width="10" height="10" rx="2" />
+    <rect x="72" y="73" width="9" height="9" rx="2" />
+  </g>
+
+  <g fill="#f5f7ff">
+    <path d="M112 25h61v15h-42v14h37v15h-37v26h-19V25Z" />
+    <path fill-rule="evenodd" d="M181 25h38c31 0 49 13 49 35s-18 35-49 35h-38V25Zm19 15v40h18c19 0 30-7 30-20s-11-20-30-20h-18Z" />
+    <path d="m274 25 22 26 21-26h23l-32 35 34 35h-24l-23-26-22 26h-23l33-36-32-34h23Z" />
+  </g>
+</svg>

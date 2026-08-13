@@ -11,7 +11,7 @@ export default function OrganizationOverview() {
   const events = dashboard?.events ?? [];
   const stats = dashboard?.stats;
   return (
-    <div className="page">
+    <div className="page dashboard-page">
       <div className="page-head">
         <div>
           <p className="eyebrow">Organization overview</p>

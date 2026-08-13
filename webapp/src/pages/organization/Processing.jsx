@@ -14,9 +14,6 @@ export default function Processing() {
             Live Kafka job state from ingestion through secure face matching.
           </p>
         </div>
-        <div className="live-chip">
-          <span /> Worker monitoring active
-        </div>
       </div>
       <div className="stat-grid">
         <StatCard

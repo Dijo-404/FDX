@@ -15,7 +15,9 @@
   text-align: center;
   transition:
     border-color 0.15s ease,
-    background 0.15s ease;
+    background 0.15s ease,
+    color 0.15s ease,
+    transform 0.15s ease;
 }
 
 .dropzone-area:hover,
@@ -23,6 +25,11 @@
   border-color: var(--violet-500);
   background: var(--gradient-soft);
   color: var(--violet-600);
+  transform: translateY(-2px) scale(1.005);
+}
+
+.dropzone-area:active {
+  transform: scale(0.995);
 }
 
 .dropzone-area strong {
@@ -52,6 +59,7 @@
   border-radius: var(--radius-sm);
   background: var(--surface-muted);
   font-size: 12px;
+  animation: item-in 0.16s ease-out both;
 }
 
 .dropzone-file-size {

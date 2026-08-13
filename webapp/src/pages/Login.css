@@ -1,9 +1,13 @@
 .login-shell {
-  min-height: 100vh;
+  min-height: 100dvh;
   display: grid;
   place-items: center;
   padding: 24px;
-  background: var(--gradient-mesh);
+  background-color: var(--bg);
+  background-image: var(--gradient-mesh);
+  background-position: center top;
+  background-repeat: no-repeat;
+  background-size: cover;
 }
 
 .login-panel {
@@ -19,20 +23,24 @@
   text-align: center;
 }
 
+.login-logo {
+  display: block;
+  width: 164px;
+  height: auto;
+}
+
 .login-mark {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 64px;
-  height: 40px;
-  padding: 0 14px;
-  border-radius: var(--radius-md);
-  background: var(--violet-500);
+  width: fit-content;
+  min-height: 36px;
+  padding: 8px 16px;
+  border-radius: var(--radius-pill);
+  background: var(--brand-dark);
   color: var(--on-primary);
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  font-size: 16px;
-  box-shadow: var(--shadow-md);
+  font-size: 14px;
+  font-weight: 400;
 }
 
 .login-brand p {
@@ -46,12 +54,14 @@
   gap: 16px;
   padding: 32px;
   background: var(--surface);
+  box-shadow: var(--shadow-md);
 }
 
 .login-card h1 {
-  font-size: 22px;
-  font-weight: 600;
-  letter-spacing: -0.2px;
+  font-size: 26px;
+  font-weight: 300;
+  line-height: 1.12;
+  letter-spacing: -0.26px;
 }
 
 .login-sub {

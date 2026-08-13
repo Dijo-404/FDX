@@ -14,6 +14,9 @@ depends_on = None
 
 def upgrade() -> None:
     connection = op.get_bind()
+    # A fresh database has no pgvector type yet, while the current metadata
+    # includes VECTOR(512) columns. Install the extension before create_all.
+    op.execute("CREATE EXTENSION IF NOT EXISTS vector")
     inspector = inspect(connection)
     if "organizations" not in inspector.get_table_names():
         Base.metadata.create_all(connection)

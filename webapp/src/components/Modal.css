@@ -6,12 +6,11 @@
   place-items: center;
   padding: 20px;
   background: rgba(9, 18, 43, 0.58);
-  backdrop-filter: blur(4px);
 }
 
 .modal-card {
   width: min(620px, 100%);
-  max-height: min(760px, calc(100vh - 40px));
+  max-height: min(760px, calc(100dvh - 40px));
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   background: var(--surface);
@@ -34,7 +33,9 @@
   border-bottom: 1px solid var(--border);
 }
 .modal-head h2 {
-  font-size: 18px;
+  font-size: 22px;
+  font-weight: 300;
+  letter-spacing: -0.22px;
 }
 .modal-head p {
   margin-top: 3px;
@@ -59,8 +60,16 @@
   border-radius: 50%;
   background: var(--surface);
   color: var(--muted);
+  transition:
+    border-color 0.12s ease,
+    color 0.12s ease,
+    transform 0.12s ease;
 }
 .icon-button:hover {
   color: var(--ink);
   border-color: var(--border-input);
+  transform: rotate(4deg) scale(1.04);
+}
+.icon-button:active {
+  transform: scale(0.94);
 }

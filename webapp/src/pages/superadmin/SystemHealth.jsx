@@ -3,50 +3,6 @@ import Icon from "../../components/Icon";
 import PageState from "../../components/PageState";
 import StatCard from "../../components/StatCard";
 import { usePlatform } from "../../context/PlatformContext";
-const layers = [
-  {
-    title: "Authentication",
-    text: "Single login · JWT session · Role resolver",
-    tone: "purple",
-    icon: "users",
-  },
-  {
-    title: "React frontends",
-    text: "Super Admin · Organization Admin",
-    tone: "blue",
-    icon: "dashboard",
-  },
-  {
-    title: "API gateway",
-    text: "NGINX · Routing · Rate limiting",
-    tone: "teal",
-    icon: "health",
-  },
-  {
-    title: "FastAPI",
-    text: "Auth · Events · Galleries · Retention",
-    tone: "orange",
-    icon: "processing",
-  },
-  {
-    title: "Data & jobs",
-    text: "PostgreSQL · Redis · Kafka",
-    tone: "slate",
-    icon: "storage",
-  },
-  {
-    title: "ML processing",
-    text: "RetinaFace → Align → AdaFace → Matching",
-    tone: "pink",
-    icon: "face",
-  },
-  {
-    title: "External services",
-    text: "S3 · SES / Resend · Workers",
-    tone: "green",
-    icon: "delivery",
-  },
-];
 export default function SystemHealth() {
   const { system, loading, error, adminRetryEmail } = usePlatform();
   const queues = system?.queues ?? {};
@@ -58,9 +14,6 @@ export default function SystemHealth() {
           <p className="eyebrow">Platform operations</p>
           <h2>System health</h2>
           <p>Live infrastructure checks and queue pressure.</p>
-        </div>
-        <div className="live-chip">
-          <span /> Dependency probes active
         </div>
       </div>
       <PageState loading={loading} error={error}>
@@ -190,34 +143,6 @@ export default function SystemHealth() {
                 {!system.recentEmails?.length ? (
                   <p className="empty-note">No email has been queued.</p>
                 ) : null}
-              </div>
-            </section>
-            <section className="card section">
-              <div className="section-head">
-                <div>
-                  <h3>FDX architecture</h3>
-                  <p>
-                    Authenticated traffic through the required production stack
-                  </p>
-                </div>
-                <span className="architecture-note">
-                  Tenant isolation enforced in FastAPI
-                </span>
-              </div>
-              <div className="architecture-flow">
-                <div className="architecture-start">FDX</div>
-                {layers.map((layer) => (
-                  <div
-                    className={`architecture-layer ${layer.tone}`}
-                    key={layer.title}
-                  >
-                    <Icon name={layer.icon} size={19} />
-                    <div>
-                      <strong>{layer.title}</strong>
-                      <p>{layer.text}</p>
-                    </div>
-                  </div>
-                ))}
               </div>
             </section>
           </>

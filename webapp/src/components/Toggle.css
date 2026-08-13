@@ -18,7 +18,9 @@
   height: 22px;
   border-radius: 999px;
   background: var(--border);
-  transition: background 0.15s ease;
+  transition:
+    background 0.15s ease,
+    transform 0.15s ease;
   flex: none;
 }
 
@@ -36,6 +38,10 @@
   background: #fff;
   box-shadow: var(--shadow-sm);
   transition: transform 0.15s ease;
+}
+
+.toggle:active .toggle-track {
+  transform: scale(0.96);
 }
 
 .toggle input:checked + .toggle-track .toggle-thumb {

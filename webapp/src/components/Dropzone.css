@@ -13,7 +13,9 @@
   background: var(--surface-muted);
   color: var(--muted);
   text-align: center;
-  transition: border-color 0.15s ease, background 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease;
 }
 
 .dropzone-area:hover,

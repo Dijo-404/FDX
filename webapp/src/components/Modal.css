@@ -30,11 +30,25 @@
   padding: 20px 22px;
 }
 
-.modal-head { border-bottom: 1px solid var(--border); }
-.modal-head h2 { font-size: 18px; }
-.modal-head p { margin-top: 3px; color: var(--muted); font-size: 13px; }
-.modal-body { padding: 22px; overflow-y: auto; }
-.modal-footer { justify-content: flex-end; border-top: 1px solid var(--border); }
+.modal-head {
+  border-bottom: 1px solid var(--border);
+}
+.modal-head h2 {
+  font-size: 18px;
+}
+.modal-head p {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.modal-body {
+  padding: 22px;
+  overflow-y: auto;
+}
+.modal-footer {
+  justify-content: flex-end;
+  border-top: 1px solid var(--border);
+}
 
 .icon-button {
   width: 34px;
@@ -46,4 +60,7 @@
   background: var(--surface);
   color: var(--muted);
 }
-.icon-button:hover { color: var(--ink); border-color: var(--border-input); }
+.icon-button:hover {
+  color: var(--ink);
+  border-color: var(--border-input);
+}

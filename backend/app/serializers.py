@@ -40,7 +40,9 @@ def user_json(user: User) -> dict:
 def organization_json(db: Session, organization: Organization) -> dict:
     users = db.scalar(select(func.count(User.id)).where(User.organization_id == organization.id)) or 0
     events = db.scalar(select(func.count(Event.id)).where(Event.organization_id == organization.id)) or 0
-    next_expiry = db.scalar(select(func.min(Event.expires_at)).where(Event.organization_id == organization.id, Event.status != "expired"))
+    next_expiry = db.scalar(
+        select(func.min(Event.expires_at)).where(Event.organization_id == organization.id, Event.status != "expired")
+    )
     return {
         "id": organization.id,
         "name": organization.name,
@@ -66,12 +68,66 @@ def event_json(db: Session, event: Event) -> dict:
     photos = db.scalar(select(func.count(Photo.id)).where(Photo.event_id == event.id)) or 0
     faces = db.scalar(select(func.count(FaceDetection.id)).where(FaceDetection.event_id == event.id)) or 0
     participants = db.scalar(select(func.count(Participant.id)).where(Participant.event_id == event.id)) or 0
-    enrolled = db.scalar(select(func.count(Participant.id)).where(Participant.event_id == event.id, Participant.enrollment_status == "verified")) or 0
-    matched = db.scalar(select(func.count(func.distinct(FaceMatch.participant_id))).where(FaceMatch.event_id == event.id, FaceMatch.participant_id.is_not(None), FaceMatch.state.in_(["high", "approved"]))) or 0
-    delivered = db.scalar(select(func.count(Delivery.id)).where(Delivery.event_id == event.id, Delivery.status == "delivered")) or 0
-    return {"id": event.id, "name": event.name, "description": event.description, "date": iso(event.event_date), "location": event.location, "retentionDays": event.retention_days, "expiresAt": iso(event.expires_at), "status": event.status, "photos": photos, "facesDetected": faces, "participants": participants, "enrolled": enrolled, "matched": matched, "delivered": delivered, "createdAt": iso(event.created_at)}
+    enrolled = (
+        db.scalar(
+            select(func.count(Participant.id)).where(
+                Participant.event_id == event.id,
+                Participant.enrollment_status == "verified",
+            )
+        )
+        or 0
+    )
+    matched = (
+        db.scalar(
+            select(func.count(func.distinct(FaceMatch.participant_id))).where(
+                FaceMatch.event_id == event.id,
+                FaceMatch.participant_id.is_not(None),
+                FaceMatch.state.in_(["high", "approved"]),
+            )
+        )
+        or 0
+    )
+    delivered = (
+        db.scalar(select(func.count(Delivery.id)).where(Delivery.event_id == event.id, Delivery.status == "delivered"))
+        or 0
+    )
+    return {
+        "id": event.id,
+        "name": event.name,
+        "description": event.description,
+        "date": iso(event.event_date),
+        "location": event.location,
+        "retentionDays": event.retention_days,
+        "expiresAt": iso(event.expires_at),
+        "status": event.status,
+        "photos": photos,
+        "facesDetected": faces,
+        "participants": participants,
+        "enrolled": enrolled,
+        "matched": matched,
+        "delivered": delivered,
+        "createdAt": iso(event.created_at),
+    }
 
 
 def participant_json(db: Session, participant: Participant) -> dict:
-    matches = db.scalar(select(func.count(FaceMatch.id)).where(FaceMatch.participant_id == participant.id, FaceMatch.state.in_(["high", "approved"]))) or 0
-    return {"id": participant.id, "eventId": participant.event_id, "event": participant.event.name, "name": participant.name, "email": participant.email, "enrollment": participant.enrollment_status, "delivery": participant.delivery_status, "matches": matches, "uploadedAt": iso(participant.created_at)}
+    matches = (
+        db.scalar(
+            select(func.count(FaceMatch.id)).where(
+                FaceMatch.participant_id == participant.id,
+                FaceMatch.state.in_(["high", "approved"]),
+            )
+        )
+        or 0
+    )
+    return {
+        "id": participant.id,
+        "eventId": participant.event_id,
+        "event": participant.event.name,
+        "name": participant.name,
+        "email": participant.email,
+        "enrollment": participant.enrollment_status,
+        "delivery": participant.delivery_status,
+        "matches": matches,
+        "uploadedAt": iso(participant.created_at),
+    }

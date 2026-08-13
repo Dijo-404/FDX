@@ -1,18 +1,25 @@
 import { useState } from "react";
-import { Navigate, useNavigate } from "react-router-dom";
+import { Link, Navigate, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import "./Login.css";
 
 export default function Login() {
-  const { login, isAuthenticated, user } = useAuth();
+  const { login, isAuthenticated, loading, user } = useAuth();
   const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
+  if (loading) return null;
+
   if (isAuthenticated) {
-    return <Navigate to={user.role === "super_admin" ? "/admin" : "/organization"} replace />;
+    return (
+      <Navigate
+        to={user.role === "super_admin" ? "/admin" : "/organization"}
+        replace
+      />
+    );
   }
 
   async function handleSubmit(event) {
@@ -21,7 +28,10 @@ export default function Login() {
     setSubmitting(true);
     try {
       const { user: loggedInUser } = await login(email, password);
-      navigate(loggedInUser.role === "super_admin" ? "/admin" : "/organization", { replace: true });
+      navigate(
+        loggedInUser.role === "super_admin" ? "/admin" : "/organization",
+        { replace: true },
+      );
     } catch (err) {
       setError(err.message);
     } finally {
@@ -39,7 +49,9 @@ export default function Login() {
 
         <form className="login-card card" onSubmit={handleSubmit}>
           <h1>Sign in</h1>
-          <p className="login-sub">One secure login for FDX and organization administrators.</p>
+          <p className="login-sub">
+            One secure login for FDX and organization administrators.
+          </p>
 
           <div className="field">
             <label htmlFor="email">Email</label>
@@ -67,12 +79,23 @@ export default function Login() {
             />
           </div>
 
-          {error ? <p className="login-error" role="alert">{error}</p> : null}
+          {error ? (
+            <p className="login-error" role="alert">
+              {error}
+            </p>
+          ) : null}
 
-          <button type="submit" className="btn primary login-submit" disabled={submitting}>
+          <button
+            type="submit"
+            className="btn primary login-submit"
+            disabled={submitting}
+          >
             {submitting ? "Signing in..." : "Sign in"}
           </button>
 
+          <Link to="/forgot-password" className="text-link">
+            Forgot password?
+          </Link>
         </form>
       </div>
     </div>

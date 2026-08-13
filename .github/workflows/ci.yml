@@ -1,0 +1,84 @@
+name: FDX CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, feature/scale]
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: webapp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: webapp/package-lock.json
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run lint
+      - run: npm run build
+      - run: npm audit --audit-level=high
+
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.6-pg17
+        env:
+          POSTGRES_DB: fdx
+          POSTGRES_USER: fdx
+          POSTGRES_PASSWORD: fdx-ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U fdx -d fdx"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql+psycopg://fdx:fdx-ci@127.0.0.1:5432/fdx
+      FDX_ENVIRONMENT: test
+      PYTHONPATH: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - run: pip install -r backend/requirements.txt ruff pytest pip-audit
+      - run: ruff check backend
+      - run: ruff format --check backend
+      - run: python -m compileall -q backend/app backend/alembic
+      - run: alembic -c backend/alembic.ini upgrade head
+      - run: pytest -q backend/tests
+      - run: pip-audit -r backend/requirements.txt
+
+  infrastructure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install cfn-lint
+      - run: docker compose config --quiet
+      - run: cfn-lint deploy/aws/platform.yml
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - run: find . -path './.venv' -prune -o -name '*.sh' -type f -print0 | xargs -0 shellcheck
+      - run: bash -n run-platform.sh stop-platform.sh
+      - run: sh -n deploy/aws/publish.sh tools/verify_models.sh backend/entrypoint.sh
+
+  images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -f backend/Dockerfile -t fdx-api:ci .
+      - run: docker build -f webapp/Dockerfile -t fdx-web:ci .

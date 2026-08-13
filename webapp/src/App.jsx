@@ -24,6 +24,8 @@ import EmailOutbox from "./pages/organization/EmailOutbox";
 import AcceptInvite from "./pages/public/AcceptInvite";
 import Enrollment from "./pages/public/Enrollment";
 import Gallery from "./pages/public/Gallery";
+import ForgotPassword from "./pages/public/ForgotPassword";
+import ResetPassword from "./pages/public/ResetPassword";
 
 const SUPER_ADMIN_NAV = [
   { to: "/admin", label: "Overview", icon: "dashboard", end: true },
@@ -69,6 +71,8 @@ export default function App() {
       <Route path="/accept-invite/:token" element={<AcceptInvite />} />
       <Route path="/enroll/:token" element={<Enrollment />} />
       <Route path="/gallery/:token" element={<Gallery />} />
+      <Route path="/forgot-password" element={<ForgotPassword />} />
+      <Route path="/reset-password/:token" element={<ResetPassword />} />
 
       <Route
         path="/admin"

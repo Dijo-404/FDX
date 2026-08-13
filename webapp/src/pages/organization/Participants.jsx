@@ -6,12 +6,18 @@ import Modal from "../../components/Modal";
 import StatCard from "../../components/StatCard";
 import { usePlatform } from "../../context/PlatformContext";
 export default function Participants() {
-  const { events, participants, importParticipants } = usePlatform();
+  const {
+    events,
+    participants,
+    validateParticipantImport,
+    confirmParticipantImport,
+  } = usePlatform();
   const [eventId, setEventId] = useState("");
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [queued, setQueued] = useState(null);
   const [notice, setNotice] = useState("");
+  const [preview, setPreview] = useState(null);
   const selectedEvent = eventId || events[0]?.id || "";
   const visible = useMemo(
     () =>
@@ -28,11 +34,17 @@ export default function Participants() {
   const invited = participants.filter((p) => p.enrollment === "invited").length;
   async function runImport() {
     if (!queued || !selectedEvent) return;
-    const result = await importParticipants(selectedEvent, queued);
+    if (!preview) {
+      const result = await validateParticipantImport(selectedEvent, queued);
+      setPreview(result);
+      return;
+    }
+    const result = await confirmParticipantImport(selectedEvent, preview.id);
     setNotice(
-      `${result.imported} imported · ${result.duplicates} duplicates · ${result.invalid} invalid`,
+      `${result.participants_created} participants imported and invitations queued`,
     );
     setQueued(null);
+    setPreview(null);
     setOpen(false);
   }
   return (
@@ -166,7 +178,7 @@ export default function Participants() {
               disabled={!queued || !selectedEvent}
               onClick={runImport}
             >
-              Validate & import
+              {preview ? "Confirm import" : "Validate import"}
             </button>
           </>
         }
@@ -190,7 +202,10 @@ export default function Participants() {
             hint="Drop .csv, .xlsx or click to browse"
             accept=".csv,.xls,.xlsx,.xlsm"
             multiple={false}
-            onFiles={(files) => setQueued(files[0])}
+            onFiles={(files) => {
+              setQueued(files[0]);
+              setPreview(null);
+            }}
           />
           {queued ? (
             <div className="validation-summary">
@@ -199,6 +214,21 @@ export default function Participants() {
                 <strong>{queued.name}</strong>
                 <p>Ready for server-side validation</p>
               </div>
+            </div>
+          ) : null}
+          {preview ? (
+            <div
+              className={
+                preview.invalid_rows ? "notice warning" : "notice success"
+              }
+            >
+              {preview.valid_rows} valid · {preview.duplicate_rows} duplicate ·{" "}
+              {preview.invalid_rows} invalid
+              {preview.errors?.slice(0, 5).map((row) => (
+                <p key={row.row}>
+                  Row {row.row}: {row.errors.join(", ")}
+                </p>
+              ))}
             </div>
           ) : null}
         </div>

@@ -2,7 +2,7 @@ name: fdx
 
 services:
   postgres:
-    image: postgres:17-alpine
+    image: pgvector/pgvector:0.8.6-pg17
     environment:
       POSTGRES_DB: fdx
       POSTGRES_USER: fdx
@@ -54,14 +54,14 @@ services:
   ml:
     build:
       context: .
-      dockerfile: face-processing/ml/Dockerfile
+      dockerfile: face-processing/service/Dockerfile
     environment:
       ML_PORT: 3000
       ML_HOST: 0.0.0.0
       MODELS_ROOT: /app/models
       FDX_DEVICE: ${FDX_DEVICE:-cpu}
     volumes:
-      - ./models:/app/models:ro
+      - ./face-processing/models:/app/models:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:3000/healthcheck', timeout=2)"]
       interval: 15s
@@ -82,6 +82,10 @@ services:
       STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
       STORAGE_ROOT: /data/storage
       JWT_SECRET: ${JWT_SECRET:-replace-this-before-production}
+      JWT_ISSUER: ${JWT_ISSUER:-fdx}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-fdx-web}
+      ACCESS_TOKEN_MINUTES: ${ACCESS_TOKEN_MINUTES:-15}
+      REFRESH_TOKEN_DAYS: ${REFRESH_TOKEN_DAYS:-7}
       FRONTEND_URL: ${FRONTEND_URL:-http://127.0.0.1:8080}
       FDX_ENVIRONMENT: ${FDX_ENVIRONMENT:-development}
       FDX_SUPER_ADMIN_EMAIL: ${FDX_SUPER_ADMIN_EMAIL:-superadmin@fdx.io}
@@ -89,8 +93,16 @@ services:
       EMAIL_PROVIDER: ${EMAIL_PROVIDER:-outbox}
       EMAIL_FROM: ${EMAIL_FROM:-FDX <noreply@fdx.local>}
       RESEND_API_KEY: ${RESEND_API_KEY:-}
+      EMAIL_WEBHOOK_SECRET: ${EMAIL_WEBHOOK_SECRET:-}
       AWS_REGION: ${AWS_REGION:-ap-south-1}
       S3_BUCKET: ${S3_BUCKET:-}
+      CONSENT_POLICY_VERSION: ${CONSENT_POLICY_VERSION:-2026-08-13}
+      MATCH_AUTO_THRESHOLD: ${MATCH_AUTO_THRESHOLD:-0.85}
+      MATCH_REVIEW_THRESHOLD: ${MATCH_REVIEW_THRESHOLD:-0.65}
+      MATCH_RUNNER_UP_MARGIN: ${MATCH_RUNNER_UP_MARGIN:-0.08}
+      THRESHOLD_PROFILE_VERSION: ${THRESHOLD_PROFILE_VERSION:-default-v1}
+      FDX_DETECTOR_MODEL_VERSION: ${FDX_DETECTOR_MODEL_VERSION:-retinaface-r50-v1}
+      FDX_EMBEDDER_MODEL_VERSION: ${FDX_EMBEDDER_MODEL_VERSION:-adaface-ir101-ms1mv2-v1}
     volumes:
       - object_storage:/data/storage
     depends_on:
@@ -98,7 +110,7 @@ services:
       redis: { condition: service_healthy }
       kafka: { condition: service_healthy }
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3)"]
       interval: 10s
       timeout: 5s
       retries: 20

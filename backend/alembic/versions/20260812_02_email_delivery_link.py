@@ -14,8 +14,18 @@ def upgrade() -> None:
     inspector = inspect(op.get_bind())
     columns = {column["name"] for column in inspector.get_columns("email_outbox")}
     if "delivery_id" not in columns:
-        op.add_column("email_outbox", sa.Column("delivery_id", sa.String(length=36), nullable=True))
-        op.create_foreign_key("fk_email_outbox_delivery_id", "email_outbox", "deliveries", ["delivery_id"], ["id"], ondelete="SET NULL")
+        op.add_column(
+            "email_outbox",
+            sa.Column("delivery_id", sa.String(length=36), nullable=True),
+        )
+        op.create_foreign_key(
+            "fk_email_outbox_delivery_id",
+            "email_outbox",
+            "deliveries",
+            ["delivery_id"],
+            ["id"],
+            ondelete="SET NULL",
+        )
         op.create_index("ix_email_outbox_delivery_id", "email_outbox", ["delivery_id"])
 
 

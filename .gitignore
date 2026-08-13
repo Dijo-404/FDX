@@ -1,4 +1,5 @@
-models/
+/face-processing/models/detection/*.onnx
+/face-processing/models/recognition/*.onnx
 .venv/
 .env
 data/

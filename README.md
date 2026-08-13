@@ -1,25 +1,29 @@
 # FDX
 
-FDX is a multi-tenant event-photo delivery platform implementing the workflow in `docs/workflow.txt`. A single JWT login routes Super Admins, Organization Admins, and restricted Staff users to role-scoped React dashboards.
+FDX is a multi-tenant event-photo delivery platform implementing the product workflow in [`docs/workflow.md`](docs/workflow.md) and the V2 technical contract in [`docs/specs.md`](docs/specs.md). A single JWT login routes Super Admins, Organization Admins, and restricted Staff users to role-scoped React dashboards. The implementation map is maintained in [`docs/spec-implementation.md`](docs/spec-implementation.md).
 
 ## Architecture
 
 - `webapp/` — React and Vite dashboards plus participant enrollment and private gallery pages.
 - `backend/` — FastAPI API, PostgreSQL models/Alembic migrations, authentication, storage, email, retention, and Kafka worker.
-- `face-processing/ml/` — Gunicorn-hosted RetinaFace R50 and AdaFace IR101 service.
+- `face-processing/service/` — Gunicorn-hosted face-processing inference service.
+- `face-processing/models/detection/` — RetinaFace face-detection weights.
+- `face-processing/models/recognition/` — AdaFace face-recognition weights.
 - `deploy/nginx/` — frontend hosting, reverse proxy, upload limits, and API rate limiting.
 - `deploy/aws/` — production CloudFormation and publishing workflow.
 - `tools/` — model integrity and end-to-end platform verification.
 
 PostgreSQL is the source of truth, Redis provides login rate limiting and health caching, Kafka distributes processing jobs, and the worker retains a PostgreSQL fallback queue. Development media uses a Docker volume; production media uses private S3 storage with generated thumbnails.
 
+The stable dashboard remains compatible with the original `/api` contract while security-sensitive and high-scale workflows use the additive `/api/v2` contract: rotating refresh sessions, import preview/confirmation, presigned upload batches, processing/review, delivery, and asynchronous gallery exports.
+
 ## Required models
 
-Place these files under `models/onnx/`:
+Place each ONNX model under the directory matching its role:
 
 ```text
-models/onnx/retinaface-r50.onnx
-models/onnx/adaface-ir101-ms1mv2.onnx
+face-processing/models/detection/retinaface-r50.onnx
+face-processing/models/recognition/adaface-ir101-ms1mv2.onnx
 ```
 
 Verify them with:
@@ -67,11 +71,19 @@ node tools/verify_platform.mjs
 To include the real ML enrollment/matching/gallery path:
 
 ```sh
-FDX_VERIFY_FACE_IMAGE=face-processing/ml/assets/warmup/einstein.jpeg \
+FDX_VERIFY_FACE_IMAGE=face-processing/service/assets/warmup/einstein.jpeg \
   node tools/verify_platform.mjs
 ```
 
 Set `FDX_VERIFY_XLS=/path/to/participants.xls` to include legacy Excel verification.
+
+Run the V2 acceptance flow (refresh replay prevention, invitations, tenant isolation, import idempotency, direct upload, real ML, private gallery, async ZIP export, and logout revocation):
+
+```sh
+FDX_VERIFY_FACE_IMAGE=/path/to/clear-face.jpg node tools/verify_v2.mjs
+```
+
+API service metrics are available at `GET /metrics`; dependency probes are exposed at `/health/live`, `/health/ready`, and `/health/dependencies`.
 
 Frontend checks:
 
@@ -85,5 +97,13 @@ npm run build
 ## AWS deployment
 
 `deploy/aws/platform.yml` provisions the production baseline: VPC, HTTPS ALB, EC2 Auto Scaling, RDS PostgreSQL, ElastiCache Redis, MSK Kafka, ECR, S3/Glacier, SES/IAM, Secrets Manager, SSM, and scheduled Lambda retention.
+
+For an NVIDIA worker host with NVIDIA Container Toolkit installed, build the dedicated CUDA image and set `ML_IMAGE` and `FDX_DEVICE=cuda` in the production environment:
+
+```sh
+docker build -f face-processing/service/Dockerfile.gpu -t fdx-ml:gpu .
+```
+
+The regular ML Dockerfile remains the CPU image; both variants serve inference through Gunicorn.
 
 See [`deploy/aws/README.md`](deploy/aws/README.md) for deployment and image publishing commands.

@@ -3,6 +3,7 @@
 webapp/node_modules
 webapp/dist
 data
+face-processing/models
 *.zip
 *.log
 __pycache__

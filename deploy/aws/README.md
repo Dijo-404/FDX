@@ -10,7 +10,7 @@
 
 ## Prerequisites
 
-Install AWS CLI v2 and Docker, configure an AWS account, place both ONNX model files under `models/onnx/`, request an ACM certificate in the deployment region, and move the SES account out of sandbox when sending outside verified recipients.
+Install AWS CLI v2 and Docker, configure an AWS account, place RetinaFace under `face-processing/models/detection/` and AdaFace under `face-processing/models/recognition/`, request an ACM certificate in the deployment region, and move the SES account out of sandbox when sending outside verified recipients.
 
 Deploy the infrastructure (replace the example values):
 

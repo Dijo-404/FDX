@@ -2,6 +2,7 @@
 /face-processing/models/recognition/*.onnx
 .venv/
 .env
+.env.production
 data/
 webapp/node_modules/
 webapp/dist/

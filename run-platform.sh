@@ -32,6 +32,7 @@ if [[ ! -f .env ]]; then
   echo "Created .env with generated local credentials. Keep this file private."
 fi
 
-docker compose up --build -d
-docker compose ps
-echo "FDX is available at http://127.0.0.1:${FDX_WEB_PORT:-8080}"
+docker compose --env-file .env -f compose.local.yml up --build -d
+docker compose --env-file .env -f compose.local.yml ps
+web_address="$(docker compose --env-file .env -f compose.local.yml port web 80)"
+echo "FDX is available at http://$web_address"

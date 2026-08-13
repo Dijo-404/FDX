@@ -1,5 +1,7 @@
 name: fdx
 
+# Self-contained deployment for development, automated testing, and demos.
+# External service overrides are intentionally not accepted in this file.
 services:
   postgres:
     image: pgvector/pgvector:0.8.6-pg17
@@ -75,27 +77,26 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     environment: &api_environment
-      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://fdx:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/fdx}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}
-      ML_SERVICE_URL: ${ML_SERVICE_URL:-http://ml:3000}
-      STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
+      DATABASE_URL: postgresql+psycopg://fdx:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/fdx
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_SECURITY_PROTOCOL: PLAINTEXT
+      ML_SERVICE_URL: http://ml:3000
+      STORAGE_BACKEND: local
       STORAGE_ROOT: /data/storage
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
       JWT_ISSUER: ${JWT_ISSUER:-fdx}
       JWT_AUDIENCE: ${JWT_AUDIENCE:-fdx-web}
       ACCESS_TOKEN_MINUTES: ${ACCESS_TOKEN_MINUTES:-15}
       REFRESH_TOKEN_DAYS: ${REFRESH_TOKEN_DAYS:-7}
-      FRONTEND_URL: ${FRONTEND_URL:-http://127.0.0.1:8080}
-      FDX_ENVIRONMENT: ${FDX_ENVIRONMENT:-development}
+      FRONTEND_URL: http://127.0.0.1:${FDX_WEB_PORT:-8080}
+      FDX_ENVIRONMENT: development
       FDX_SUPER_ADMIN_EMAIL: ${FDX_SUPER_ADMIN_EMAIL:-superadmin@fdx.io}
       FDX_SUPER_ADMIN_PASSWORD: ${FDX_SUPER_ADMIN_PASSWORD:?Set FDX_SUPER_ADMIN_PASSWORD in .env}
-      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-outbox}
-      EMAIL_FROM: ${EMAIL_FROM:-FDX <noreply@fdx.local>}
-      RESEND_API_KEY: ${RESEND_API_KEY:-}
-      EMAIL_WEBHOOK_SECRET: ${EMAIL_WEBHOOK_SECRET:-}
-      AWS_REGION: ${AWS_REGION:-ap-south-1}
-      S3_BUCKET: ${S3_BUCKET:-}
+      EMAIL_PROVIDER: outbox
+      EMAIL_FROM: FDX <noreply@fdx.local>
+      EMAIL_WEBHOOK_SECRET: ${EMAIL_WEBHOOK_SECRET:?Set EMAIL_WEBHOOK_SECRET in .env}
+      RETENTION_SCHEDULER_ENABLED: "true"
       CONSENT_POLICY_VERSION: ${CONSENT_POLICY_VERSION:-2026-08-13}
       MATCH_AUTO_THRESHOLD: ${MATCH_AUTO_THRESHOLD:-0.85}
       MATCH_REVIEW_THRESHOLD: ${MATCH_REVIEW_THRESHOLD:-0.65}
@@ -138,7 +139,7 @@ services:
       context: .
       dockerfile: webapp/Dockerfile
     ports:
-      - "${FDX_WEB_PORT:-8080}:80"
+      - "127.0.0.1:${FDX_WEB_PORT:-8080}:80"
     depends_on:
       api: { condition: service_healthy }
     restart: unless-stopped

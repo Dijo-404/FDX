@@ -277,7 +277,7 @@ Resources:
             curl -fsSL https://github.com/docker/compose/releases/download/${DockerComposeVersion}/docker-compose-linux-x86_64 -o /usr/local/lib/docker/cli-plugins/docker-compose
             chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
             mkdir -p /opt/fdx/face-processing/models/detection /opt/fdx/face-processing/models/recognition
-            until aws s3 cp s3://${MediaBucket}/deployments/docker-compose.aws.yml /opt/fdx/docker-compose.yml --region ${AWS::Region}; do sleep 30; done
+            until aws s3 cp s3://${MediaBucket}/deployments/compose.cloud.yml /opt/fdx/compose.cloud.yml --region ${AWS::Region}; do sleep 30; done
             aws s3 cp s3://${MediaBucket}/face-processing/models/detection/retinaface-r50.onnx /opt/fdx/face-processing/models/detection/retinaface-r50.onnx --region ${AWS::Region}
             aws s3 cp s3://${MediaBucket}/face-processing/models/recognition/adaface-ir101-ms1mv2.onnx /opt/fdx/face-processing/models/recognition/adaface-ir101-ms1mv2.onnx --region ${AWS::Region}
             DB_SECRET=$(aws secretsmanager get-secret-value --secret-id ${DatabaseSecret} --query SecretString --output text --region ${AWS::Region})
@@ -303,8 +303,8 @@ Resources:
             ENV
             aws ecr get-login-password --region ${AWS::Region} | docker login --username AWS --password-stdin ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com
             cd /opt/fdx
-            docker compose pull
-            docker compose up -d
+            docker compose --env-file .env -f compose.cloud.yml pull
+            docker compose --env-file .env -f compose.cloud.yml up -d
   AutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
     Properties:
@@ -346,7 +346,7 @@ Resources:
               ids = [instance["InstanceId"] for reservation in response["Reservations"] for instance in reservation["Instances"]][:1]
               if not ids:
                   return {"triggered": 0}
-              command = "cd /opt/fdx && docker compose exec -T worker python -c 'from app.worker import run_retention; run_retention()'"
+              command = "cd /opt/fdx && docker compose --env-file .env -f compose.cloud.yml exec -T worker python -c 'from app.worker import run_retention; run_retention()'"
               boto3.client("ssm").send_command(InstanceIds=ids, DocumentName="AWS-RunShellScript", Parameters={"commands":[command]})
               return {"triggered": len(ids)}
   RetentionSchedule:

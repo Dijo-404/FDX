@@ -10,6 +10,8 @@ FDX is a multi-tenant event-photo delivery platform implementing the product wor
 - `face-processing/models/detection/` — RetinaFace face-detection weights.
 - `face-processing/models/recognition/` — AdaFace face-recognition weights.
 - `deploy/nginx/` — frontend hosting, reverse proxy, upload limits, and API rate limiting.
+- `compose.local.yml` — fully self-contained local/test/demo deployment.
+- `compose.cloud.yml` — production application runtime with required managed dependencies.
 - `deploy/aws/` — production CloudFormation and publishing workflow.
 - `tools/` — model integrity and end-to-end platform verification.
 
@@ -32,7 +34,16 @@ Verify them with:
 ./tools/verify_models.sh
 ```
 
-## Run locally
+## Deployment types
+
+FDX provides two separate deployment paths:
+
+- **Local/test/demo:** `compose.local.yml` builds and runs the entire stack on one machine, including PostgreSQL, Redis, Kafka, local object storage, and the email outbox.
+- **Cloud/production:** `compose.cloud.yml` runs prebuilt application containers and requires managed PostgreSQL, Redis, Kafka, S3, SES, HTTPS, and production secrets. The included cloud implementation targets AWS.
+
+See [`deploy/README.md`](deploy/README.md) for the full deployment contract.
+
+### Local/test/demo
 
 Docker with the Compose plugin is required.
 
@@ -58,7 +69,7 @@ Stop without deleting persistent volumes:
 6. Approved matches are delivered through expiring private galleries with secure originals and generated thumbnails.
 7. Event deletion or scheduled retention removes originals, thumbnails, embeddings, and derived records while releasing the exact storage usage.
 
-Development uses the persistent email outbox. Production supports Resend or AWS SES; configure `EMAIL_PROVIDER`, `EMAIL_FROM`, and the relevant credentials/instance role.
+The local deployment uses the persistent email outbox. The AWS production deployment uses SES with a verified sender and instance-role credentials.
 
 ## Verification
 
@@ -96,7 +107,7 @@ npm run lint
 npm run build
 ```
 
-## AWS deployment
+### Cloud/production on AWS
 
 `deploy/aws/platform.yml` provisions the production baseline: VPC, HTTPS ALB, EC2 Auto Scaling, RDS PostgreSQL, ElastiCache Redis, MSK Kafka, ECR, S3/Glacier, SES/IAM, Secrets Manager, SSM, and scheduled Lambda retention.
 
@@ -108,4 +119,4 @@ docker build -f face-processing/service/Dockerfile.gpu -t fdx-ml:gpu .
 
 The regular ML Dockerfile remains the CPU image; both variants serve inference through Gunicorn.
 
-See [`deploy/aws/README.md`](deploy/aws/README.md) for deployment and image publishing commands.
+See [`deploy/aws/README.md`](deploy/aws/README.md) for the production command and infrastructure details.

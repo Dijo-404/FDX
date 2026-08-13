@@ -1,0 +1,79 @@
+name: fdx-production
+
+# Production runtime. PostgreSQL, Redis, Kafka, object storage, email, secrets,
+# TLS, and container images must be supplied by the cloud deployment.
+x-api-environment: &api_environment
+  DATABASE_URL: ${DATABASE_URL:?Set the production DATABASE_URL}
+  REDIS_URL: ${REDIS_URL:?Set the production REDIS_URL}
+  KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:?Set the production Kafka brokers}
+  KAFKA_SECURITY_PROTOCOL: ${KAFKA_SECURITY_PROTOCOL:-SSL}
+  ML_SERVICE_URL: http://ml:3000
+  STORAGE_BACKEND: s3
+  S3_BUCKET: ${S3_BUCKET:?Set the private production S3 bucket}
+  AWS_REGION: ${AWS_REGION:?Set the production AWS region}
+  JWT_SECRET: ${JWT_SECRET:?Set the production JWT secret}
+  JWT_ISSUER: ${JWT_ISSUER:-fdx}
+  JWT_AUDIENCE: ${JWT_AUDIENCE:-fdx-web}
+  ACCESS_TOKEN_MINUTES: ${ACCESS_TOKEN_MINUTES:-15}
+  REFRESH_TOKEN_DAYS: ${REFRESH_TOKEN_DAYS:-7}
+  FRONTEND_URL: ${FRONTEND_URL:?Set the public HTTPS frontend URL}
+  FDX_ENVIRONMENT: production
+  FDX_SUPER_ADMIN_EMAIL: ${FDX_SUPER_ADMIN_EMAIL:?Set the production Super Admin email}
+  FDX_SUPER_ADMIN_PASSWORD: ${FDX_SUPER_ADMIN_PASSWORD:?Set the production Super Admin password}
+  EMAIL_PROVIDER: ses
+  EMAIL_FROM: ${EMAIL_FROM:?Set the verified production sender}
+  EMAIL_WEBHOOK_SECRET: ${EMAIL_WEBHOOK_SECRET:?Set the production email webhook secret}
+  RETENTION_SCHEDULER_ENABLED: "false"
+  CONSENT_POLICY_VERSION: ${CONSENT_POLICY_VERSION:-2026-08-13}
+  MATCH_AUTO_THRESHOLD: ${MATCH_AUTO_THRESHOLD:-0.85}
+  MATCH_REVIEW_THRESHOLD: ${MATCH_REVIEW_THRESHOLD:-0.65}
+  MATCH_RUNNER_UP_MARGIN: ${MATCH_RUNNER_UP_MARGIN:-0.08}
+  THRESHOLD_PROFILE_VERSION: ${THRESHOLD_PROFILE_VERSION:-default-v1}
+  FDX_DETECTOR_MODEL_VERSION: ${FDX_DETECTOR_MODEL_VERSION:-retinaface-r50-v1}
+  FDX_EMBEDDER_MODEL_VERSION: ${FDX_EMBEDDER_MODEL_VERSION:-adaface-ir101-ms1mv2-v1}
+
+services:
+  ml:
+    image: ${ML_IMAGE:?Set the production ML image}
+    environment:
+      FDX_DEVICE: ${FDX_DEVICE:-cpu}
+      ML_WARMUP_ON_IMPORT: "1"
+    volumes:
+      - /opt/fdx/face-processing/models:/app/models:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:3000/healthcheck', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    restart: unless-stopped
+
+  api:
+    image: ${API_IMAGE:?Set the production API image}
+    environment: *api_environment
+    depends_on:
+      ml: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  worker:
+    image: ${API_IMAGE:?Set the production API image}
+    command: ["python", "-m", "app.worker"]
+    environment:
+      <<: *api_environment
+      RUN_MIGRATIONS: "false"
+    depends_on:
+      api: { condition: service_healthy }
+      ml: { condition: service_healthy }
+    restart: unless-stopped
+
+  web:
+    image: ${WEB_IMAGE:?Set the production web image}
+    ports: ["8080:80"]
+    depends_on:
+      api: { condition: service_healthy }
+    restart: unless-stopped

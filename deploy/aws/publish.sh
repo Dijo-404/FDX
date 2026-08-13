@@ -39,7 +39,7 @@ docker push "$API_REPOSITORY:latest"
 docker push "$WEB_REPOSITORY:latest"
 docker push "$ML_REPOSITORY:latest"
 
-aws s3 cp "$PROJECT_ROOT/docker-compose.aws.yml" "s3://$MEDIA_BUCKET/deployments/docker-compose.aws.yml" --region "$AWS_DEPLOY_REGION"
+aws s3 cp "$PROJECT_ROOT/compose.cloud.yml" "s3://$MEDIA_BUCKET/deployments/compose.cloud.yml" --region "$AWS_DEPLOY_REGION"
 aws s3 cp "$DETECTION_MODEL" "s3://$MEDIA_BUCKET/face-processing/models/detection/retinaface-r50.onnx" --region "$AWS_DEPLOY_REGION"
 aws s3 cp "$RECOGNITION_MODEL" "s3://$MEDIA_BUCKET/face-processing/models/recognition/adaface-ir101-ms1mv2.onnx" --region "$AWS_DEPLOY_REGION"
 

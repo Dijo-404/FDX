@@ -9,19 +9,65 @@ const size = (value) =>
     ? `${(value / 1024 ** 3).toFixed(2)} GB`
     : `${(value / 1024 ** 2).toFixed(1)} MB`;
 
+const supportedImage = (file) => /\.(jpe?g|png|webp)$/i.test(file.name);
+const supportedBatchFile = (file) =>
+  supportedImage(file) || /\.zip$/i.test(file.name);
+
 export default function Uploads() {
   const { events, uploads, uploadPhotos } = usePlatform();
   const [eventId, setEventId] = useState("");
   const [files, setFiles] = useState([]);
+  const [selectionSource, setSelectionSource] = useState("");
+  const [selectionNotice, setSelectionNotice] = useState("");
   const [status, setStatus] = useState("");
+  const [error, setError] = useState("");
+  const [progress, setProgress] = useState(null);
+  const [isUploading, setIsUploading] = useState(false);
   const selected = eventId || events[0]?.id || "";
 
   async function start() {
-    const result = await uploadPhotos(selected, files);
-    setStatus(
-      `${result.uploaded.length} photos stored · ${result.jobsPublished} Kafka jobs published · ${result.skipped.length} skipped`,
+    if (!selected || !files.length || isUploading) return;
+    setIsUploading(true);
+    setError("");
+    setStatus("");
+    try {
+      const result = await uploadPhotos(selected, files, setProgress);
+      setStatus(
+        `${result.uploaded.length} photos stored · ${result.jobsPublished} processing jobs created · ${result.skipped.length} skipped`,
+      );
+      setFiles([]);
+      setSelectionSource("");
+      setSelectionNotice("");
+    } catch (uploadError) {
+      setError(
+        `Upload failed: ${uploadError.message || "The upload could not be completed."}`,
+      );
+    } finally {
+      setIsUploading(false);
+    }
+  }
+
+  function selectFiles(source, nextFiles) {
+    const accepted = nextFiles.filter(
+      (file) =>
+        file.size > 0 &&
+        (source === "folder" ? supportedImage(file) : supportedBatchFile(file)),
     );
-    setFiles([]);
+    const ignored = nextFiles.length - accepted.length;
+    setSelectionSource(source);
+    setFiles(accepted);
+    setStatus("");
+    setError(
+      accepted.length
+        ? ""
+        : "No supported, non-empty image files were found in that selection.",
+    );
+    setSelectionNotice(
+      ignored
+        ? `${ignored} unsupported or empty ${ignored === 1 ? "file was" : "files were"} ignored.`
+        : "",
+    );
+    setProgress(null);
   }
 
   return (
@@ -51,7 +97,7 @@ export default function Uploads() {
             <select
               value={selected}
               onChange={(event) => setEventId(event.target.value)}
-              disabled={!events.length}
+              disabled={!events.length || isUploading}
             >
               {events.length ? (
                 events.map((event) => (
@@ -68,29 +114,74 @@ export default function Uploads() {
             title="Drop an event photo batch"
             hint="JPG, PNG, WebP, or ZIP archive"
             accept="image/jpeg,image/png,image/webp,.zip,application/zip"
-            onFiles={setFiles}
+            disabled={isUploading}
+            value={selectionSource === "batch" ? files : []}
+            onFiles={(nextFiles) => selectFiles("batch", nextFiles)}
           />
           <Dropzone
             title="Choose an event folder"
             hint="Select a photographer folder as one complete batch"
             accept="image/jpeg,image/png,image/webp"
             directory
-            onFiles={setFiles}
+            disabled={isUploading}
+            value={selectionSource === "folder" ? files : []}
+            onFiles={(nextFiles) => selectFiles("folder", nextFiles)}
           />
           {files.length ? (
-            <div className="notice success">
+            <div
+              className={`notice ${isUploading ? "upload-active" : "success"}`}
+            >
               <Icon name="check" size={16} />
-              {files.length} files ready
+              <span>
+                {isUploading
+                  ? progress?.message || "Starting upload…"
+                  : `${files.length} ${files.length === 1 ? "file" : "files"} ready`}
+              </span>
               <button
                 className="btn primary small"
-                disabled={!selected}
+                disabled={!selected || isUploading}
                 onClick={start}
               >
-                Start upload
+                {isUploading ? `${progress?.percent ?? 0}%` : "Start upload"}
               </button>
             </div>
           ) : null}
-          {status ? <div className="notice success">{status}</div> : null}
+          {isUploading ? (
+            <div className="upload-progress" aria-live="polite">
+              <div
+                className="upload-progress-bar"
+                role="progressbar"
+                aria-label="Photo upload progress"
+                aria-valuemin="0"
+                aria-valuemax="100"
+                aria-valuenow={progress?.percent ?? 0}
+              >
+                <span style={{ width: `${progress?.percent ?? 0}%` }} />
+              </div>
+              <small>Keep this page open until the upload completes.</small>
+            </div>
+          ) : null}
+          {status ? (
+            <div className="notice success" role="status">
+              <Icon name="check" size={16} />
+              {status}
+            </div>
+          ) : null}
+          {selectionNotice ? (
+            <div className="notice warning" role="status">
+              {selectionNotice}
+            </div>
+          ) : null}
+          {error ? (
+            <div className="notice error" role="alert">
+              <span>{error}</span>
+              {files.length ? (
+                <button className="btn small" onClick={start}>
+                  Try again
+                </button>
+              ) : null}
+            </div>
+          ) : null}
         </section>
         <aside className="card section upload-guidance">
           <div>

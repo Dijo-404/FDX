@@ -21,6 +21,7 @@ class Settings:
     kafka_bootstrap_servers: str = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "127.0.0.1:9092")
     kafka_topic: str = os.getenv("KAFKA_TOPIC", "fdx.photo.processing")
     kafka_security_protocol: str = os.getenv("KAFKA_SECURITY_PROTOCOL", "PLAINTEXT")
+    worker_concurrency: int = max(1, int(os.getenv("WORKER_CONCURRENCY", "4")))
     jwt_secret: str = required_env("JWT_SECRET")
     jwt_issuer: str = os.getenv("JWT_ISSUER", "fdx-api")
     jwt_audience: str = os.getenv("JWT_AUDIENCE", "fdx-web")

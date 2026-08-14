@@ -93,8 +93,9 @@ services:
       FDX_ENVIRONMENT: development
       FDX_SUPER_ADMIN_EMAIL: ${FDX_SUPER_ADMIN_EMAIL:-superadmin@fdx.io}
       FDX_SUPER_ADMIN_PASSWORD: ${FDX_SUPER_ADMIN_PASSWORD:?Set FDX_SUPER_ADMIN_PASSWORD in .env}
-      EMAIL_PROVIDER: outbox
-      EMAIL_FROM: FDX <noreply@fdx.local>
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-outbox}
+      EMAIL_FROM: ${EMAIL_FROM:-FDX <noreply@fdx.local>}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
       EMAIL_WEBHOOK_SECRET: ${EMAIL_WEBHOOK_SECRET:?Set EMAIL_WEBHOOK_SECRET in .env}
       RETENTION_SCHEDULER_ENABLED: "true"
       CONSENT_POLICY_VERSION: ${CONSENT_POLICY_VERSION:-2026-08-13}
@@ -125,6 +126,7 @@ services:
     environment:
       <<: *api_environment
       RUN_MIGRATIONS: "false"
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
     volumes:
       - object_storage:/data/storage
     depends_on:

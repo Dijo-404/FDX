@@ -1,9 +1,18 @@
+import { useEffect } from "react";
 import Badge from "../../components/Badge";
 import StatCard from "../../components/StatCard";
 import { usePlatform } from "../../context/PlatformContext";
 export default function Processing() {
-  const { jobs, processingStats } = usePlatform();
+  const { jobs, processingStats, refresh } = usePlatform();
   const stats = processingStats ?? {};
+  const hasActiveJobs = (stats.activeJobs ?? 0) > 0;
+
+  useEffect(() => {
+    if (!hasActiveJobs) return undefined;
+    const timer = window.setInterval(refresh, 2000);
+    return () => window.clearInterval(timer);
+  }, [hasActiveJobs, refresh]);
+
   return (
     <div className="page">
       <div className="page-head">
@@ -31,7 +40,7 @@ export default function Processing() {
         <StatCard
           icon="health"
           label="Completed"
-          value={jobs.filter((x) => x.status === "completed").length}
+          value={stats.completedJobs ?? 0}
           hint="Stored in PostgreSQL"
         />
         <StatCard

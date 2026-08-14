@@ -66,6 +66,7 @@ services:
     environment:
       <<: *api_environment
       RUN_MIGRATIONS: "false"
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
     depends_on:
       api: { condition: service_healthy }
       ml: { condition: service_healthy }

@@ -23,18 +23,37 @@ async function checksum(file) {
   ).join("");
 }
 
+function imageContentType(file) {
+  if (["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
+    return file.type;
+  }
+  const extension = file.name.toLowerCase().split(".").pop();
+  return {
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    png: "image/png",
+    webp: "image/webp",
+  }[extension];
+}
+
 async function runBounded(tasks, concurrency = 6) {
   let next = 0;
+  let failure = null;
   async function worker() {
-    while (next < tasks.length) {
+    while (!failure && next < tasks.length) {
       const index = next;
       next += 1;
-      await tasks[index]();
+      try {
+        await tasks[index]();
+      } catch (error) {
+        failure ||= error;
+      }
     }
   }
   await Promise.all(
     Array.from({ length: Math.min(concurrency, tasks.length) }, worker),
   );
+  if (failure) throw failure;
 }
 
 async function uploadTarget(target, file) {
@@ -235,21 +254,69 @@ export function PlatformProvider({ children }) {
         await refresh();
         return response.data;
       },
-      uploadPhotos: async (eventId, files) => {
+      uploadPhotos: async (eventId, files, onProgress = () => {}) => {
         if (files.some((file) => file.name.toLowerCase().endsWith(".zip"))) {
+          onProgress({
+            phase: "uploading",
+            completed: 0,
+            total: files.length,
+            percent: 10,
+            message: "Uploading archive…",
+          });
           const body = new FormData();
           body.append("event_id", eventId);
           files.forEach((file) => body.append("files", file));
-          return mutate("/organization/photos", { method: "POST", body });
+          const result = await mutate("/organization/photos", {
+            method: "POST",
+            body,
+          });
+          onProgress({
+            phase: "complete",
+            completed: files.length,
+            total: files.length,
+            percent: 100,
+            message: "Upload complete",
+          });
+          return result;
         }
+        let prepared = 0;
+        onProgress({
+          phase: "preparing",
+          completed: 0,
+          total: files.length,
+          percent: 0,
+          message: `Preparing ${files.length} ${files.length === 1 ? "photo" : "photos"}…`,
+        });
         const manifest = await Promise.all(
-          files.map(async (file) => ({
-            filename: file.webkitRelativePath || file.name,
-            content_type: file.type,
-            size_bytes: file.size,
-            sha256: await checksum(file),
-          })),
+          files.map(async (file) => {
+            const contentType = imageContentType(file);
+            if (!contentType) {
+              throw new Error(`${file.name} is not a supported image file`);
+            }
+            const item = {
+              filename: file.webkitRelativePath || file.name,
+              content_type: contentType,
+              size_bytes: file.size,
+              sha256: await checksum(file),
+            };
+            prepared += 1;
+            onProgress({
+              phase: "preparing",
+              completed: prepared,
+              total: files.length,
+              percent: Math.round((prepared / files.length) * 20),
+              message: `Preparing photos (${prepared}/${files.length})…`,
+            });
+            return item;
+          }),
         );
+        onProgress({
+          phase: "reserving",
+          completed: 0,
+          total: files.length,
+          percent: 22,
+          message: "Reserving storage…",
+        });
         const reservation = await api(`/v2/events/${eventId}/upload-batches`, {
           method: "POST",
           body: JSON.stringify({
@@ -258,36 +325,80 @@ export function PlatformProvider({ children }) {
           }),
         });
         const batchId = reservation.data.id;
-        for (let offset = 0; offset < files.length; offset += 500) {
-          const chunkFiles = files.slice(offset, offset + 500);
-          const presigned = await api(
-            `/v2/events/${eventId}/upload-batches/${batchId}/presign`,
+        try {
+          let uploaded = 0;
+          for (let offset = 0; offset < files.length; offset += 500) {
+            const chunkFiles = files.slice(offset, offset + 500);
+            const presigned = await api(
+              `/v2/events/${eventId}/upload-batches/${batchId}/presign`,
+              {
+                method: "POST",
+                body: JSON.stringify({
+                  files: manifest.slice(offset, offset + 500),
+                }),
+              },
+            );
+            onProgress({
+              phase: "uploading",
+              completed: uploaded,
+              total: files.length,
+              percent: 25 + Math.round((uploaded / files.length) * 65),
+              message: `Uploading photos (${uploaded}/${files.length})…`,
+            });
+            await runBounded(
+              presigned.data.files.map((target, index) => async () => {
+                await uploadTarget(target, chunkFiles[index]);
+                uploaded += 1;
+                onProgress({
+                  phase: "uploading",
+                  completed: uploaded,
+                  total: files.length,
+                  percent: 25 + Math.round((uploaded / files.length) * 65),
+                  message: `Uploading photos (${uploaded}/${files.length})…`,
+                });
+              }),
+            );
+          }
+          onProgress({
+            phase: "finalizing",
+            completed: files.length,
+            total: files.length,
+            percent: 94,
+            message: "Verifying uploads and creating processing jobs…",
+          });
+          const completed = await api(
+            `/v2/events/${eventId}/upload-batches/${batchId}/complete`,
             {
               method: "POST",
-              body: JSON.stringify({
-                files: manifest.slice(offset, offset + 500),
-              }),
+              headers: { "Idempotency-Key": uuid() },
             },
           );
-          await runBounded(
-            presigned.data.files.map(
-              (target, index) => () => uploadTarget(target, chunkFiles[index]),
-            ),
-          );
+          await refresh();
+          onProgress({
+            phase: "complete",
+            completed: files.length,
+            total: files.length,
+            percent: 100,
+            message: "Upload complete",
+          });
+          return {
+            uploaded: completed.data.jobs,
+            jobsPublished: completed.data.jobs.length,
+            skipped: [],
+          };
+        } catch (uploadError) {
+          // Release the reservation and remove partial objects when a batch
+          // fails. The original error is the useful message for the user.
+          try {
+            await api(
+              `/v2/events/${eventId}/upload-batches/${batchId}/cancel`,
+              { method: "POST" },
+            );
+          } catch {
+            // Server-side expiry remains a fallback if cleanup is unavailable.
+          }
+          throw uploadError;
         }
-        const completed = await api(
-          `/v2/events/${eventId}/upload-batches/${batchId}/complete`,
-          {
-            method: "POST",
-            headers: { "Idempotency-Key": uuid() },
-          },
-        );
-        await refresh();
-        return {
-          uploaded: completed.data.jobs,
-          jobsPublished: completed.data.jobs.length,
-          skipped: [],
-        };
       },
       uploadPhotosLegacy: (eventId, files) => {
         const body = new FormData();

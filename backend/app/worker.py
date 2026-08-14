@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import io
+import logging
 import math
 import os
 import socket
 import time
 import zipfile
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 
 from kafka import KafkaConsumer
@@ -42,10 +44,24 @@ from .models import (
 )
 
 WORKER_NAME = f"ml-{socket.gethostname()}-{os.getpid()}"
+logger = logging.getLogger("fdx.worker")
 
 
 class PermanentJobError(Exception):
     """An invalid input that must not consume the transient retry budget."""
+
+
+def image_content_type(image: Image.Image) -> str | None:
+    """Return the inference MIME type for a Pillow-verified image."""
+    # Phones commonly encode multi-picture JPEGs. Pillow identifies these as
+    # MPO, but the first frame is a standards-compliant JPEG image and is safe
+    # to process through the same detector path.
+    return {
+        "JPEG": "image/jpeg",
+        "MPO": "image/jpeg",
+        "PNG": "image/png",
+        "WEBP": "image/webp",
+    }.get(image.format)
 
 
 def process_gallery_export(job_id: str) -> None:
@@ -184,17 +200,29 @@ def process_job(job_id: str) -> None:
         photo = db.get(Photo, job.photo_id)
         photo.processing_status = "processing"
         db.commit()
+        logger.info("Started %s job %s for media %s", job.job_type, job.id, photo.id)
         try:
             content, content_type = storage.read(photo.storage_key)
             if hashlib.sha256(content).hexdigest() != photo.sha256:
                 raise PermanentJobError("Media checksum does not match the verified upload manifest")
             with Image.open(io.BytesIO(content)) as source:
-                detected_type = Image.MIME.get(source.format)
+                detected_type = image_content_type(source)
                 if source.width * source.height > settings.max_image_pixels:
                     raise PermanentJobError("Media exceeds the configured pixel limit")
                 source.verify()
-            if detected_type not in {"image/jpeg", "image/png", "image/webp"} or detected_type != photo.content_type:
-                raise PermanentJobError("Media magic bytes do not match the declared content type")
+            if detected_type not in {"image/jpeg", "image/png", "image/webp"}:
+                raise PermanentJobError("Media magic bytes are not a supported image type")
+            # Browser and operating-system MIME detection is frequently wrong
+            # for otherwise valid images. The verified magic bytes are the
+            # source of truth for inference and persisted metadata.
+            if photo.content_type != detected_type:
+                logger.warning(
+                    "Correcting media %s content type from %s to %s",
+                    photo.id,
+                    photo.content_type,
+                    detected_type,
+                )
+                photo.content_type = detected_type
             if not photo.thumbnail_storage_key:
                 with Image.open(io.BytesIO(content)) as source:
                     thumbnail = ImageOps.exif_transpose(source).convert("RGB")
@@ -219,7 +247,7 @@ def process_job(job_id: str) -> None:
                         bytes=len(thumbnail_content),
                     )
                 )
-            results = ml_faces(content, photo.filename, content_type)
+            results = ml_faces(content, photo.filename, detected_type)
             db.refresh(job)
             if job.status == "CANCEL_REQUESTED":
                 job.status = "CANCELLED"
@@ -372,6 +400,7 @@ def process_job(job_id: str) -> None:
                     organization_id=job.organization_id,
                 )
             db.commit()
+            logger.info("Completed job %s with %s detected faces", job.id, len(results))
         except Exception as exc:
             db.rollback()
             job = db.get(ProcessingJob, job_id)
@@ -414,6 +443,7 @@ def process_job(job_id: str) -> None:
                 job.organization_id if job else None,
             )
             db.commit()
+            logger.exception("Processing job %s failed: %s", job_id, exc)
 
 
 def run_retention() -> None:
@@ -556,8 +586,18 @@ def run_retention() -> None:
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=os.getenv("LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    logging.getLogger("kafka").setLevel(logging.WARNING)
     bootstrap()
     consumer = None
+    executor = ThreadPoolExecutor(
+        max_workers=settings.worker_concurrency,
+        thread_name_prefix="fdx-ml",
+    )
+    in_flight: set[Future] = set()
     last_consumer_attempt = 0.0
     last_retention = 0.0
     last_email_poll = 0.0
@@ -569,6 +609,7 @@ def main() -> None:
     last_reconciliation = 0.0
     while True:
         now = time.monotonic()
+        in_flight = {future for future in in_flight if not future.done()}
         if consumer is None and now - last_consumer_attempt > 5:
             last_consumer_attempt = now
             try:
@@ -594,9 +635,6 @@ def main() -> None:
         if now - last_email_poll > settings.email_poll_seconds:
             retry_failed_emails()
             last_email_poll = now
-        if now - last_queue_poll > 10:
-            process_pending_jobs()
-            last_queue_poll = now
         if now - last_outbox_poll > 2:
             publish_outbox_events()
             last_outbox_poll = now
@@ -613,14 +651,33 @@ def main() -> None:
             reconcile_storage_usage()
             last_reconciliation = now
         if consumer is None:
+            available_workers = settings.worker_concurrency - len(in_flight)
+            if available_workers and now - last_queue_poll > 2:
+                for job_id in pending_job_ids(available_workers):
+                    in_flight.add(executor.submit(process_job, job_id))
+                last_queue_poll = now
             time.sleep(1)
             continue
         try:
-            batches = consumer.poll(timeout_ms=5_000, max_records=10)
+            available_workers = settings.worker_concurrency - len(in_flight)
+            if not available_workers:
+                time.sleep(0.05)
+                continue
+            batches = consumer.poll(timeout_ms=1_000, max_records=available_workers)
+            submitted = 0
             for messages in batches.values():
                 for message in messages:
                     if "job_id" in message.value:
-                        process_job(message.value["job_id"])
+                        in_flight.add(executor.submit(process_job, message.value["job_id"]))
+                        submitted += 1
+            # Kafka is the primary transport. Only consult PostgreSQL when no
+            # Kafka work arrived, preserving a durable path for unpublished
+            # or previously stranded jobs.
+            available_workers = settings.worker_concurrency - len(in_flight)
+            if not submitted and available_workers and now - last_queue_poll > 10:
+                for job_id in pending_job_ids(available_workers):
+                    in_flight.add(executor.submit(process_job, job_id))
+                last_queue_poll = now
         except KafkaError:
             try:
                 consumer.close(autocommit=False)
@@ -719,20 +776,27 @@ def send_scheduled_notifications() -> None:
         db.commit()
 
 
-def process_pending_jobs() -> None:
-    """Use PostgreSQL as a durable fallback when Kafka publication is interrupted."""
+def pending_job_ids(limit: int = 10) -> list[str]:
+    """Return runnable jobs for the durable PostgreSQL fallback queue."""
     with SessionLocal() as db:
-        job_ids = db.scalars(
-            select(ProcessingJob.id)
-            .where(
-                ProcessingJob.status.in_(["queued", "RETRY_SCHEDULED"]),
-                (ProcessingJob.next_attempt_at.is_(None)) | (ProcessingJob.next_attempt_at <= utcnow()),
-                ProcessingJob.created_at <= utcnow() - timedelta(seconds=5),
+        return list(
+            db.scalars(
+                select(ProcessingJob.id)
+                .where(
+                    ProcessingJob.status.in_(["queued", "RETRY_SCHEDULED"]),
+                    (ProcessingJob.next_attempt_at.is_(None)) | (ProcessingJob.next_attempt_at <= utcnow()),
+                    ProcessingJob.created_at <= utcnow() - timedelta(seconds=5),
+                )
+                .order_by(ProcessingJob.created_at)
+                .limit(limit)
             )
-            .order_by(ProcessingJob.created_at)
-            .limit(10)
-        ).all()
-    for job_id in job_ids:
+            .all()
+        )
+
+
+def process_pending_jobs(limit: int = 10) -> None:
+    """Synchronously drain fallback jobs (kept for maintenance and tests)."""
+    for job_id in pending_job_ids(limit):
         process_job(job_id)
 
 

@@ -1287,8 +1287,14 @@ def processing(user: User = Depends(require_org_member), db: Session = Depends(g
     )
     return {
         "stats": {
-            "activeJobs": counts.get("queued", 0) + counts.get("processing", 0),
-            "failedJobs": counts.get("failed", 0),
+            "activeJobs": (
+                counts.get("queued", 0)
+                + counts.get("processing", 0)
+                + counts.get("RETRY_SCHEDULED", 0)
+                + counts.get("CANCEL_REQUESTED", 0)
+            ),
+            "completedJobs": counts.get("completed", 0),
+            "failedJobs": counts.get("failed", 0) + counts.get("DEAD_LETTERED", 0),
             "facesDetected": faces,
         },
         "items": [

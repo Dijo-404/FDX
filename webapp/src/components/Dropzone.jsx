@@ -8,28 +8,34 @@ export default function Dropzone({
   accept,
   multiple = true,
   directory = false,
+  disabled = false,
+  value,
   onFiles,
 }) {
   const inputRef = useRef(null);
   const [dragOver, setDragOver] = useState(false);
-  const [files, setFiles] = useState([]);
+  const [localFiles, setLocalFiles] = useState([]);
+  const files = value ?? localFiles;
 
   function addFiles(fileList) {
+    if (disabled) return;
     const list = Array.from(fileList);
-    setFiles((previous) => {
+    const update = (previous) => {
       const next = multiple ? [...list, ...previous] : list.slice(0, 1);
       onFiles?.(next);
       return next;
-    });
+    };
+    if (value === undefined) setLocalFiles(update);
+    else update(files);
   }
 
   return (
     <div className="dropzone-block">
       <div
-        className={`dropzone-area${dragOver ? " dragover" : ""}`}
+        className={`dropzone-area${dragOver ? " dragover" : ""}${disabled ? " disabled" : ""}`}
         onDragOver={(event) => {
           event.preventDefault();
-          setDragOver(true);
+          if (!disabled) setDragOver(true);
         }}
         onDragLeave={() => setDragOver(false)}
         onDrop={(event) => {
@@ -37,15 +43,23 @@ export default function Dropzone({
           setDragOver(false);
           addFiles(event.dataTransfer.files);
         }}
-        onClick={() => inputRef.current?.click()}
+        onClick={() => !disabled && inputRef.current?.click()}
+        onKeyDown={(event) => {
+          if (!disabled && (event.key === "Enter" || event.key === " ")) {
+            event.preventDefault();
+            inputRef.current?.click();
+          }
+        }}
         role="button"
         tabIndex={0}
+        aria-disabled={disabled}
       >
         <input
           ref={inputRef}
           type="file"
           accept={accept}
           multiple={multiple}
+          disabled={disabled}
           webkitdirectory={directory ? "" : undefined}
           directory={directory ? "" : undefined}
           hidden

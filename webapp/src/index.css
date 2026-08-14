@@ -1103,6 +1103,18 @@ tbody tr:hover {
   color: var(--success);
   background: var(--success-bg);
 }
+.notice.error {
+  color: var(--danger);
+  background: var(--danger-bg);
+}
+.notice.warning {
+  color: var(--warning);
+  background: var(--warning-bg);
+}
+.notice.upload-active {
+  color: var(--violet-600);
+  background: var(--gradient-soft);
+}
 .notice .btn {
   margin-left: auto;
 }
@@ -1322,6 +1334,26 @@ tbody tr:hover {
   display: grid;
   grid-template-columns: 1.5fr 0.7fr;
   gap: 16px;
+}
+.upload-progress {
+  display: grid;
+  gap: 7px;
+}
+.upload-progress small {
+  color: var(--muted);
+}
+.upload-progress-bar {
+  height: 8px;
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  background: var(--surface-muted);
+}
+.upload-progress-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--violet-500);
+  transition: width 0.2s ease;
 }
 .upload-guidance > div {
   position: relative;

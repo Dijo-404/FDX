@@ -104,11 +104,7 @@ async function request(path, options = {}, retry = true) {
     await refreshSession();
     return request(path, options, false);
   }
-  const payload = response.headers
-    .get("content-type")
-    ?.includes("application/json")
-    ? await response.json()
-    : null;
+  const payload = await parseResponsePayload(response);
   if (!response.ok) {
     const validation = payload?.error?.details?.errors ?? payload?.detail;
     const detail = Array.isArray(validation)
@@ -119,6 +115,20 @@ async function request(path, options = {}, retry = true) {
     );
   }
   return payload;
+}
+
+export async function parseResponsePayload(response) {
+  const contentType = response.headers.get("content-type") || "";
+  if (!contentType.includes("application/json")) return null;
+
+  const text = await response.text();
+  if (!text.trim()) return null;
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(`Server returned invalid JSON (${response.status})`);
+  }
 }
 
 export function api(path, options = {}) {

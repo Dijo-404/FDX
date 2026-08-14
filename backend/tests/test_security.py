@@ -5,7 +5,7 @@ from app.auth import hash_password, new_opaque_token, token_pair, verify_passwor
 from app.database import SessionLocal
 from app.main import app
 from app.models import Event, Organization, OrganizationType, User, UserRole
-from app.worker import cosine
+from app.worker import cosine, image_content_type
 from fastapi.testclient import TestClient
 from sqlalchemy import delete
 
@@ -30,6 +30,11 @@ def test_cosine_similarity_is_bounded_for_normalized_embeddings():
     assert cosine([1.0, 0.0], [1.0, 0.0]) == 1.0
     assert cosine([1.0, 0.0], [0.0, 1.0]) == 0.0
     assert cosine([1.0, 0.0], [-1.0, 0.0]) == -1.0
+
+
+def test_mpo_phone_photos_use_the_jpeg_inference_path():
+    image = type("ImageStub", (), {"format": "MPO"})()
+    assert image_content_type(image) == "image/jpeg"
 
 
 def test_cross_tenant_event_endpoints_return_not_found():

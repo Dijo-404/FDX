@@ -32,6 +32,12 @@
   transform: scale(0.995);
 }
 
+.dropzone-area.disabled {
+  opacity: 0.58;
+  cursor: wait;
+  transform: none;
+}
+
 .dropzone-area strong {
   font-size: 13px;
   color: var(--ink);

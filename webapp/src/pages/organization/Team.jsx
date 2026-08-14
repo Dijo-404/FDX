@@ -3,6 +3,7 @@ import Badge from "../../components/Badge";
 import Icon from "../../components/Icon";
 import Modal from "../../components/Modal";
 import { usePlatform } from "../../context/PlatformContext";
+import useInfiniteScroll from "../../hooks/useInfiniteScroll";
 
 export default function Team() {
   const { team, inviteStaff } = usePlatform();
@@ -19,6 +20,7 @@ export default function Team() {
       ),
     [query, team],
   );
+  const teamTable = useInfiniteScroll(visible, "Team member records");
   async function submit(event) {
     event.preventDefault();
     const invited = await inviteStaff(form);
@@ -56,13 +58,19 @@ export default function Team() {
           <Icon name="search" size={15} />
           <input
             value={query}
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(event) => {
+              setQuery(event.target.value);
+              teamTable.reset();
+            }}
             placeholder="Search team"
           />
         </div>
         <span className="result-count">{visible.length} members</span>
       </div>
-      <div className="card table-wrap">
+      <div
+        className="card table-wrap infinite-scroll"
+        {...teamTable.scrollProps}
+      >
         <table>
           <thead>
             <tr>
@@ -74,7 +82,7 @@ export default function Team() {
             </tr>
           </thead>
           <tbody>
-            {visible.map((member) => (
+            {teamTable.rows.map((member) => (
               <tr key={member.id}>
                 <td>
                   <div className="table-identity">

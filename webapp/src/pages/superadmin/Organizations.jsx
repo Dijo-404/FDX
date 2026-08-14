@@ -5,6 +5,7 @@ import Icon from "../../components/Icon";
 import Modal from "../../components/Modal";
 import Toggle from "../../components/Toggle";
 import { usePlatform } from "../../context/PlatformContext";
+import useInfiniteScroll from "../../hooks/useInfiniteScroll";
 import "./Organizations.css";
 
 const defaultExpiry = () => {
@@ -95,6 +96,7 @@ export default function Organizations() {
       ),
     [organizations, query, type],
   );
+  const organizationsTable = useInfiniteScroll(visible, "Organization records");
 
   async function submit(event) {
     event.preventDefault();
@@ -123,11 +125,20 @@ export default function Organizations() {
           <Icon name="search" size={15} />
           <input
             value={query}
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(event) => {
+              setQuery(event.target.value);
+              organizationsTable.reset();
+            }}
             placeholder="Search organizations"
           />
         </div>
-        <select value={type} onChange={(event) => setType(event.target.value)}>
+        <select
+          value={type}
+          onChange={(event) => {
+            setType(event.target.value);
+            organizationsTable.reset();
+          }}
+        >
           <option value="ALL">All types</option>
           <option value="COLLEGE">Colleges</option>
           <option value="COMPANY">Companies</option>
@@ -135,7 +146,10 @@ export default function Organizations() {
         <span className="result-count">{visible.length} organizations</span>
       </div>
       <div className="admin-split">
-        <section className="card table-wrap organizations-table">
+        <section
+          className="card table-wrap infinite-scroll organizations-table"
+          {...organizationsTable.scrollProps}
+        >
           <table>
             <thead>
               <tr>
@@ -147,7 +161,7 @@ export default function Organizations() {
               </tr>
             </thead>
             <tbody>
-              {visible.map((organization) => (
+              {organizationsTable.rows.map((organization) => (
                 <tr
                   key={organization.id}
                   className={

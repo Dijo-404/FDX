@@ -1,6 +1,10 @@
+import useInfiniteScroll from "../hooks/useInfiniteScroll";
+
 const LEVEL_TONE = { info: "success", warning: "warning", danger: "danger" };
 
 export default function LogsTable({ logs, title, subtitle }) {
+  const logsTable = useInfiniteScroll(logs, `${title} records`);
+
   return (
     <div className="page">
       <div className="page-head">
@@ -10,7 +14,10 @@ export default function LogsTable({ logs, title, subtitle }) {
         </div>
       </div>
 
-      <div className="card table-wrap">
+      <div
+        className="card table-wrap infinite-scroll"
+        {...logsTable.scrollProps}
+      >
         <table>
           <thead>
             <tr>
@@ -21,7 +28,7 @@ export default function LogsTable({ logs, title, subtitle }) {
             </tr>
           </thead>
           <tbody>
-            {logs.map((log) => (
+            {logsTable.rows.map((log) => (
               <tr key={log.id}>
                 <td>{log.timestamp}</td>
                 <td>{log.actor}</td>

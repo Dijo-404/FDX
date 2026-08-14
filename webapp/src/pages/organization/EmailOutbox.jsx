@@ -1,9 +1,11 @@
 import Badge from "../../components/Badge";
 import Icon from "../../components/Icon";
 import { usePlatform } from "../../context/PlatformContext";
+import useInfiniteScroll from "../../hooks/useInfiniteScroll";
 
 export default function EmailOutbox() {
   const { emails, retryEmail } = usePlatform();
+  const emailsTable = useInfiniteScroll(emails, "Email delivery records");
   return (
     <div className="page">
       <div className="page-head">
@@ -16,7 +18,10 @@ export default function EmailOutbox() {
           </p>
         </div>
       </div>
-      <div className="card table-wrap">
+      <div
+        className="card table-wrap infinite-scroll"
+        {...emailsTable.scrollProps}
+      >
         <table>
           <thead>
             <tr>
@@ -30,7 +35,7 @@ export default function EmailOutbox() {
             </tr>
           </thead>
           <tbody>
-            {emails.map((email) => (
+            {emailsTable.rows.map((email) => (
               <tr key={email.id}>
                 <td>{email.recipient}</td>
                 <td>

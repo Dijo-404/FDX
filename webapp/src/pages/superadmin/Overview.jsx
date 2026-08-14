@@ -3,11 +3,16 @@ import Icon from "../../components/Icon";
 import StatCard from "../../components/StatCard";
 import { useAuth } from "../../context/AuthContext";
 import { usePlatform } from "../../context/PlatformContext";
+import useInfiniteScroll from "../../hooks/useInfiniteScroll";
 
 export default function SuperAdminOverview() {
   const { user } = useAuth();
   const { dashboard, loading, error } = usePlatform();
   const stats = dashboard?.stats;
+  const activityScroll = useInfiniteScroll(
+    dashboard?.logs ?? [],
+    "Recent platform activity",
+  );
   return (
     <div className="page dashboard-page admin-dashboard">
       <div className="page-head">
@@ -167,8 +172,11 @@ export default function SuperAdminOverview() {
                   </a>
                 </div>
                 {dashboard.logs.length ? (
-                  <div className="activity-list activity-list-compact">
-                    {dashboard.logs.slice(0, 3).map((log) => (
+                  <div
+                    className="activity-list activity-list-compact infinite-scroll recent-activity-scroll"
+                    {...activityScroll.scrollProps}
+                  >
+                    {activityScroll.rows.map((log) => (
                       <div className="activity-row" key={log.id}>
                         <span className={`activity-dot ${log.level}`} />
                         <div className="activity-content">

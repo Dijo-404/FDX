@@ -2,10 +2,12 @@ import { useEffect } from "react";
 import Badge from "../../components/Badge";
 import StatCard from "../../components/StatCard";
 import { usePlatform } from "../../context/PlatformContext";
+import useInfiniteScroll from "../../hooks/useInfiniteScroll";
 export default function Processing() {
   const { jobs, processingStats, refresh } = usePlatform();
   const stats = processingStats ?? {};
   const hasActiveJobs = (stats.activeJobs ?? 0) > 0;
+  const jobsScroll = useInfiniteScroll(jobs, "Processing job records");
 
   useEffect(() => {
     if (!hasActiveJobs) return undefined;
@@ -57,8 +59,11 @@ export default function Processing() {
             <p>Kafka worker assignments and persistent progress</p>
           </div>
         </div>
-        <div className="service-list">
-          {jobs.map((job) => (
+        <div
+          className="service-list infinite-scroll processing-jobs-scroll"
+          {...jobsScroll.scrollProps}
+        >
+          {jobsScroll.rows.map((job) => (
             <div className="job-row" key={job.id}>
               <div>
                 <strong>

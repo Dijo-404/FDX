@@ -3,6 +3,7 @@ import Badge from "../../components/Badge";
 import Icon from "../../components/Icon";
 import Modal from "../../components/Modal";
 import { usePlatform } from "../../context/PlatformContext";
+import useInfiniteScroll from "../../hooks/useInfiniteScroll";
 
 export default function OrganizationUsers() {
   const { organizations, organizationUsers, addOrganizationUser } =
@@ -19,6 +20,10 @@ export default function OrganizationUsers() {
           .includes(query.toLowerCase()),
       ),
     [organizationUsers, query],
+  );
+  const usersTable = useInfiniteScroll(
+    visible,
+    "Organization administrator records",
   );
   const selectedOrganizationId =
     form.organizationId || organizations[0]?.id || "";
@@ -71,13 +76,19 @@ export default function OrganizationUsers() {
           <Icon name="search" size={15} />
           <input
             value={query}
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(event) => {
+              setQuery(event.target.value);
+              usersTable.reset();
+            }}
             placeholder="Search users or organizations"
           />
         </div>
         <span className="result-count">{visible.length} users</span>
       </div>
-      <div className="card table-wrap">
+      <div
+        className="card table-wrap infinite-scroll"
+        {...usersTable.scrollProps}
+      >
         <table>
           <thead>
             <tr>
@@ -90,7 +101,7 @@ export default function OrganizationUsers() {
             </tr>
           </thead>
           <tbody>
-            {visible.map((user) => (
+            {usersTable.rows.map((user) => (
               <tr key={user.id}>
                 <td>
                   <div className="table-identity">

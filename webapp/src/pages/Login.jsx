@@ -43,7 +43,9 @@ export default function Login() {
     <div className="login-shell">
       <div className="login-panel">
         <div className="login-brand">
-          <img className="login-logo" src="/fdx-logo.svg" alt="FDX" />
+          <div className="login-logo">
+            <img src="/fdx-logo.png" alt="FDX" />
+          </div>
           <p>Private event photo delivery, powered by face intelligence</p>
         </div>
 

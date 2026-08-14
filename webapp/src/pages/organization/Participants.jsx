@@ -5,6 +5,7 @@ import Icon from "../../components/Icon";
 import Modal from "../../components/Modal";
 import StatCard from "../../components/StatCard";
 import { usePlatform } from "../../context/PlatformContext";
+import useInfiniteScroll from "../../hooks/useInfiniteScroll";
 export default function Participants() {
   const {
     events,
@@ -28,6 +29,7 @@ export default function Participants() {
       ),
     [eventId, participants, query],
   );
+  const participantsTable = useInfiniteScroll(visible, "Participant records");
   const verified = participants.filter(
     (p) => p.enrollment === "verified",
   ).length;
@@ -96,7 +98,13 @@ export default function Participants() {
         />
       </div>
       <div className="toolbar">
-        <select value={eventId} onChange={(e) => setEventId(e.target.value)}>
+        <select
+          value={eventId}
+          onChange={(event) => {
+            setEventId(event.target.value);
+            participantsTable.reset();
+          }}
+        >
           <option value="">All events</option>
           {events.map((event) => (
             <option key={event.id} value={event.id}>
@@ -108,13 +116,19 @@ export default function Participants() {
           <Icon name="search" size={15} />
           <input
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(event) => {
+              setQuery(event.target.value);
+              participantsTable.reset();
+            }}
             placeholder="Search name or email"
           />
         </div>
         <span className="result-count">{visible.length} participants</span>
       </div>
-      <div className="card table-wrap">
+      <div
+        className="card table-wrap infinite-scroll"
+        {...participantsTable.scrollProps}
+      >
         <table>
           <thead>
             <tr>
@@ -127,7 +141,7 @@ export default function Participants() {
             </tr>
           </thead>
           <tbody>
-            {visible.map((p) => (
+            {participantsTable.rows.map((p) => (
               <tr key={p.id}>
                 <td>
                   <div className="table-identity">

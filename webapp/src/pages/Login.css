@@ -24,8 +24,20 @@
 }
 
 .login-logo {
+  position: relative;
+  width: 220px;
+  height: auto;
+  aspect-ratio: 1250 / 382;
+  overflow: hidden;
+}
+
+.login-logo img {
+  position: absolute;
+  top: -83.77%;
+  left: -12.56%;
   display: block;
-  width: 164px;
+  width: 122.88%;
+  max-width: none;
   height: auto;
 }
 

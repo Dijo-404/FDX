@@ -3,6 +3,7 @@
   grid-template-columns: 250px 1fr;
   height: 100dvh;
   overflow: hidden;
+  background: var(--bg);
 }
 
 .shell-sidebar {
@@ -12,6 +13,8 @@
   gap: 8px;
   background: var(--brand-dark);
   color: var(--on-primary);
+  border-radius: 0 24px 24px 0;
+  overflow: hidden;
 }
 
 .shell-logo {
@@ -25,9 +28,9 @@
 }
 
 .shell-logo-image {
-  display: block;
-  width: 142px;
+  width: 100px;
   height: auto;
+  display: block;
   flex: none;
 }
 
@@ -142,7 +145,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 18px 28px;
+  padding: 12px 28px;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
 }
@@ -385,7 +388,7 @@
 
 .shell-content {
   min-height: 0;
-  padding: 24px 28px 40px;
+  padding: 14px 28px 40px;
   overflow-y: auto;
   background-color: var(--bg);
   background-image: var(--gradient-mesh);
@@ -397,6 +400,18 @@
 .shell-content-dashboard {
   overflow-y: hidden;
   padding-bottom: 24px;
+}
+
+@media (min-width: 901px) {
+  .shell-sidebar {
+    position: relative;
+    z-index: 10;
+  }
+
+  .shell-topbar {
+    margin-left: -24px;
+    padding-left: 52px;
+  }
 }
 
 @media (max-width: 900px) {
@@ -438,7 +453,7 @@
     display: none;
   }
   .shell-content {
-    padding: 20px 18px 32px;
+    padding: 14px 18px 32px;
   }
 
   .shell-content-dashboard {

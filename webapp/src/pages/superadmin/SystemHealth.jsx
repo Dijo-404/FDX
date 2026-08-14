@@ -3,10 +3,15 @@ import Icon from "../../components/Icon";
 import PageState from "../../components/PageState";
 import StatCard from "../../components/StatCard";
 import { usePlatform } from "../../context/PlatformContext";
+import useInfiniteScroll from "../../hooks/useInfiniteScroll";
 export default function SystemHealth() {
   const { system, loading, error, adminRetryEmail } = usePlatform();
   const queues = system?.queues ?? {};
   const services = system?.services ?? [];
+  const emailsTable = useInfiniteScroll(
+    system?.recentEmails ?? [],
+    "System email delivery records",
+  );
   return (
     <div className="page">
       <div className="page-head">
@@ -99,7 +104,10 @@ export default function SystemHealth() {
                   <p>Persistent provider results and retry state</p>
                 </div>
               </div>
-              <div className="table-wrap">
+              <div
+                className="table-wrap infinite-scroll"
+                {...emailsTable.scrollProps}
+              >
                 <table>
                   <thead>
                     <tr>
@@ -112,7 +120,7 @@ export default function SystemHealth() {
                     </tr>
                   </thead>
                   <tbody>
-                    {(system.recentEmails ?? []).map((email) => (
+                    {emailsTable.rows.map((email) => (
                       <tr key={email.id}>
                         <td>{email.recipient}</td>
                         <td>

@@ -4,11 +4,13 @@ import Icon from "../../components/Icon";
 import StatCard from "../../components/StatCard";
 import { usePlatform } from "../../context/PlatformContext";
 import { useAuth } from "../../context/AuthContext";
+import useInfiniteScroll from "../../hooks/useInfiniteScroll";
 export default function Deliveries() {
   const { user } = useAuth();
   const { deliveries, deliveryStats, sendDelivery } = usePlatform();
   const [notice, setNotice] = useState("");
   const stats = deliveryStats ?? {};
+  const deliveriesTable = useInfiniteScroll(deliveries, "Gallery deliveries");
   async function send(row) {
     const result = await sendDelivery(row.participantId);
     setNotice(
@@ -61,27 +63,10 @@ export default function Deliveries() {
           hint="Event retention enforced"
         />
       </div>
-      <section className="delivery-preview card">
-        <div className="delivery-copy">
-          <span className="eyebrow">Participant experience</span>
-          <h3>Your event photos are ready</h3>
-          <p>
-            Each signed gallery exposes only approved photographs matched to
-            that participant and expires with the event.
-          </p>
-          <span className="btn primary">
-            Private by design <Icon name="check" size={15} />
-          </span>
-        </div>
-        <div className="gallery-mosaic">
-          {Array.from({ length: 6 }, (_, i) => (
-            <div key={i}>
-              <Icon name="face" size={22} />
-            </div>
-          ))}
-        </div>
-      </section>
-      <div className="card table-wrap">
+      <div
+        className="card table-wrap infinite-scroll"
+        {...deliveriesTable.scrollProps}
+      >
         <table>
           <thead>
             <tr>
@@ -95,7 +80,7 @@ export default function Deliveries() {
             </tr>
           </thead>
           <tbody>
-            {deliveries.map((row) => (
+            {deliveriesTable.rows.map((row) => (
               <tr key={row.id}>
                 <td>{row.participant}</td>
                 <td>{row.event}</td>

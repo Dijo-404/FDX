@@ -6,6 +6,7 @@ import PageState from "../../components/PageState";
 import StatCard from "../../components/StatCard";
 import { useAuth } from "../../context/AuthContext";
 import { usePlatform } from "../../context/PlatformContext";
+import useInfiniteScroll from "../../hooks/useInfiniteScroll";
 import { api } from "../../lib/api";
 
 export default function EventDetail() {
@@ -16,6 +17,10 @@ export default function EventDetail() {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
   const [deleting, setDeleting] = useState(false);
+  const participantsTable = useInfiniteScroll(
+    data?.participantsList ?? [],
+    "Recent event participants",
+  );
   useEffect(() => {
     api(`/organization/events/${eventId}`)
       .then(setData)
@@ -103,7 +108,10 @@ export default function EventDetail() {
                     Manage all
                   </a>
                 </div>
-                <div className="table-wrap">
+                <div
+                  className="table-wrap infinite-scroll"
+                  {...participantsTable.scrollProps}
+                >
                   <table>
                     <thead>
                       <tr>
@@ -114,7 +122,7 @@ export default function EventDetail() {
                       </tr>
                     </thead>
                     <tbody>
-                      {data.participantsList.map((participant) => (
+                      {participantsTable.rows.map((participant) => (
                         <tr key={participant.id}>
                           <td>
                             <div className="table-identity">

@@ -1,17 +1,29 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title description">
   <title id="title">FDX</title>
-  <rect width="64" height="64" rx="13" fill="#1c2558" />
-  <g fill="none" stroke="#168cff" stroke-linecap="round" stroke-width="5.5">
-    <path d="M10 25V17c0-4 3-7 7-7h8" />
-    <path d="M39 10h8c4 0 7 3 7 7v8" />
-    <path d="M54 39v8c0 4-3 7-7 7h-8" />
-    <path d="M25 54h-8c-4 0-7-3-7-7v-8" />
+  <desc id="description">FDX face scanner mark</desc>
+  <defs>
+    <linearGradient id="pixel-gradient" x1="39" y1="25" x2="52" y2="39" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6b5cff" />
+      <stop offset="0.52" stop-color="#9c75ee" />
+      <stop offset="1" stop-color="#ff9b75" />
+    </linearGradient>
+  </defs>
+
+  <rect width="64" height="64" rx="13" fill="#1c1e54" />
+
+  <g fill="none" stroke="#f5f7ff" stroke-linecap="round" stroke-width="5.5">
+    <path d="M9 24V17c0-4.4 3.6-8 8-8h8" />
+    <path d="M40 9h7c4.4 0 8 3.6 8 8v8" />
+    <path d="M55 40v7c0 4.4-3.6 8-8 8h-8" />
+    <path d="M24 55h-7c-4.4 0-8-3.6-8-8v-8" />
   </g>
-  <circle cx="26" cy="29" r="7" fill="#f7f8ff" />
-  <path d="M15 47c1.5-8 5.5-12 11-12s9.5 4 11 12H15Z" fill="#f7f8ff" />
-  <g fill="#18b8ed">
-    <rect x="40" y="25" width="6" height="6" rx="1.5" />
-    <rect x="46" y="34" width="8" height="8" rx="2" />
-    <rect x="39" y="39" width="6" height="6" rx="1.5" />
-  </g>
+
+  <circle cx="24" cy="31" r="7.5" fill="#f5f7ff" />
+  <path d="M11.5 50c1.7-8.5 6.2-12.5 12.5-12.5S34.8 41.5 36.5 50h-25Z" fill="#f5f7ff" />
+
+  <rect x="37" y="15" width="7" height="7" rx="1.8" fill="#3b24fd" />
+  <rect x="32" y="23" width="7" height="7" rx="1.8" fill="#dab4fa" />
+  <rect x="40" y="25" width="13" height="13" rx="3.2" fill="url(#pixel-gradient)" />
+  <rect x="33" y="34" width="7" height="7" rx="1.8" fill="#ffbd75" />
+  <rect x="38" y="42" width="7" height="7" rx="1.8" fill="#3b24fd" />
 </svg>

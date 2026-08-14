@@ -703,7 +703,7 @@ def admin_dashboard(_: User = Depends(require_super_admin), db: Session = Depend
         },
         "organizations": [organization_json(db, item) for item in organizations],
         "services": services,
-        "logs": log_items(db, None, 5),
+        "logs": log_items(db, None),
     }
 
 

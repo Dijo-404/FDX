@@ -4,6 +4,7 @@ import Icon from "../../components/Icon";
 import StatCard from "../../components/StatCard";
 import { usePlatform } from "../../context/PlatformContext";
 import { useAuth } from "../../context/AuthContext";
+import useInfiniteScroll from "../../hooks/useInfiniteScroll";
 export default function FaceMatches() {
   const { user } = useAuth();
   const { matches, matchStats, reviewMatch } = usePlatform();
@@ -12,6 +13,7 @@ export default function FaceMatches() {
     () => matches.filter((row) => filter === "all" || row.state === filter),
     [filter, matches],
   );
+  const matchesTable = useInfiniteScroll(visible, "Face match records");
   const stats = matchStats ?? {};
   return (
     <div className="page">
@@ -61,7 +63,10 @@ export default function FaceMatches() {
             <button
               key={value}
               className={filter === value ? "active" : ""}
-              onClick={() => setFilter(value)}
+              onClick={() => {
+                setFilter(value);
+                matchesTable.reset();
+              }}
             >
               {label}
             </button>
@@ -69,7 +74,10 @@ export default function FaceMatches() {
         </div>
         <span className="result-count">{visible.length} records</span>
       </div>
-      <div className="card table-wrap">
+      <div
+        className="card table-wrap infinite-scroll"
+        {...matchesTable.scrollProps}
+      >
         <table>
           <thead>
             <tr>
@@ -83,7 +91,7 @@ export default function FaceMatches() {
             </tr>
           </thead>
           <tbody>
-            {visible.map((row) => (
+            {matchesTable.rows.map((row) => (
               <tr key={row.id}>
                 <td>
                   <div className="photo-cell">

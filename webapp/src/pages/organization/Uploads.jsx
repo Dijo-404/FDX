@@ -3,6 +3,7 @@ import Badge from "../../components/Badge";
 import Dropzone from "../../components/Dropzone";
 import Icon from "../../components/Icon";
 import { usePlatform } from "../../context/PlatformContext";
+import useInfiniteScroll from "../../hooks/useInfiniteScroll";
 
 const size = (value) =>
   value > 1024 ** 3
@@ -24,6 +25,7 @@ export default function Uploads() {
   const [progress, setProgress] = useState(null);
   const [isUploading, setIsUploading] = useState(false);
   const selected = eventId || events[0]?.id || "";
+  const uploadsTable = useInfiniteScroll(uploads, "Recent upload records");
 
   async function start() {
     if (!selected || !files.length || isUploading) return;
@@ -208,7 +210,10 @@ export default function Uploads() {
             <p>Persistent object and processing state</p>
           </div>
         </div>
-        <div className="table-wrap">
+        <div
+          className="table-wrap infinite-scroll"
+          {...uploadsTable.scrollProps}
+        >
           <table>
             <thead>
               <tr>
@@ -220,7 +225,7 @@ export default function Uploads() {
               </tr>
             </thead>
             <tbody>
-              {uploads.map((row) => (
+              {uploadsTable.rows.map((row) => (
                 <tr key={row.id}>
                   <td>{row.filename}</td>
                   <td>{row.event}</td>

@@ -5,6 +5,56 @@ import { useAuth } from "../context/AuthContext";
 import Icon from "./Icon";
 import "./DashboardShell.css";
 
+function SidebarLogo() {
+  return (
+    <svg
+      className="shell-logo-image"
+      viewBox="157 320 1250 382"
+      role="img"
+      aria-labelledby="sidebar-logo-title sidebar-logo-description"
+    >
+      <title id="sidebar-logo-title">FDX</title>
+      <desc id="sidebar-logo-description">FDX face delivery platform logo</desc>
+      <defs>
+        <filter
+          id="sidebar-logo-light"
+          x="-10%"
+          y="-20%"
+          width="120%"
+          height="140%"
+          colorInterpolationFilters="sRGB"
+        >
+          <feComponentTransfer in="SourceAlpha" result="clean-alpha">
+            <feFuncA type="gamma" amplitude="1" exponent="2" offset="0" />
+          </feComponentTransfer>
+          <feFlood floodColor="#f5f7ff" result="light-color" />
+          <feComposite in="light-color" in2="clean-alpha" operator="in" />
+        </filter>
+        <clipPath id="sidebar-logo-accents">
+          <rect x="432" y="390" width="45" height="46" rx="11" />
+          <rect x="386" y="437" width="44" height="43" rx="11" />
+          <rect x="444" y="465" width="93" height="91" rx="18" />
+          <rect x="391" y="531" width="43" height="42" rx="10" />
+          <rect x="436" y="574" width="44" height="45" rx="10" />
+        </clipPath>
+      </defs>
+
+      <image
+        href="/fdx-logo.png"
+        width="1536"
+        height="1024"
+        filter="url(#sidebar-logo-light)"
+      />
+      <image
+        href="/fdx-logo.png"
+        width="1536"
+        height="1024"
+        clipPath="url(#sidebar-logo-accents)"
+      />
+    </svg>
+  );
+}
+
 export default function DashboardShell({ navItems, roleLabel, title }) {
   const { user, logout } = useAuth();
   const { pathname } = useLocation();
@@ -70,11 +120,7 @@ export default function DashboardShell({ navItems, roleLabel, title }) {
     <div className="shell-root">
       <aside className={`shell-sidebar${navOpen ? " open" : ""}`}>
         <div className="shell-logo">
-          <img
-            className="shell-logo-image"
-            src="/fdx-logo-sidebar.svg"
-            alt="FDX"
-          />
+          <SidebarLogo />
           <span className="shell-logo-role">{roleLabel}</span>
         </div>
 

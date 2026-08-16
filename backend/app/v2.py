@@ -52,6 +52,7 @@ from .auth import (
 )
 from .config import settings
 from .database import get_db
+from .face_index import refresh_enrollment_matches, unique_face_stats
 from .integrations import (
     dependency_health,
     dispatch_email,
@@ -82,6 +83,7 @@ from .models import (
     RefreshSession,
     StorageReservation,
     StorageUsageLedger,
+    UniqueFace,
     UploadBatch,
     User,
     UserInvitation,
@@ -386,7 +388,13 @@ def login(
             "access_token": tokens["access_token"],
             "expires_in": tokens["expires_in"],
             "user": user_v2(user),
-            "redirect_to": "/admin" if user.role == UserRole.SUPER_ADMIN else "/organization",
+            "redirect_to": (
+                "/admin"
+                if user.role == UserRole.SUPER_ADMIN
+                else "/collaborator"
+                if user.role == UserRole.COLLABORATOR
+                else "/organization"
+            ),
         },
         request,
     )
@@ -2670,24 +2678,21 @@ def processing_summary(
         db.scalar(select(func.count(Photo.id)).where(Photo.event_id == event.id, Photo.processing_status == "ready"))
         or 0
     )
-    faces = db.scalar(select(func.count(FaceDetection.id)).where(FaceDetection.event_id == event.id)) or 0
-    decisions = dict(
-        db.execute(
-            select(FaceMatch.state, func.count(FaceMatch.id))
-            .where(FaceMatch.event_id == event.id)
-            .group_by(FaceMatch.state)
-        ).all()
-    )
+    unique_faces = db.scalar(select(func.count(UniqueFace.id)).where(UniqueFace.event_id == event.id)) or 0
+    detections = db.scalar(select(func.count(FaceDetection.id)).where(FaceDetection.event_id == event.id)) or 0
+    identity_stats = unique_face_stats(db, event_id=event.id)
     return ok(
         {
             "event_state": event.status,
             "photos_total": photos_total,
             "photos_processed": photos_processed,
             "photos_failed": statuses.get("failed", 0) + statuses.get("DEAD_LETTERED", 0),
-            "faces_detected": faces,
-            "matches_auto": decisions.get("high", 0) + decisions.get("approved", 0),
-            "matches_review": decisions.get("review", 0),
-            "matches_unknown": decisions.get("low", 0) + decisions.get("rejected", 0),
+            "faces_detected": unique_faces,
+            "unique_faces": unique_faces,
+            "face_detections": detections,
+            "matches_auto": identity_stats["high"],
+            "matches_review": identity_stats["review"],
+            "matches_unknown": identity_stats["low"],
             "progress_percent": round(photos_processed * 100 / photos_total) if photos_total else 0,
         },
         request,
@@ -3535,6 +3540,7 @@ def complete_enrollment(
         token_row.pending_content_type = None
         token_row.pending_size_bytes = None
         token_row.pending_sha256 = None
+    matching_results = refresh_enrollment_matches(db, participant, result["embedding"])
     add_audit(db, None, "enrollment.completed", participant.email, participant.organization_id)
     db.commit()
     if previous_key and previous_key != key:
@@ -3547,6 +3553,7 @@ def complete_enrollment(
             "embedding_dimension": enrollment.embedding_dimension,
             "model_name": enrollment.model_name,
             "model_version": enrollment.model_version,
+            "matching_results": matching_results,
         },
         request,
     )

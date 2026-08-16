@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import Badge from "../../components/Badge";
 import Icon from "../../components/Icon";
 import Modal from "../../components/Modal";
+import Select from "../../components/Select";
 import { usePlatform } from "../../context/PlatformContext";
 import useInfiniteScroll from "../../hooks/useInfiniteScroll";
 
@@ -11,7 +12,12 @@ export default function OrganizationUsers() {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [notice, setNotice] = useState("");
-  const [form, setForm] = useState({ name: "", email: "", organizationId: "" });
+  const [form, setForm] = useState({
+    name: "",
+    email: "",
+    role: "org_admin",
+    organizationId: "",
+  });
   const visible = useMemo(
     () =>
       organizationUsers.filter((item) =>
@@ -32,7 +38,7 @@ export default function OrganizationUsers() {
     event.preventDefault();
     const invited = await addOrganizationUser({
       ...form,
-      organizationId: selectedOrganizationId,
+      organizationId: form.role === "org_admin" ? selectedOrganizationId : null,
     });
     setNotice(
       invited.developmentInviteUrl
@@ -43,6 +49,7 @@ export default function OrganizationUsers() {
     setForm({
       name: "",
       email: "",
+      role: "org_admin",
       organizationId: organizations[0]?.id ?? "",
     });
   }
@@ -52,17 +59,13 @@ export default function OrganizationUsers() {
       <div className="page-head">
         <div>
           <p className="eyebrow">Access management</p>
-          <h2>Organization users</h2>
+          <h2>Users and collaborators</h2>
           <p>
-            Create tenant administrators and track secure invitation status.
+            Invite tenant administrators or restricted platform collaborators.
           </p>
         </div>
-        <button
-          className="btn primary"
-          disabled={!organizations.length}
-          onClick={() => setOpen(true)}
-        >
-          <Icon name="plus" size={16} /> Invite admin
+        <button className="btn primary" onClick={() => setOpen(true)}>
+          <Icon name="plus" size={16} /> Invite user
         </button>
       </div>
       {notice ? (
@@ -118,8 +121,14 @@ export default function OrganizationUsers() {
                     </div>
                   </div>
                 </td>
-                <td>{user.organization}</td>
-                <td>Organization Admin</td>
+                <td>{user.organization || "Platform-wide"}</td>
+                <td>
+                  {user.role === "collaborator"
+                    ? "Collaborator"
+                    : user.role === "staff"
+                      ? "Staff"
+                      : "Organization Admin"}
+                </td>
                 <td>
                   <Badge status={user.status} />
                 </td>
@@ -131,21 +140,23 @@ export default function OrganizationUsers() {
             ))}
           </tbody>
         </table>
-        {!visible.length ? (
-          <p className="empty-note">No organization administrators found.</p>
-        ) : null}
+        {!visible.length ? <p className="empty-note">No users found.</p> : null}
       </div>
       <Modal
         open={open}
         onClose={() => setOpen(false)}
-        title="Invite organization admin"
+        title="Invite user"
         description="The recipient will receive a secure link to set their password."
         footer={
           <>
             <button className="btn" onClick={() => setOpen(false)}>
               Cancel
             </button>
-            <button className="btn primary" form="user-form">
+            <button
+              className="btn primary"
+              form="user-form"
+              disabled={form.role === "org_admin" && !selectedOrganizationId}
+            >
               <Icon name="mail" size={15} /> Send invite
             </button>
           </>
@@ -174,28 +185,51 @@ export default function OrganizationUsers() {
             />
           </div>
           <div className="field">
-            <label>Organization</label>
-            <select
-              required
-              value={selectedOrganizationId}
-              onChange={(event) =>
-                setForm({ ...form, organizationId: event.target.value })
-              }
-              disabled={!organizations.length}
-            >
-              {organizations.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.name}
-                </option>
-              ))}
-            </select>
+            <label>Role</label>
+            <Select
+              value={form.role}
+              onValueChange={(value) => setForm({ ...form, role: value })}
+              ariaLabel="Role"
+              options={[
+                { value: "org_admin", label: "Organization Admin" },
+                { value: "collaborator", label: "Collaborator" },
+              ]}
+            />
           </div>
+          {form.role === "org_admin" ? (
+            <div className="field">
+              <label>Organization</label>
+              <Select
+                value={selectedOrganizationId}
+                onValueChange={(value) =>
+                  setForm({ ...form, organizationId: value })
+                }
+                disabled={!organizations.length}
+                ariaLabel="Organization"
+                options={organizations.map((item) => ({
+                  value: item.id,
+                  label: item.name,
+                }))}
+              />
+            </div>
+          ) : null}
           <div className="permission-note">
-            <strong>Organization Admin</strong>
-            <p>
-              Can manage events, participants, photos, matches and deliveries
-              only within the selected organization.
-            </p>
+            <strong>
+              {form.role === "collaborator"
+                ? "Restricted Collaborator"
+                : "Organization Admin"}
+            </strong>
+            {form.role === "collaborator" ? (
+              <p>
+                Can create organizations and events. Cannot access participants,
+                uploads, photos, faces, matches, deliveries, or audit data.
+              </p>
+            ) : (
+              <p>
+                Can manage events, participants, photos, matches and deliveries
+                only within the selected organization.
+              </p>
+            )}
           </div>
         </form>
       </Modal>

@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import io
 import logging
-import math
 import os
 import socket
 import time
@@ -18,6 +17,7 @@ from sqlalchemy import delete, func, select
 
 from .config import settings
 from .database import SessionLocal
+from .face_index import decide_match, index_detection, prepare_photo_reindex
 from .integrations import dispatch_email, ml_faces, publish_event, queue_email, storage
 from .main import audit, bootstrap
 from .models import (
@@ -164,13 +164,6 @@ def process_gallery_export(job_id: str) -> None:
             db.commit()
 
 
-def cosine(left: list[float], right: list[float]) -> float:
-    dot = sum(a * b for a, b in zip(left, right))
-    norm_left = math.sqrt(sum(value * value for value in left))
-    norm_right = math.sqrt(sum(value * value for value in right))
-    return dot / (norm_left * norm_right) if norm_left and norm_right else 0.0
-
-
 def process_job(job_id: str) -> None:
     with SessionLocal() as db:
         job_type = db.scalar(select(ProcessingJob.job_type).where(ProcessingJob.id == job_id))
@@ -256,8 +249,16 @@ def process_job(job_id: str) -> None:
                 db.commit()
                 return
             enrollments = db.scalars(
-                select(FaceEnrollment).join(Participant).where(Participant.event_id == job.event_id)
+                select(FaceEnrollment)
+                .join(Participant)
+                .where(
+                    Participant.event_id == job.event_id,
+                    FaceEnrollment.status == "valid",
+                    FaceEnrollment.deleted_at.is_(None),
+                )
             ).all()
+            unique_faces = prepare_photo_reindex(db, job.event_id, photo.id)
+            photo_links = {}
             for face_index, result in enumerate(results):
                 box = result["box"]
                 face_width = max(0, int(box.get("x_max", 0) - box.get("x_min", 0)))
@@ -288,44 +289,24 @@ def process_job(job_id: str) -> None:
                 )
                 db.add(detection)
                 db.flush()
-                ranked = sorted(
-                    (
-                        (
-                            cosine(result["embedding"], enrollment.embedding),
-                            enrollment.participant_id,
-                        )
-                        for enrollment in enrollments
-                    ),
-                    reverse=True,
+                index_detection(
+                    db,
+                    detection,
+                    result["embedding"],
+                    unique_faces,
+                    photo_links,
                 )
-                best_score, participant_id = ranked[0] if ranked else (0.0, None)
-                runner_up = ranked[1][0] if len(ranked) > 1 else -1.0
-                # A conservative margin prevents lookalikes from being assigned automatically.
-                margin = best_score - runner_up
-                threshold_boost = settings.low_resolution_threshold_boost if quality_class == "LOW_RESOLUTION" else 0.0
-                if quality_class == "REJECTED":
-                    state = "low"
-                    participant_id = None
-                elif (
-                    best_score >= settings.match_auto_threshold + threshold_boost
-                    and margin >= settings.match_runner_up_margin
-                ):
-                    state = "high"
-                elif best_score >= settings.match_review_threshold + threshold_boost:
-                    state = "review"
-                else:
-                    state = "low"
-                    participant_id = None
+                decision = decide_match(result["embedding"], enrollments, quality_class)
                 db.add(
                     FaceMatch(
                         organization_id=job.organization_id,
                         event_id=job.event_id,
                         detection_id=detection.id,
-                        participant_id=participant_id,
-                        confidence=max(0.0, best_score),
-                        second_best_score=runner_up if runner_up >= 0 else None,
-                        margin=margin if ranked else None,
-                        state=state,
+                        participant_id=decision.participant_id,
+                        confidence=decision.best_score,
+                        second_best_score=decision.second_best_score,
+                        margin=decision.margin,
+                        state=decision.state,
                         decision_source="AUTO",
                         model_name="adaface-ir101-ms1mv2",
                         model_version=settings.embedder_model_version,
@@ -789,8 +770,7 @@ def pending_job_ids(limit: int = 10) -> list[str]:
                 )
                 .order_by(ProcessingJob.created_at)
                 .limit(limit)
-            )
-            .all()
+            ).all()
         )
 
 

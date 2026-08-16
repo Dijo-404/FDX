@@ -40,6 +40,7 @@ class OrganizationType(str, enum.Enum):
 
 class UserRole(str, enum.Enum):
     SUPER_ADMIN = "super_admin"
+    COLLABORATOR = "collaborator"
     ORG_ADMIN = "org_admin"
     STAFF = "staff"
 
@@ -164,7 +165,30 @@ class Photo(Base):
     uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     event: Mapped[Event] = relationship(back_populates="photos")
     detections: Mapped[list["FaceDetection"]] = relationship(back_populates="photo")
+    unique_face_links: Mapped[list["UniqueFacePhoto"]] = relationship(back_populates="photo")
     __table_args__ = (UniqueConstraint("event_id", "sha256", name="uq_event_photo_hash"),)
+
+
+class UniqueFace(Base):
+    """An event-scoped identity cluster built from persisted face embeddings."""
+
+    __tablename__ = "unique_faces"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), index=True)
+    event_id: Mapped[str] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"), index=True)
+    centroid_embedding: Mapped[list] = mapped_column(JSON)
+    centroid_vector: Mapped[list | None] = mapped_column(Vector(512), nullable=True)
+    occurrence_count: Mapped[int] = mapped_column(Integer, default=1)
+    model_name: Mapped[str] = mapped_column(String(120), default="adaface-ir101-ms1mv2")
+    model_version: Mapped[str] = mapped_column(String(80), default="1")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    detections: Mapped[list["FaceDetection"]] = relationship(back_populates="unique_face")
+    photo_links: Mapped[list["UniqueFacePhoto"]] = relationship(
+        back_populates="unique_face",
+        cascade="all, delete-orphan",
+    )
+    __table_args__ = (Index("ix_unique_faces_event_model", "event_id", "model_version"),)
 
 
 class FaceDetection(Base):
@@ -173,6 +197,9 @@ class FaceDetection(Base):
     organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), index=True)
     event_id: Mapped[str] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"), index=True)
     photo_id: Mapped[str] = mapped_column(ForeignKey("photos.id", ondelete="CASCADE"), index=True)
+    unique_face_id: Mapped[str | None] = mapped_column(
+        ForeignKey("unique_faces.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     box: Mapped[dict] = mapped_column(JSON)
     embedding: Mapped[list] = mapped_column(JSON)
     embedding_vector: Mapped[list | None] = mapped_column(Vector(512), nullable=True)
@@ -186,7 +213,24 @@ class FaceDetection(Base):
     model_version: Mapped[str] = mapped_column(String(80), default="1")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     photo: Mapped[Photo] = relationship(back_populates="detections")
+    unique_face: Mapped[UniqueFace | None] = relationship(back_populates="detections")
     match: Mapped["FaceMatch | None"] = relationship(back_populates="detection", uselist=False)
+
+
+class UniqueFacePhoto(Base):
+    """Materialized mapping from one unique face to every photo containing it."""
+
+    __tablename__ = "unique_face_photos"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), index=True)
+    event_id: Mapped[str] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"), index=True)
+    unique_face_id: Mapped[str] = mapped_column(ForeignKey("unique_faces.id", ondelete="CASCADE"), index=True)
+    photo_id: Mapped[str] = mapped_column(ForeignKey("photos.id", ondelete="CASCADE"), index=True)
+    detection_count: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    unique_face: Mapped[UniqueFace] = relationship(back_populates="photo_links")
+    photo: Mapped[Photo] = relationship(back_populates="unique_face_links")
+    __table_args__ = (UniqueConstraint("unique_face_id", "photo_id", name="uq_unique_face_photo"),)
 
 
 class FaceMatch(Base):

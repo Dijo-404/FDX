@@ -15,6 +15,7 @@ import zipfile
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
+from typing import Literal
 
 import xlrd
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -37,6 +38,7 @@ from .auth import (
     hash_password,
     hash_token,
     new_opaque_token,
+    require_collaborator,
     require_org_admin,
     require_org_member,
     require_super_admin,
@@ -45,6 +47,7 @@ from .auth import (
 )
 from .config import settings
 from .database import Base, SessionLocal, engine, get_db
+from .face_index import refresh_enrollment_matches, unique_face_stats
 from .integrations import (
     cache_delete,
     dependency_health,
@@ -69,6 +72,7 @@ from .models import (
     Participant,
     Photo,
     ProcessingJob,
+    UniqueFace,
     User,
     UserInvitation,
     UserRole,
@@ -124,7 +128,8 @@ class OrganizationPatch(BaseModel):
 class UserInviteInput(BaseModel):
     name: str = Field(min_length=2, max_length=120)
     email: EmailStr
-    organizationId: str
+    role: Literal["org_admin", "collaborator"] = "org_admin"
+    organizationId: str | None = None
 
 
 class StaffInviteInput(BaseModel):
@@ -139,6 +144,22 @@ class EventInput(BaseModel):
     location: str = ""
     retentionDays: int | None = Field(default=None, ge=1, le=3650)
     expiresAt: date | None = None
+
+
+class CollaboratorOrganizationInput(BaseModel):
+    name: str = Field(min_length=2, max_length=180)
+    type: OrganizationType
+    contactName: str = ""
+    contactEmail: EmailStr
+    phone: str = ""
+
+
+class CollaboratorEventInput(BaseModel):
+    organizationId: str
+    name: str = Field(min_length=2, max_length=180)
+    description: str = ""
+    date: date
+    location: str = ""
 
 
 class MatchReviewInput(BaseModel):
@@ -550,7 +571,9 @@ def update_organization(
 @app.get("/api/admin/users")
 def list_users(_: User = Depends(require_super_admin), db: Session = Depends(get_db)):
     users = db.scalars(
-        select(User).where(User.role.in_([UserRole.ORG_ADMIN, UserRole.STAFF])).order_by(User.created_at.desc())
+        select(User)
+        .where(User.role.in_([UserRole.COLLABORATOR, UserRole.ORG_ADMIN, UserRole.STAFF]))
+        .order_by(User.created_at.desc())
     ).all()
     return {
         "items": [
@@ -569,17 +592,22 @@ def invite_user(
     user: User = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
-    organization = db.get(Organization, payload.organizationId)
-    if not organization:
-        raise HTTPException(status_code=404, detail="Organization not found")
+    role = UserRole(payload.role)
+    organization = None
+    if role == UserRole.ORG_ADMIN:
+        if not payload.organizationId:
+            raise HTTPException(status_code=422, detail="Organization is required for an Organization Admin")
+        organization = db.get(Organization, payload.organizationId)
+        if not organization:
+            raise HTTPException(status_code=404, detail="Organization not found")
     if find_user_by_email(db, str(payload.email)):
         raise HTTPException(status_code=409, detail="A user with this email already exists")
     raw_token, token_hash = new_opaque_token()
     invited = User(
-        organization_id=organization.id,
+        organization_id=organization.id if organization else None,
         name=payload.name.strip(),
         email=str(payload.email).lower(),
-        role=UserRole.ORG_ADMIN,
+        role=role,
         status="invited",
         invite_token_hash=token_hash,
         invite_expires_at=utcnow() + timedelta(days=7),
@@ -596,24 +624,155 @@ def invite_user(
     invite_url = f"{settings.frontend_url}/accept-invite/{raw_token}"
     email = queue_email(
         db,
-        organization.id,
+        organization.id if organization else None,
         invited.email,
         "You have been invited to FDX",
-        f"<p>Hello {invited.name},</p><p>You have been invited to manage {organization.name} in FDX.</p><p><a href='{invite_url}'>Set your password</a></p><p>This link expires in 7 days.</p>",
+        (
+            f"<p>Hello {invited.name},</p><p>You have been invited as a collaborator in FDX. "
+            "You can create organizations and events without access to participant or photo data.</p>"
+            f"<p><a href='{invite_url}'>Set your password</a></p><p>This link expires in 7 days.</p>"
+            if role == UserRole.COLLABORATOR
+            else f"<p>Hello {invited.name},</p><p>You have been invited to manage {organization.name} in FDX.</p><p><a href='{invite_url}'>Set your password</a></p><p>This link expires in 7 days.</p>"
+        ),
     )
     dispatch_email(db, email)
     audit(
         db,
         user,
-        "Organization Admin invited",
-        f"{invited.email} → {organization.name}",
-        organization_id=organization.id,
+        "Collaborator invited" if role == UserRole.COLLABORATOR else "Organization Admin invited",
+        f"{invited.email} → {organization.name}" if organization else invited.email,
+        organization_id=organization.id if organization else None,
     )
     db.commit()
-    response = {**user_json(invited), "organization": organization.name}
+    response = {
+        **user_json(invited),
+        "organization": organization.name if organization else None,
+    }
     if settings.environment == "development":
         response["developmentInviteUrl"] = invite_url
     return response
+
+
+def collaborator_organization_json(organization: Organization) -> dict:
+    return {
+        "id": organization.id,
+        "name": organization.name,
+        "type": organization.type.value,
+        "status": organization.status,
+    }
+
+
+def collaborator_event_json(event: Event) -> dict:
+    return {
+        "id": event.id,
+        "organizationId": event.organization_id,
+        "organization": event.organization.name,
+        "name": event.name,
+        "date": event.event_date.isoformat(),
+        "location": event.location,
+        "status": event.status,
+        "createdAt": iso(event.created_at),
+    }
+
+
+@app.get("/api/collaborator/organizations")
+def collaborator_organizations(
+    _: User = Depends(require_collaborator),
+    db: Session = Depends(get_db),
+):
+    organizations = db.scalars(
+        select(Organization).where(Organization.status == "active").order_by(Organization.name)
+    ).all()
+    return {
+        "items": [
+            collaborator_organization_json(item)
+            for item in organizations
+            if not item.expires_at or item.expires_at >= date.today()
+        ]
+    }
+
+
+@app.post("/api/collaborator/organizations", status_code=201)
+def collaborator_create_organization(
+    payload: CollaboratorOrganizationInput,
+    user: User = Depends(require_collaborator),
+    db: Session = Depends(get_db),
+):
+    organization = Organization(
+        name=payload.name.strip(),
+        type=payload.type,
+        contact_name=payload.contactName.strip(),
+        contact_email=str(payload.contactEmail).lower(),
+        phone=payload.phone.strip(),
+        storage_limit_bytes=100 * GB,
+        retention_days=90,
+        status="active",
+    )
+    db.add(organization)
+    try:
+        db.flush()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="An organization with this name already exists") from exc
+    audit(
+        db,
+        user,
+        "Organization created by collaborator",
+        organization.name,
+        organization_id=organization.id,
+    )
+    db.commit()
+    return collaborator_organization_json(organization)
+
+
+@app.get("/api/collaborator/events")
+def collaborator_events(
+    user: User = Depends(require_collaborator),
+    db: Session = Depends(get_db),
+):
+    events = db.scalars(select(Event).where(Event.created_by == user.id).order_by(Event.created_at.desc())).all()
+    return {"items": [collaborator_event_json(item) for item in events]}
+
+
+@app.post("/api/collaborator/events", status_code=201)
+def collaborator_create_event(
+    payload: CollaboratorEventInput,
+    user: User = Depends(require_collaborator),
+    db: Session = Depends(get_db),
+):
+    organization = db.get(Organization, payload.organizationId)
+    if (
+        not organization
+        or organization.status != "active"
+        or (organization.expires_at and organization.expires_at < date.today())
+    ):
+        raise HTTPException(status_code=404, detail="Active organization not found")
+    event = Event(
+        organization_id=organization.id,
+        name=payload.name.strip(),
+        description=payload.description.strip(),
+        event_date=payload.date,
+        location=payload.location.strip(),
+        retention_days=organization.retention_days,
+        expires_at=payload.date + timedelta(days=organization.retention_days),
+        created_by=user.id,
+        status="preparing",
+    )
+    db.add(event)
+    try:
+        db.flush()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="This event already exists") from exc
+    audit(
+        db,
+        user,
+        "Event created by collaborator",
+        event.name,
+        organization_id=organization.id,
+    )
+    db.commit()
+    return collaborator_event_json(event)
 
 
 @app.get("/api/organization/team")
@@ -683,7 +842,9 @@ def admin_dashboard(_: User = Depends(require_super_admin), db: Session = Depend
             "organizations": len(organizations),
             "activeOrganizations": sum(item.status == "active" for item in organizations),
             "organizationUsers": db.scalar(
-                select(func.count(User.id)).where(User.role.in_([UserRole.ORG_ADMIN, UserRole.STAFF]))
+                select(func.count(User.id)).where(
+                    User.role.in_([UserRole.COLLABORATOR, UserRole.ORG_ADMIN, UserRole.STAFF])
+                )
             )
             or 0,
             "events": db.scalar(select(func.count(Event.id))) or 0,
@@ -1281,7 +1442,10 @@ def processing(user: User = Depends(require_org_member), db: Session = Depends(g
             .group_by(ProcessingJob.status)
         ).all()
     }
-    faces = (
+    unique_faces = (
+        db.scalar(select(func.count(UniqueFace.id)).where(UniqueFace.organization_id == user.organization_id)) or 0
+    )
+    detections = (
         db.scalar(select(func.count(FaceDetection.id)).where(FaceDetection.organization_id == user.organization_id))
         or 0
     )
@@ -1295,7 +1459,9 @@ def processing(user: User = Depends(require_org_member), db: Session = Depends(g
             ),
             "completedJobs": counts.get("completed", 0),
             "failedJobs": counts.get("failed", 0) + counts.get("DEAD_LETTERED", 0),
-            "facesDetected": faces,
+            "facesDetected": unique_faces,
+            "uniqueFaces": unique_faces,
+            "faceDetections": detections,
         },
         "items": [
             {
@@ -1326,24 +1492,19 @@ def matches(
     if state and state != "all":
         statement = statement.where(FaceMatch.state == state)
     rows = db.scalars(statement.limit(500)).all()
-    counts = {
-        match_state: count
-        for match_state, count in db.execute(
-            select(FaceMatch.state, func.count(FaceMatch.id))
-            .where(FaceMatch.organization_id == user.organization_id)
-            .group_by(FaceMatch.state)
-        ).all()
-    }
-    total_faces = (
+    identity_stats = unique_face_stats(db, organization_id=user.organization_id)
+    total_detections = (
         db.scalar(select(func.count(FaceDetection.id)).where(FaceDetection.organization_id == user.organization_id))
         or 0
     )
     return {
         "stats": {
-            "facesDetected": total_faces,
-            "high": counts.get("high", 0) + counts.get("approved", 0),
-            "review": counts.get("review", 0),
-            "low": counts.get("low", 0) + counts.get("rejected", 0),
+            "facesDetected": identity_stats["unique_faces"],
+            "uniqueFaces": identity_stats["unique_faces"],
+            "faceDetections": total_detections,
+            "high": identity_stats["high"],
+            "review": identity_stats["review"],
+            "low": identity_stats["low"],
         },
         "items": [
             {
@@ -1652,7 +1813,11 @@ def enroll_face(
     enrollment.size_bytes = len(content)
     enrollment.embedding = result["embedding"]
     enrollment.embedding_vector = result["embedding"]
+    enrollment.embedding_dimension = len(result["embedding"])
     enrollment.detector_confidence = result["box"]["probability"]
+    enrollment.model_name = "adaface-ir101-ms1mv2"
+    enrollment.model_version = settings.embedder_model_version
+    enrollment.status = "valid"
     db.add(enrollment)
     participant.enrollment_status = "verified"
     participant.consented_at = utcnow()
@@ -1669,6 +1834,7 @@ def enroll_face(
         )
     )
     participant.event.organization.storage_used_bytes += added_size
+    matching_results = refresh_enrollment_matches(db, participant, result["embedding"])
     audit(
         db,
         None,
@@ -1680,6 +1846,7 @@ def enroll_face(
     return {
         "status": "verified",
         "message": "Your face was enrolled securely. We will email you when your private gallery is ready.",
+        "matchingResults": matching_results,
     }
 
 

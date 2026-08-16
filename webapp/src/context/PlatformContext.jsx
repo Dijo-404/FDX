@@ -131,6 +131,16 @@ export function PlatformProvider({ children }) {
           services: system.services,
           system,
         });
+      } else if (user.role === "collaborator") {
+        const [organizations, events] = await Promise.all([
+          api("/collaborator/organizations"),
+          api("/collaborator/events"),
+        ]);
+        setData({
+          ...initialState,
+          organizations: organizations.items,
+          events: events.items,
+        });
       } else {
         const adminRequests =
           user.role === "org_admin"
@@ -204,7 +214,17 @@ export function PlatformProvider({ children }) {
       error,
       refresh,
       addOrganization: (input) =>
-        mutate("/admin/organizations", {
+        mutate(
+          user?.role === "collaborator"
+            ? "/collaborator/organizations"
+            : "/admin/organizations",
+          {
+            method: "POST",
+            body: JSON.stringify(input),
+          },
+        ),
+      addCollaboratorEvent: (input) =>
+        mutate("/collaborator/events", {
           method: "POST",
           body: JSON.stringify(input),
         }),
@@ -421,7 +441,7 @@ export function PlatformProvider({ children }) {
           body: JSON.stringify(input),
         }),
     }),
-    [data, error, loading, mutate, refresh],
+    [data, error, loading, mutate, refresh, user?.role],
   );
   return (
     <PlatformContext.Provider value={value}>

@@ -5,7 +5,7 @@ import StatCard from "../../components/StatCard";
 import { usePlatform } from "../../context/PlatformContext";
 import { useAuth } from "../../context/AuthContext";
 import useInfiniteScroll from "../../hooks/useInfiniteScroll";
-export default function FaceMatches() {
+export default function FaceMatches({ embedded = false }) {
   const { user } = useAuth();
   const { matches, matchStats, reviewMatch } = usePlatform();
   const [filter, setFilter] = useState("all");
@@ -16,23 +16,26 @@ export default function FaceMatches() {
   const matchesTable = useInfiniteScroll(visible, "Face match records");
   const stats = matchStats ?? {};
   return (
-    <div className="page">
-      <div className="page-head">
+    <div className={embedded ? "face-matches-section" : "page"}>
+      <div className={embedded ? "section-head" : "page-head"}>
         <div>
           <p className="eyebrow">Identity results</p>
-          <h2>Face matches</h2>
+          {embedded ? <h3>Face matches</h3> : <h2>Face matches</h2>}
           <p>
-            Review live ML results before photographs enter private galleries.
+            Review database-indexed results before photographs enter private
+            galleries.
           </p>
         </div>
       </div>
       <div className="stat-grid">
-        <StatCard
-          icon="face"
-          label="Faces detected"
-          value={stats.facesDetected ?? 0}
-          hint="RetinaFace detections"
-        />
+        {!embedded ? (
+          <StatCard
+            icon="face"
+            label="Unique faces"
+            value={stats.uniqueFaces ?? stats.facesDetected ?? 0}
+            hint={`${stats.faceDetections ?? 0} detections indexed`}
+          />
+        ) : null}
         <StatCard
           icon="check"
           label="High confidence"

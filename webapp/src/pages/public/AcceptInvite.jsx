@@ -30,7 +30,13 @@ export default function AcceptInvite() {
           payload?.error?.message || "Invitation could not be accepted",
         );
       setAuthenticatedSession(payload);
-      navigate("/organization", { replace: true });
+      const user = payload?.data?.user ?? payload?.user;
+      navigate(
+        user?.role === "collaborator" ? "/collaborator" : "/organization",
+        {
+          replace: true,
+        },
+      );
     } catch (err) {
       setError(err.message);
     } finally {
@@ -44,7 +50,7 @@ export default function AcceptInvite() {
         <div>
           <p className="eyebrow">Secure invitation</p>
           <h1>Create your password</h1>
-          <p className="login-sub">Activate your Organization Admin account.</p>
+          <p className="login-sub">Activate your invited FDX account.</p>
         </div>
         <div className="field">
           <label>New password</label>

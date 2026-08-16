@@ -3,6 +3,7 @@ import Badge from "../../components/Badge";
 import StatCard from "../../components/StatCard";
 import { usePlatform } from "../../context/PlatformContext";
 import useInfiniteScroll from "../../hooks/useInfiniteScroll";
+import FaceMatches from "./FaceMatches";
 export default function Processing() {
   const { jobs, processingStats, refresh } = usePlatform();
   const stats = processingStats ?? {};
@@ -20,9 +21,9 @@ export default function Processing() {
       <div className="page-head">
         <div>
           <p className="eyebrow">ML pipeline</p>
-          <h2>Processing</h2>
+          <h2>Processing & face matches</h2>
           <p>
-            Live Kafka job state from ingestion through secure face matching.
+            Monitor ingestion and review indexed identity results in one place.
           </p>
         </div>
       </div>
@@ -35,9 +36,13 @@ export default function Processing() {
         />
         <StatCard
           icon="face"
-          label="Faces detected"
-          value={(stats.facesDetected ?? 0).toLocaleString()}
-          hint="RetinaFace results"
+          label="Unique faces"
+          value={(
+            stats.uniqueFaces ??
+            stats.facesDetected ??
+            0
+          ).toLocaleString()}
+          hint={`${(stats.faceDetections ?? 0).toLocaleString()} detections indexed`}
         />
         <StatCard
           icon="health"
@@ -84,6 +89,7 @@ export default function Processing() {
           ) : null}
         </div>
       </section>
+      <FaceMatches embedded />
       <section className="card section">
         <div className="section-head">
           <div>

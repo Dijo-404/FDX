@@ -167,6 +167,15 @@ def require_super_admin(user: User = Depends(current_user)) -> User:
     return user
 
 
+def require_collaborator(user: User = Depends(current_user)) -> User:
+    if user.role != UserRole.COLLABORATOR:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Collaborator permission required",
+        )
+    return user
+
+
 def require_org_admin(user: User = Depends(current_user)) -> User:
     if user.role != UserRole.ORG_ADMIN or not user.organization_id:
         raise HTTPException(

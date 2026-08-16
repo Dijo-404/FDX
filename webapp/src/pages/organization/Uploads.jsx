@@ -2,6 +2,7 @@ import { useState } from "react";
 import Badge from "../../components/Badge";
 import Dropzone from "../../components/Dropzone";
 import Icon from "../../components/Icon";
+import Select from "../../components/Select";
 import { usePlatform } from "../../context/PlatformContext";
 import useInfiniteScroll from "../../hooks/useInfiniteScroll";
 
@@ -18,7 +19,6 @@ export default function Uploads() {
   const { events, uploads, uploadPhotos } = usePlatform();
   const [eventId, setEventId] = useState("");
   const [files, setFiles] = useState([]);
-  const [selectionSource, setSelectionSource] = useState("");
   const [selectionNotice, setSelectionNotice] = useState("");
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
@@ -38,7 +38,6 @@ export default function Uploads() {
         `${result.uploaded.length} photos stored · ${result.jobsPublished} processing jobs created · ${result.skipped.length} skipped`,
       );
       setFiles([]);
-      setSelectionSource("");
       setSelectionNotice("");
     } catch (uploadError) {
       setError(
@@ -49,14 +48,11 @@ export default function Uploads() {
     }
   }
 
-  function selectFiles(source, nextFiles) {
+  function selectFiles(nextFiles) {
     const accepted = nextFiles.filter(
-      (file) =>
-        file.size > 0 &&
-        (source === "folder" ? supportedImage(file) : supportedBatchFile(file)),
+      (file) => file.size > 0 && supportedBatchFile(file),
     );
     const ignored = nextFiles.length - accepted.length;
-    setSelectionSource(source);
     setFiles(accepted);
     setStatus("");
     setError(
@@ -96,38 +92,29 @@ export default function Uploads() {
           </div>
           <div className="field">
             <label>Destination event</label>
-            <select
+            <Select
               value={selected}
-              onChange={(event) => setEventId(event.target.value)}
+              onValueChange={setEventId}
               disabled={!events.length || isUploading}
-            >
-              {events.length ? (
-                events.map((event) => (
-                  <option key={event.id} value={event.id}>
-                    {event.name}
-                  </option>
-                ))
-              ) : (
-                <option>Create an event first</option>
-              )}
-            </select>
+              ariaLabel="Destination event"
+              options={
+                events.length
+                  ? events.map((event) => ({
+                      value: event.id,
+                      label: event.name,
+                    }))
+                  : [{ value: "no-events", label: "Create an event first" }]
+              }
+            />
           </div>
           <Dropzone
-            title="Drop an event photo batch"
-            hint="JPG, PNG, WebP, or ZIP archive"
+            title="Drop photos, a folder, or a ZIP here"
+            hint="JPG, PNG, WebP, and ZIP · You can add more than one selection"
             accept="image/jpeg,image/png,image/webp,.zip,application/zip"
+            allowDirectory
             disabled={isUploading}
-            value={selectionSource === "batch" ? files : []}
-            onFiles={(nextFiles) => selectFiles("batch", nextFiles)}
-          />
-          <Dropzone
-            title="Choose an event folder"
-            hint="Select a photographer folder as one complete batch"
-            accept="image/jpeg,image/png,image/webp"
-            directory
-            disabled={isUploading}
-            value={selectionSource === "folder" ? files : []}
-            onFiles={(nextFiles) => selectFiles("folder", nextFiles)}
+            value={files}
+            onFiles={selectFiles}
           />
           {files.length ? (
             <div

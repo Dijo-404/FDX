@@ -23,7 +23,7 @@ export default function Enrollment() {
   const [preview, setPreview] = useState("");
   const [cameraReady, setCameraReady] = useState(false);
   const [consent, setConsent] = useState(false);
-  const [done, setDone] = useState(false);
+  const [done, setDone] = useState(null);
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
@@ -96,8 +96,10 @@ export default function Enrollment() {
         }),
       });
       await directUpload(upload.data.upload_url, image, upload.data.headers);
-      await api(`/v2/public/enrollment/${token}/complete`, { method: "POST" });
-      setDone(true);
+      const completed = await api(`/v2/public/enrollment/${token}/complete`, {
+        method: "POST",
+      });
+      setDone(completed.data);
     } catch (requestError) {
       setError(requestError.message);
     } finally {
@@ -114,8 +116,11 @@ export default function Enrollment() {
           </span>
           <h1>Face verified securely</h1>
           <p>
-            FDX will email your private gallery when matching is complete. No
-            account is required.
+            {done.matching_results?.photos
+              ? `We found ${done.matching_results.photos} ${done.matching_results.photos === 1 ? "photo" : "photos"} using the stored face index.`
+              : "Your face was checked against the stored event index."}{" "}
+            FDX will email your private gallery when it is ready. No account is
+            required.
           </p>
         </div>
       </div>

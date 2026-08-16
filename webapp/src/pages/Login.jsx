@@ -14,12 +14,13 @@ export default function Login() {
   if (loading) return null;
 
   if (isAuthenticated) {
-    return (
-      <Navigate
-        to={user.role === "super_admin" ? "/admin" : "/organization"}
-        replace
-      />
-    );
+    const home =
+      user.role === "super_admin"
+        ? "/admin"
+        : user.role === "collaborator"
+          ? "/collaborator"
+          : "/organization";
+    return <Navigate to={home} replace />;
   }
 
   async function handleSubmit(event) {
@@ -28,10 +29,13 @@ export default function Login() {
     setSubmitting(true);
     try {
       const { user: loggedInUser } = await login(email, password);
-      navigate(
-        loggedInUser.role === "super_admin" ? "/admin" : "/organization",
-        { replace: true },
-      );
+      const home =
+        loggedInUser.role === "super_admin"
+          ? "/admin"
+          : loggedInUser.role === "collaborator"
+            ? "/collaborator"
+            : "/organization";
+      navigate(home, { replace: true });
     } catch (err) {
       setError(err.message);
     } finally {

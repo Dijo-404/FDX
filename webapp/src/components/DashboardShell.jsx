@@ -65,13 +65,16 @@ export default function DashboardShell({ navItems, roleLabel, title }) {
   const hoverCloseTimer = useRef(null);
   const openedByHover = useRef(false);
   const normalizedPath = pathname.replace(/\/+$/, "");
-  const isOverview = ["/admin", "/organization"].includes(normalizedPath);
+  const isOverview = ["/admin", "/collaborator", "/organization"].includes(
+    normalizedPath,
+  );
   const accountScope =
     user?.organizationName ??
     (user?.role === "super_admin" ? "FDX Platform" : roleLabel);
   const accountRole =
     {
       super_admin: "Super administrator",
+      collaborator: "Collaborator",
       org_admin: "Organization administrator",
       staff: "Staff member",
     }[user?.role] ?? roleLabel;

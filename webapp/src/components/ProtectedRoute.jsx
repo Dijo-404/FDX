@@ -11,12 +11,13 @@ export default function ProtectedRoute({ role, roles, children }) {
   }
 
   if ((role && user.role !== role) || (roles && !roles.includes(user.role))) {
-    return (
-      <Navigate
-        to={user.role === "super_admin" ? "/admin" : "/organization"}
-        replace
-      />
-    );
+    const home =
+      user.role === "super_admin"
+        ? "/admin"
+        : user.role === "collaborator"
+          ? "/collaborator"
+          : "/organization";
+    return <Navigate to={home} replace />;
   }
 
   return children;

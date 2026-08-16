@@ -6,11 +6,11 @@ from sqlalchemy.orm import Session
 from .models import (
     Delivery,
     Event,
-    FaceDetection,
     FaceMatch,
     Organization,
     Participant,
     Photo,
+    UniqueFace,
     User,
 )
 
@@ -66,7 +66,7 @@ def organization_json(db: Session, organization: Organization) -> dict:
 
 def event_json(db: Session, event: Event) -> dict:
     photos = db.scalar(select(func.count(Photo.id)).where(Photo.event_id == event.id)) or 0
-    faces = db.scalar(select(func.count(FaceDetection.id)).where(FaceDetection.event_id == event.id)) or 0
+    faces = db.scalar(select(func.count(UniqueFace.id)).where(UniqueFace.event_id == event.id)) or 0
     participants = db.scalar(select(func.count(Participant.id)).where(Participant.event_id == event.id)) or 0
     enrolled = (
         db.scalar(

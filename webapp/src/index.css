@@ -565,6 +565,12 @@ tbody tr:hover {
   letter-spacing: -0.1px;
 }
 
+.face-matches-section {
+  display: grid;
+  gap: 16px;
+  padding-top: 4px;
+}
+
 .two-col {
   display: grid;
   grid-template-columns: 1.6fr 1fr;

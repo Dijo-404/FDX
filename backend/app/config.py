@@ -58,6 +58,7 @@ class Settings:
     match_auto_threshold: float = float(os.getenv("MATCH_AUTO_THRESHOLD", "0.85"))
     match_review_threshold: float = float(os.getenv("MATCH_REVIEW_THRESHOLD", "0.65"))
     match_runner_up_margin: float = float(os.getenv("MATCH_RUNNER_UP_MARGIN", "0.08"))
+    unique_face_cluster_threshold: float = float(os.getenv("UNIQUE_FACE_CLUSTER_THRESHOLD", "0.75"))
     minimum_face_size: int = int(os.getenv("MINIMUM_FACE_SIZE", "40"))
     low_resolution_face_size: int = int(os.getenv("LOW_RESOLUTION_FACE_SIZE", "80"))
     minimum_detector_confidence: float = float(os.getenv("MINIMUM_DETECTOR_CONFIDENCE", "0.60"))

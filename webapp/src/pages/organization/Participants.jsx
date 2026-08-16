@@ -3,6 +3,7 @@ import Badge from "../../components/Badge";
 import Dropzone from "../../components/Dropzone";
 import Icon from "../../components/Icon";
 import Modal from "../../components/Modal";
+import Select from "../../components/Select";
 import StatCard from "../../components/StatCard";
 import { usePlatform } from "../../context/PlatformContext";
 import useInfiniteScroll from "../../hooks/useInfiniteScroll";
@@ -98,20 +99,21 @@ export default function Participants() {
         />
       </div>
       <div className="toolbar">
-        <select
+        <Select
           value={eventId}
-          onChange={(event) => {
-            setEventId(event.target.value);
+          onValueChange={(value) => {
+            setEventId(value);
             participantsTable.reset();
           }}
-        >
-          <option value="">All events</option>
-          {events.map((event) => (
-            <option key={event.id} value={event.id}>
-              {event.name}
-            </option>
-          ))}
-        </select>
+          ariaLabel="Filter by event"
+          options={[
+            { value: "", label: "All events" },
+            ...events.map((event) => ({
+              value: event.id,
+              label: event.name,
+            })),
+          ]}
+        />
         <div className="toolbar-search">
           <Icon name="search" size={15} />
           <input
@@ -200,16 +202,15 @@ export default function Participants() {
         <div className="form-grid single">
           <div className="field">
             <label>Event</label>
-            <select
+            <Select
               value={selectedEvent}
-              onChange={(e) => setEventId(e.target.value)}
-            >
-              {events.map((event) => (
-                <option key={event.id} value={event.id}>
-                  {event.name}
-                </option>
-              ))}
-            </select>
+              onValueChange={setEventId}
+              ariaLabel="Event"
+              options={events.map((event) => ({
+                value: event.id,
+                label: event.name,
+              }))}
+            />
           </div>
           <Dropzone
             title="Add participant list"

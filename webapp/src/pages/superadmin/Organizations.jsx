@@ -3,6 +3,7 @@ import Badge from "../../components/Badge";
 import Gauge from "../../components/Gauge";
 import Icon from "../../components/Icon";
 import Modal from "../../components/Modal";
+import Select from "../../components/Select";
 import Toggle from "../../components/Toggle";
 import { usePlatform } from "../../context/PlatformContext";
 import useInfiniteScroll from "../../hooks/useInfiniteScroll";
@@ -132,17 +133,19 @@ export default function Organizations() {
             placeholder="Search organizations"
           />
         </div>
-        <select
+        <Select
           value={type}
-          onChange={(event) => {
-            setType(event.target.value);
+          onValueChange={(value) => {
+            setType(value);
             organizationsTable.reset();
           }}
-        >
-          <option value="ALL">All types</option>
-          <option value="COLLEGE">Colleges</option>
-          <option value="COMPANY">Companies</option>
-        </select>
+          ariaLabel="Filter by organization type"
+          options={[
+            { value: "ALL", label: "All types" },
+            { value: "COLLEGE", label: "Colleges" },
+            { value: "COMPANY", label: "Companies" },
+          ]}
+        />
         <span className="result-count">{visible.length} organizations</span>
       </div>
       <div className="admin-split">
@@ -300,15 +303,15 @@ export default function Organizations() {
           </div>
           <div className="field">
             <label>Organization type</label>
-            <select
+            <Select
               value={form.type}
-              onChange={(event) =>
-                setForm({ ...form, type: event.target.value })
-              }
-            >
-              <option value="COLLEGE">College</option>
-              <option value="COMPANY">Company</option>
-            </select>
+              onValueChange={(value) => setForm({ ...form, type: value })}
+              ariaLabel="Organization type"
+              options={[
+                { value: "COLLEGE", label: "College" },
+                { value: "COMPANY", label: "Company" },
+              ]}
+            />
           </div>
           <div className="field">
             <label>Contact name</label>

@@ -15,7 +15,6 @@ import EventDetail from "./pages/organization/EventDetail";
 import Participants from "./pages/organization/Participants";
 import Uploads from "./pages/organization/Uploads";
 import Processing from "./pages/organization/Processing";
-import FaceMatches from "./pages/organization/FaceMatches";
 import Deliveries from "./pages/organization/Deliveries";
 import OrganizationLogs from "./pages/organization/Logs";
 import Settings from "./pages/organization/Settings";
@@ -26,11 +25,13 @@ import Enrollment from "./pages/public/Enrollment";
 import Gallery from "./pages/public/Gallery";
 import ForgotPassword from "./pages/public/ForgotPassword";
 import ResetPassword from "./pages/public/ResetPassword";
+import CollaboratorOrganizations from "./pages/collaborator/Organizations";
+import CollaboratorEvents from "./pages/collaborator/Events";
 
 const SUPER_ADMIN_NAV = [
   { to: "/admin", label: "Overview", icon: "dashboard", end: true },
   { to: "/admin/organizations", label: "Organizations", icon: "organization" },
-  { to: "/admin/users", label: "Organization users", icon: "users" },
+  { to: "/admin/users", label: "Users & collaborators", icon: "users" },
   { to: "/admin/system", label: "System health", icon: "health" },
   { to: "/admin/logs", label: "Audit logs", icon: "logs" },
 ];
@@ -38,10 +39,13 @@ const SUPER_ADMIN_NAV = [
 const ORGANIZATION_NAV = [
   { to: "/organization", label: "Overview", icon: "dashboard", end: true },
   { to: "/organization/events", label: "Events", icon: "events" },
-  { to: "/organization/participants", label: "Participants", icon: "students" },
   { to: "/organization/uploads", label: "Uploads", icon: "upload" },
-  { to: "/organization/processing", label: "Processing", icon: "processing" },
-  { to: "/organization/matches", label: "Face matches", icon: "face" },
+  { to: "/organization/participants", label: "Participants", icon: "students" },
+  {
+    to: "/organization/processing",
+    label: "Processing & matches",
+    icon: "processing",
+  },
   { to: "/organization/deliveries", label: "Deliveries", icon: "delivery" },
   {
     to: "/organization/emails",
@@ -62,6 +66,16 @@ const ORGANIZATION_NAV = [
     icon: "settings",
     roles: ["org_admin"],
   },
+];
+
+const COLLABORATOR_NAV = [
+  {
+    to: "/collaborator",
+    label: "Organizations",
+    icon: "organization",
+    end: true,
+  },
+  { to: "/collaborator/events", label: "Events", icon: "events" },
 ];
 
 export default function App() {
@@ -98,6 +112,22 @@ export default function App() {
       </Route>
 
       <Route
+        path="/collaborator"
+        element={
+          <ProtectedRoute role="collaborator">
+            <DashboardShell
+              navItems={COLLABORATOR_NAV}
+              roleLabel="Collaborator"
+              title="Collaborator Workspace"
+            />
+          </ProtectedRoute>
+        }
+      >
+        <Route index element={<CollaboratorOrganizations />} />
+        <Route path="events" element={<CollaboratorEvents />} />
+      </Route>
+
+      <Route
         path="/organization"
         element={
           <ProtectedRoute roles={["org_admin", "staff"]}>
@@ -115,7 +145,10 @@ export default function App() {
         <Route path="participants" element={<Participants />} />
         <Route path="uploads" element={<Uploads />} />
         <Route path="processing" element={<Processing />} />
-        <Route path="matches" element={<FaceMatches />} />
+        <Route
+          path="matches"
+          element={<Navigate to="/organization/processing" replace />}
+        />
         <Route path="deliveries" element={<Deliveries />} />
         <Route
           path="emails"

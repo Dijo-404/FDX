@@ -1,0 +1,101 @@
+.clean-select-trigger {
+  width: 100%;
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 12px;
+  border: 1px solid var(--border-input);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--ink);
+  text-align: left;
+  box-shadow: var(--shadow-sm);
+  transition:
+    border-color 0.12s ease,
+    box-shadow 0.12s ease,
+    opacity 0.12s ease;
+}
+
+.clean-select-trigger:hover:not(:disabled) {
+  border-color: #829fbc;
+}
+
+.clean-select-trigger:focus-visible,
+.clean-select-trigger[data-state="open"] {
+  outline: none;
+  border-color: var(--violet-500);
+  box-shadow: 0 0 0 3px rgba(83, 58, 253, 0.14);
+}
+
+.clean-select-trigger:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.clean-select-trigger[data-state="open"] .clean-select-chevron {
+  transform: rotate(180deg);
+}
+
+.clean-select-chevron {
+  display: inline-flex;
+  flex: none;
+  color: var(--muted);
+  transition: transform 0.15s ease;
+}
+
+.clean-select-content {
+  z-index: 120;
+  width: var(--radix-select-trigger-width);
+  max-height: min(320px, var(--radix-select-content-available-height));
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+}
+
+.clean-select-viewport {
+  padding: 5px;
+}
+
+.clean-select-item {
+  position: relative;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  padding: 8px 38px 8px 11px;
+  border-radius: var(--radius-sm);
+  color: var(--ink-soft);
+  cursor: default;
+  outline: none;
+  user-select: none;
+}
+
+.clean-select-item[data-highlighted] {
+  background: var(--surface-muted);
+  color: var(--ink);
+}
+
+.clean-select-item[data-state="checked"] {
+  background: rgba(83, 58, 253, 0.08);
+  color: var(--violet-600);
+}
+
+.clean-select-item[data-disabled] {
+  opacity: 0.45;
+}
+
+.clean-select-check {
+  position: absolute;
+  right: 11px;
+  display: inline-flex;
+  color: var(--violet-500);
+}
+
+.toolbar .clean-select-trigger {
+  width: auto;
+  min-width: 150px;
+  min-height: 38px;
+}

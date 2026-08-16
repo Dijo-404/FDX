@@ -229,7 +229,7 @@ Responsibilities:
 - start event processing
 - monitor processing progress
 - view face-match results
-- review uncertain matches if manual review is enabled
+- monitor strict automatic match decisions; manual approval is disabled
 - create participant galleries
 - send result emails
 - view Organization logs
@@ -329,7 +329,7 @@ Recommended defaults:
 | Refresh token lifetime | 7 days |
 | Invitation token lifetime | 72 hours |
 | Password reset token lifetime | 30 minutes |
-| Enrollment link lifetime | Event configurable; default 7 days |
+| Enrollment link lifetime | 24 hours; reusable until expiry |
 | Gallery link lifetime | Configurable; default 7 days |
 
 These values must be environment/configuration driven.
@@ -1288,14 +1288,13 @@ Organization Admin can view:
 - similarity score
 - competing candidate score
 - model/version
-- confirm
-- reject
+- automatic threshold decision
 
 Requirements:
 
-- manual review action is audit logged
-- reviewer identity stored
-- rejected match cannot be automatically recreated without a new processing version unless explicitly reset
+- only automatic high-confidence matches enter participant galleries
+- below-threshold matches remain unknown and cannot be manually overridden
+- threshold profile and model versions are stored with every decision
 - no cross-Organization participant comparisons
 
 ---
@@ -2868,7 +2867,7 @@ Audit at minimum:
 - photo upload batch
 - processing started
 - processing retry
-- manual match confirm/reject
+- automatic match-policy reconciliation
 - gallery generated
 - result delivery
 - data deletion
@@ -3312,7 +3311,7 @@ FDX_DETECTOR_MODEL_VERSION
 FDX_EMBEDDER_MODEL_VERSION
 
 MATCH_AUTO_THRESHOLD
-MATCH_REVIEW_THRESHOLD
+MATCH_REVIEW_THRESHOLD deprecated compatibility setting
 MATCH_RUNNER_UP_MARGIN
 
 DEFAULT_RETENTION_DAYS
@@ -4323,9 +4322,9 @@ Build:
 - [ ] Camera capture works.
 - [ ] Invalid face asks for retake.
 - [ ] Valid face generates enrollment.
-- [ ] Result email contains private gallery link.
-- [ ] Gallery contains only authorized photos.
-- [ ] Gallery expires.
+- [ ] Matched photos appear on the enrollment page without a separate result email.
+- [ ] Enrollment results contain only authorized photos.
+- [ ] Enrollment results remain accessible for 24 hours and then expire.
 - [ ] Signed S3 URLs expire.
 - [ ] Download works while authorized.
 

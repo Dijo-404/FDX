@@ -26,7 +26,7 @@ export default function ForgotPassword() {
 
   return (
     <div className="public-shell">
-      <form className="login-card card" onSubmit={submit}>
+      <form className="login-card public-auth-card card" onSubmit={submit}>
         <span className="login-mark">FDX</span>
         <div>
           <p className="eyebrow">Account recovery</p>

@@ -45,7 +45,7 @@ export default function AcceptInvite() {
   }
   return (
     <div className="public-shell">
-      <form className="login-card card" onSubmit={submit}>
+      <form className="login-card public-auth-card card" onSubmit={submit}>
         <span className="login-mark">FDX</span>
         <div>
           <p className="eyebrow">Secure invitation</p>
@@ -53,27 +53,35 @@ export default function AcceptInvite() {
           <p className="login-sub">Activate your invited FDX account.</p>
         </div>
         <div className="field">
-          <label>New password</label>
+          <label htmlFor="invite-password">New password</label>
           <input
+            id="invite-password"
             type="password"
             minLength="10"
+            autoComplete="new-password"
             required
             value={password}
             onChange={(e) => setPassword(e.target.value)}
           />
         </div>
         <div className="field">
-          <label>Confirm password</label>
+          <label htmlFor="invite-password-confirmation">Confirm password</label>
           <input
+            id="invite-password-confirmation"
             type="password"
             minLength="10"
+            autoComplete="new-password"
             required
             value={confirm}
             onChange={(e) => setConfirm(e.target.value)}
           />
         </div>
-        {error ? <p className="login-error">{error}</p> : null}
-        <button className="btn primary" disabled={submitting}>
+        {error ? (
+          <p className="login-error" role="alert">
+            {error}
+          </p>
+        ) : null}
+        <button type="submit" className="btn primary" disabled={submitting}>
           {submitting ? "Activating…" : "Activate account"}
         </button>
         <Link to="/login" className="text-link">

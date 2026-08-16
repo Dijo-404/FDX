@@ -426,11 +426,6 @@ export function PlatformProvider({ children }) {
         files.forEach((file) => body.append("files", file));
         return mutate("/organization/photos", { method: "POST", body });
       },
-      reviewMatch: (id, decision) =>
-        mutate(`/organization/matches/${id}`, {
-          method: "PATCH",
-          body: JSON.stringify({ decision }),
-        }),
       sendDelivery: (participantId) =>
         mutate(`/organization/deliveries/${participantId}/send`, {
           method: "POST",

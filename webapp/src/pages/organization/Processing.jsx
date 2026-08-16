@@ -23,7 +23,7 @@ export default function Processing() {
           <p className="eyebrow">ML pipeline</p>
           <h2>Processing & face matches</h2>
           <p>
-            Monitor ingestion and review indexed identity results in one place.
+            Monitor ingestion and automatic identity results in one place.
           </p>
         </div>
       </div>
@@ -78,7 +78,11 @@ export default function Processing() {
                   {job.error || new Date(job.createdAt).toLocaleString()}
                 </span>
               </div>
-              <code>{job.worker}</code>
+              {job.worker && job.worker !== "queued" ? (
+                <code>{job.worker}</code>
+              ) : (
+                <span />
+              )}
               <Badge status={job.status} />
             </div>
           ))}
@@ -100,18 +104,13 @@ export default function Processing() {
         <div className="confidence-list">
           <div className="high">
             <strong>High confidence</strong>
-            <span>≥ 85%</span>
+            <span>≥ 86%</span>
             <p>Automatically assigned when runner-up margin is safe</p>
           </div>
-          <div className="review">
-            <strong>Needs review</strong>
-            <span>65–84%</span>
-            <p>Held for organization admin verification</p>
-          </div>
           <div className="low">
-            <strong>Low confidence</strong>
-            <span>&lt; 65%</span>
-            <p>Kept unknown and never delivered</p>
+            <strong>Below threshold</strong>
+            <span>&lt; 86%</span>
+            <p>Kept unknown; there is no manual approval override</p>
           </div>
         </div>
       </section>

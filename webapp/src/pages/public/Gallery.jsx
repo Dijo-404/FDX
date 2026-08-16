@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import Icon from "../../components/Icon";
+import ResilientImage from "../../components/ResilientImage";
 import { api } from "../../lib/api";
 
 export default function Gallery() {
@@ -8,10 +9,14 @@ export default function Gallery() {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
   const [exportJob, setExportJob] = useState(null);
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
 
   useEffect(() => {
     api(`/v2/public/gallery/${token}`)
-      .then((response) => setData(response.data))
+      .then((response) => {
+        setData(response.data);
+        setSelectedIds(new Set());
+      })
       .catch((requestError) => setError(requestError.message));
   }, [token]);
 
@@ -34,11 +39,22 @@ export default function Gallery() {
     [token],
   );
 
-  async function downloadAll() {
+  async function downloadSelected() {
+    const selectedPhotos = data.photos.filter((photo) =>
+      selectedIds.has(photo.id),
+    );
+    if (!selectedPhotos.length) return;
+    if (selectedPhotos.length === 1) {
+      await downloadPhoto(selectedPhotos[0]);
+      return;
+    }
     try {
       setError("");
       const response = await api(`/v2/public/gallery/${token}/exports`, {
         method: "POST",
+        body: JSON.stringify({
+          media_ids: selectedPhotos.map((photo) => photo.id),
+        }),
       });
       setExportJob(response.data);
       const ready = await pollExport(response.data.export_id);
@@ -50,6 +66,7 @@ export default function Gallery() {
 
   async function downloadPhoto(photo) {
     try {
+      setError("");
       const response = await api(`/v2/public/gallery/${token}/download-url`, {
         method: "POST",
         body: JSON.stringify({ media_id: photo.id }),
@@ -59,6 +76,31 @@ export default function Gallery() {
       setError(requestError.message);
     }
   }
+
+  function togglePhoto(photoId) {
+    setExportJob(null);
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(photoId)) next.delete(photoId);
+      else next.add(photoId);
+      return next;
+    });
+  }
+
+  function toggleAll() {
+    setExportJob(null);
+    setSelectedIds((current) =>
+      current.size === data.photos.length
+        ? new Set()
+        : new Set(data.photos.map((photo) => photo.id)),
+    );
+  }
+
+  const exportInProgress = ["QUEUED", "PROCESSING"].includes(exportJob?.status);
+  const allSelected = Boolean(
+    data?.photos.length && selectedIds.size === data.photos.length,
+  );
+  const someSelected = selectedIds.size > 0 && !allSelected;
 
   return (
     <div className="gallery-page">
@@ -70,12 +112,33 @@ export default function Gallery() {
           <p>{data ? data.organization_name : "Loading securely…"}</p>
         </div>
       </header>
-      {error ? <p className="login-error">{error}</p> : null}
+      {error ? (
+        <p className="login-error" role="alert">
+          {error}
+        </p>
+      ) : null}
       {data ? (
         <>
           <div className="gallery-toolbar">
             <div>
-              <span>{data.photos.length} matched photos</span>
+              {data.photos.length ? (
+                <label className="gallery-select-all">
+                  <input
+                    type="checkbox"
+                    checked={allSelected}
+                    ref={(input) => {
+                      if (input) input.indeterminate = someSelected;
+                    }}
+                    onChange={toggleAll}
+                  />
+                  Select all photos
+                </label>
+              ) : null}
+              <span>
+                {selectedIds.size
+                  ? `${selectedIds.size} of ${data.photos.length} selected`
+                  : `${data.photos.length} matched photos`}
+              </span>
               <span>
                 Expires {new Date(data.expires_at).toLocaleDateString()}
               </span>
@@ -84,23 +147,37 @@ export default function Gallery() {
               <div className="gallery-actions">
                 <button
                   className="btn primary"
-                  onClick={downloadAll}
-                  disabled={["QUEUED", "PROCESSING"].includes(
-                    exportJob?.status,
-                  )}
+                  onClick={downloadSelected}
+                  disabled={!selectedIds.size || exportInProgress}
                 >
                   <Icon name="download" size={16} />
-                  {["QUEUED", "PROCESSING"].includes(exportJob?.status)
+                  {exportInProgress
                     ? "Preparing ZIP…"
-                    : "Download all"}
+                    : `Download selected (${selectedIds.size})`}
                 </button>
               </div>
             ) : null}
           </div>
           <main className="photo-gallery">
             {data.photos.map((photo) => (
-              <figure key={photo.id}>
-                <img
+              <figure
+                key={photo.id}
+                className={selectedIds.has(photo.id) ? "selected" : undefined}
+              >
+                <label
+                  className={`photo-select${selectedIds.has(photo.id) ? " selected" : ""}`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.has(photo.id)}
+                    onChange={() => togglePhoto(photo.id)}
+                    aria-label={`Select ${photo.filename}`}
+                  />
+                  {selectedIds.has(photo.id) ? (
+                    <Icon name="check" size={16} />
+                  ) : null}
+                </label>
+                <ResilientImage
                   src={photo.thumbnail_url}
                   alt={photo.filename}
                   loading="lazy"

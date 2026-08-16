@@ -75,8 +75,6 @@ def decide_match(
         and (margin or 0.0) >= settings.match_runner_up_margin
     ):
         state = "high"
-    elif best_score >= settings.match_review_threshold + threshold_boost:
-        state = "review"
     else:
         state = "low"
         participant_id = None
@@ -206,7 +204,7 @@ def refresh_enrollment_matches(
             .where(
                 UniqueFace.event_id == participant.event_id,
                 UniqueFace.centroid_vector.is_not(None),
-                distance <= 1 - settings.match_review_threshold,
+                distance <= 1 - settings.match_auto_threshold,
             )
             .order_by(distance)
         ).all()
@@ -221,7 +219,6 @@ def refresh_enrollment_matches(
             .where(
                 FaceMatch.event_id == participant.event_id,
                 FaceMatch.participant_id == participant.id,
-                FaceMatch.decision_source == "AUTO",
                 FaceDetection.unique_face_id.is_not(None),
             )
         ).all()
@@ -243,7 +240,6 @@ def refresh_enrollment_matches(
     )
     unique_faces = db.scalars(select(UniqueFace).where(UniqueFace.id.in_(candidate_ids))).all()
     matched_unique_faces: set[str] = set()
-    review_unique_faces: set[str] = set()
     matched_photos: set[str] = set()
     for unique_face in unique_faces:
         for detection in unique_face.detections:
@@ -253,8 +249,6 @@ def refresh_enrollment_matches(
                 detection.quality_class,
             )
             match = detection.match
-            if match and match.decision_source != "AUTO":
-                continue
             if not match:
                 match = FaceMatch(
                     organization_id=detection.organization_id,
@@ -277,12 +271,13 @@ def refresh_enrollment_matches(
                 if decision.state == "high":
                     matched_unique_faces.add(unique_face.id)
                     matched_photos.add(detection.photo_id)
-                elif decision.state == "review":
-                    review_unique_faces.add(unique_face.id)
+    # SessionLocal disables autoflush. Flush here so callers can immediately
+    # query the complete replacement match set for the enrollment response.
+    db.flush()
     return {
         "unique_faces": len(matched_unique_faces),
         "photos": len(matched_photos),
-        "needs_review": len(review_unique_faces),
+        "needs_review": 0,
     }
 
 
@@ -310,11 +305,10 @@ def unique_face_stats(
         .where(*detection_filters)
     ).all():
         states_by_face.setdefault(unique_face_id, set()).add(state)
-    high = {face_id for face_id, states in states_by_face.items() if states.intersection({"high", "approved"})}
-    review = {face_id for face_id, states in states_by_face.items() if "review" in states and face_id not in high}
+    high = {face_id for face_id, states in states_by_face.items() if "high" in states}
     return {
         "unique_faces": len(face_ids),
         "high": len(high),
-        "review": len(review),
-        "low": len(face_ids - high - review),
+        "review": 0,
+        "low": len(face_ids - high),
     }

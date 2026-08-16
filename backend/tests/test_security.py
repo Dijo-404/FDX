@@ -3,6 +3,7 @@ from datetime import date, timedelta
 from types import SimpleNamespace
 
 from app.auth import hash_password, new_opaque_token, token_pair, verify_password
+from app.config import settings
 from app.database import SessionLocal
 from app.face_index import (
     cosine,
@@ -10,6 +11,7 @@ from app.face_index import (
     merge_centroid,
     refresh_enrollment_matches,
 )
+from app.integrations import storage
 from app.main import app
 from app.models import (
     Event,
@@ -19,6 +21,7 @@ from app.models import (
     Organization,
     OrganizationType,
     Participant,
+    ParticipantEnrollmentToken,
     Photo,
     UniqueFace,
     UniqueFacePhoto,
@@ -28,7 +31,7 @@ from app.models import (
 )
 from app.worker import image_content_type
 from fastapi.testclient import TestClient
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 
 TEST_PASSWORD = f"Test-{secrets.token_urlsafe(24)}"
 
@@ -69,6 +72,20 @@ def test_stored_embedding_match_uses_confidence_policy_without_image_processing(
     assert decision.participant_id == "participant-1"
     assert decision.state == "high"
     assert decision.best_score == 1.0
+
+
+def test_match_below_strict_threshold_stays_unknown_without_review():
+    assert settings.match_auto_threshold >= 0.86
+    assert settings.match_runner_up_margin >= 0.10
+    enrollment = SimpleNamespace(
+        participant_id="participant-1",
+        embedding=[1.0, 0.0],
+        status="valid",
+    )
+    decision = decide_match([0.85, 0.5267826876], [enrollment])
+    assert decision.participant_id is None
+    assert decision.state == "low"
+    assert 0.849 < decision.best_score < 0.851
 
 
 def test_dashboard_counts_unique_faces_and_keeps_detection_total_separate():
@@ -162,6 +179,22 @@ def test_dashboard_counts_unique_faces_and_keeps_detection_total_separate():
         assert matches.json()["stats"]["facesDetected"] == 1
         assert matches.json()["stats"]["faceDetections"] == 2
         assert matches.json()["stats"]["low"] == 1
+        match_id = matches.json()["items"][0]["id"]
+        assert (
+            client.patch(
+                f"/api/organization/matches/{match_id}",
+                headers=headers,
+                json={"decision": "approved"},
+            ).status_code
+            == 410
+        )
+        assert (
+            client.post(
+                f"/api/v2/events/{event_id}/matches/{match_id}/confirm",
+                headers=headers,
+            ).status_code
+            == 410
+        )
         processing = client.get("/api/organization/processing", headers=headers)
         assert processing.status_code == 200
         assert processing.json()["stats"]["uniqueFaces"] == 1
@@ -251,11 +284,122 @@ def test_enrollment_queries_stored_index_and_returns_matching_photo_count():
             )
         )
         results = refresh_enrollment_matches(db, participant, embedding)
-        db.flush()
         assert results == {"unique_faces": 1, "photos": 1, "needs_review": 0}
-        assert detection.match.participant_id == participant.id
-        assert detection.match.state == "high"
+        db.expire_all()
+        persisted = db.scalar(select(FaceMatch).where(FaceMatch.detection_id == detection.id))
+        assert persisted.participant_id == participant.id
+        assert persisted.state == "high"
         db.rollback()
+
+
+def test_completed_enrollment_link_remains_available_and_serves_matched_photos():
+    suffix = new_opaque_token()[0][:12]
+    raw_token, token_hash = new_opaque_token()
+    storage_key = f"tests/{suffix}/matched.jpg"
+    thumbnail_key = f"tests/{suffix}/matched.webp"
+    photo_bytes = b"matched-event-photo"
+    thumbnail_bytes = b"RIFF0000WEBPVP8 "
+    storage.put(storage_key, photo_bytes, "image/jpeg")
+    storage.put(thumbnail_key, thumbnail_bytes, "image/webp")
+    with SessionLocal() as db:
+        organization = Organization(
+            name=f"Reusable enrollment tenant {suffix}",
+            type=OrganizationType.COMPANY,
+            contact_email=f"reusable-{suffix}@example.com",
+        )
+        db.add(organization)
+        db.flush()
+        event = Event(
+            organization_id=organization.id,
+            name=f"Reusable enrollment event {suffix}",
+            event_date=date.today(),
+            retention_days=30,
+            expires_at=date.today() + timedelta(days=30),
+        )
+        db.add(event)
+        db.flush()
+        participant = Participant(
+            organization_id=organization.id,
+            event_id=event.id,
+            name="Reusable Participant",
+            email=f"reusable-participant-{suffix}@example.com",
+            enrollment_status="verified",
+            enrollment_token_hash=token_hash,
+            enrollment_expires_at=utcnow() + timedelta(days=1),
+        )
+        photo = Photo(
+            organization_id=organization.id,
+            event_id=event.id,
+            filename="matched.jpg",
+            storage_key=storage_key,
+            thumbnail_storage_key=thumbnail_key,
+            content_type="image/jpeg",
+            size_bytes=len(photo_bytes),
+            sha256=(f"2{suffix}" * 6)[:64],
+            processing_status="completed",
+        )
+        db.add_all([participant, photo])
+        db.flush()
+        db.add(
+            ParticipantEnrollmentToken(
+                participant_id=participant.id,
+                token_hash=token_hash,
+                expires_at=participant.enrollment_expires_at,
+                opened_at=utcnow(),
+                consumed_at=utcnow(),
+            )
+        )
+        detection = FaceDetection(
+            organization_id=organization.id,
+            event_id=event.id,
+            photo_id=photo.id,
+            box={"probability": 0.99},
+            embedding=[1.0] + [0.0] * 511,
+            embedding_vector=[1.0] + [0.0] * 511,
+            detector_confidence=0.99,
+        )
+        db.add(detection)
+        db.flush()
+        db.add(
+            FaceMatch(
+                organization_id=organization.id,
+                event_id=event.id,
+                detection_id=detection.id,
+                participant_id=participant.id,
+                confidence=0.99,
+                state="high",
+            )
+        )
+        db.commit()
+        organization_id = organization.id
+        event_id = event.id
+        photo_id = photo.id
+
+    with TestClient(app) as client:
+        response = client.get(f"/api/v2/public/enrollment/{raw_token}")
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["status"] == "verified"
+        assert data["matching_results"] == {"photos": 1}
+        assert data["photos"] == [
+            {
+                "id": photo_id,
+                "filename": "matched.jpg",
+                "thumbnail_url": f"/api/v2/public/enrollment/{raw_token}/photos/{photo_id}/thumbnail",
+                "download_url": f"/api/v2/public/enrollment/{raw_token}/photos/{photo_id}/download",
+            }
+        ]
+        thumbnail = client.get(data["photos"][0]["thumbnail_url"])
+        assert thumbnail.status_code == 200
+        assert thumbnail.headers["content-type"] == "image/webp"
+        assert thumbnail.content == thumbnail_bytes
+
+    with SessionLocal() as db:
+        db.execute(delete(Event).where(Event.id == event_id))
+        db.execute(delete(Organization).where(Organization.id == organization_id))
+        db.commit()
+    storage.delete(storage_key)
+    storage.delete(thumbnail_key)
 
 
 def test_mpo_phone_photos_use_the_jpeg_inference_path():

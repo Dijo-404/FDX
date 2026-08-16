@@ -48,7 +48,14 @@ class Storage:
         target = (self.root / key).resolve()
         if self.root not in target.parents or not target.is_file():
             raise FileNotFoundError(key)
-        return target.read_bytes(), mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+        content_type = {
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".png": "image/png",
+            ".webp": "image/webp",
+            ".zip": "application/zip",
+        }.get(target.suffix.lower())
+        return target.read_bytes(), content_type or mimetypes.guess_type(target.name)[0] or "application/octet-stream"
 
     def delete(self, key: str) -> None:
         if self.s3:

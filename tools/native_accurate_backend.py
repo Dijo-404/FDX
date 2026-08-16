@@ -426,7 +426,19 @@ app = Flask("fdx-native-accurate-backend")
 
 @app.get("/healthcheck")
 def healthcheck():
-    return jsonify(status="OK", execution_provider=ACTIVE_PROVIDER)
+    return jsonify(
+        status="OK",
+        execution_provider=ACTIVE_PROVIDER,
+        detector={
+            "ready": bool(DETECTOR_SESSION.get_inputs()),
+            "version": DETECTOR_VERSION,
+        },
+        recognizer={
+            "ready": bool(RECOGNITION_SESSION.get_inputs()),
+            "version": CALCULATOR_VERSION,
+            "embedding_size": 512,
+        },
+    )
 
 
 @app.get("/status")

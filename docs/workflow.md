@@ -417,25 +417,23 @@ flowchart LR
 
 Event-level results may be represented across dashboard pages, but together they must expose the complete event state and the metrics above.
 
-## 17. Sending photos to participants
+## 17. Showing photos to participants
 
-When processing finishes and matches are approved, FDX creates a private gallery and emails an expiring access link.
+After a participant submits a selfie, FDX shows approved matches directly on the enrollment page. The original enrollment link can be reopened for 24 hours; no separate result email is required.
 
 ```mermaid
 flowchart TD
     Participant[Participant] --> Found[Matched Photos Found]
-    Found --> Gallery[Create Private Gallery]
-    Gallery --> URL[Generate Expiring Signed URL]
-    URL --> Email[Send Result Email]
-    Email --> Open[View My Photos]
-    Open --> Secure[Secure FDX Gallery]
+    Found --> Gallery[Render Inline Private Gallery]
+    Gallery --> Open[Reopen Enrollment Link Within 24 Hours]
+    Open --> Secure[Secure FDX Results]
     Secure --> Selected[Download Selected]
     Secure --> All[Download All]
 ```
 
-Prefer a gallery over attaching many images to an email because it scales better for large events. The participant sees a private grid of matched photographs with download-selected and download-all actions.
+The participant sees a private grid of matched photographs on the same page, with per-photo download actions.
 
-The gallery link can expire after 7 days, 30 days, or at the event retention deadline, according to policy. Originals and thumbnails remain protected behind authorized or signed access.
+The enrollment link expires after 24 hours. Originals and thumbnails remain protected behind participant-scoped access checks.
 
 ## 18. Full participant workflow
 
@@ -464,9 +462,8 @@ sequenceDiagram
     Queue->>ML: Process event photos
     ML->>ML: Detect faces and generate embeddings
     ML->>API: Store confidence-scored matches
-    API->>Email: Send private gallery result
-    Email-->>Attendee: Expiring gallery link
-    Attendee->>API: View or download matched photos
+    Attendee->>API: View matched photos on enrollment page
+    Attendee->>API: Reopen or download for up to 24 hours
 ```
 
 ## 19. Recommended layered architecture

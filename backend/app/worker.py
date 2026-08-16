@@ -42,6 +42,7 @@ from .models import (
     UserRole,
     utcnow,
 )
+from .workflow import event_media_readiness
 
 WORKER_NAME = f"ml-{socket.gethostname()}-{os.getpid()}"
 logger = logging.getLogger("fdx.worker")
@@ -92,13 +93,19 @@ def process_gallery_export(job_id: str) -> None:
                 select(FaceMatch).where(
                     FaceMatch.event_id == item.event_id,
                     FaceMatch.participant_id == item.participant_id,
-                    FaceMatch.state.in_(["high", "approved"]),
+                    FaceMatch.state == "high",
                 )
             ).all()
-            photos = {match.detection.photo.id: match.detection.photo for match in matches}
+            permitted_photos = {match.detection.photo.id: match.detection.photo for match in matches}
+            if item.photo_ids is None:
+                photos = list(permitted_photos.values())
+            else:
+                photos = [permitted_photos[photo_id] for photo_id in item.photo_ids if photo_id in permitted_photos]
+                if len(photos) != len(item.photo_ids):
+                    raise ValueError("One or more selected gallery photos are no longer available")
             archive = io.BytesIO()
             with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as bundle:
-                for index, photo in enumerate(photos.values(), start=1):
+                for index, photo in enumerate(photos, start=1):
                     content, _ = storage.read(photo.storage_key)
                     filename = os.path.basename(photo.filename).replace("..", "_") or f"photo-{index}.jpg"
                     bundle.writestr(f"{index:04d}-{photo.id[:8]}-{filename}", content)
@@ -335,17 +342,9 @@ def process_job(job_id: str) -> None:
                 )
             )
             db.flush()
-            remaining = (
-                db.scalar(
-                    select(func.count(ProcessingJob.id)).where(
-                        ProcessingJob.event_id == job.event_id,
-                        ProcessingJob.status.in_(["queued", "processing", "RETRY_SCHEDULED", "CANCEL_REQUESTED"]),
-                    )
-                )
-                or 0
-            )
-            if remaining == 0:
-                event = db.get(Event, job.event_id)
+            event = db.scalar(select(Event).where(Event.id == job.event_id).with_for_update())
+            total_photos, ready_photos = event_media_readiness(db, job.event_id)
+            if total_photos > 0 and ready_photos == total_photos:
                 event.status = "ready"
                 participant_ids = db.scalars(
                     select(FaceMatch.participant_id)

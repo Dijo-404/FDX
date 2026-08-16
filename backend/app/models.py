@@ -302,6 +302,8 @@ class GalleryExport(Base):
     event_id: Mapped[str] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"), index=True)
     participant_id: Mapped[str] = mapped_column(ForeignKey("participants.id", ondelete="CASCADE"), index=True)
     processing_job_id: Mapped[str] = mapped_column(ForeignKey("processing_jobs.id", ondelete="CASCADE"), unique=True)
+    photo_ids: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    selection_hash: Mapped[str] = mapped_column(String(64), default="ALL", index=True)
     status: Mapped[str] = mapped_column(String(24), default="QUEUED", index=True)
     storage_key: Mapped[str | None] = mapped_column(String(500), nullable=True)
     size_bytes: Mapped[int] = mapped_column(BigInteger, default=0)

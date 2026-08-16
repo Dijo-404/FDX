@@ -79,6 +79,7 @@ from .models import (
     utcnow,
 )
 from .serializers import event_json, iso, organization_json, participant_json, user_json
+from .workflow import event_media_readiness
 
 GB = 1024**3
 METRICS_LOCK = threading.Lock()
@@ -225,7 +226,19 @@ def bootstrap() -> None:
                 )
             )
             db.commit()
-        if not db.scalar(select(ModelRegistry).where(ModelRegistry.active.is_(True))):
+        active_registry = db.scalar(
+            select(ModelRegistry).where(
+                ModelRegistry.active.is_(True),
+                ModelRegistry.detector_version == settings.detector_model_version,
+                ModelRegistry.detector_sha256 == settings.detector_model_sha256,
+                ModelRegistry.embedder_version == settings.embedder_model_version,
+                ModelRegistry.embedder_sha256 == settings.embedder_model_sha256,
+                ModelRegistry.threshold_profile_version == settings.threshold_profile_version,
+            )
+        )
+        if not active_registry:
+            for registry in db.scalars(select(ModelRegistry).where(ModelRegistry.active.is_(True))).all():
+                registry.active = False
             db.add(
                 ModelRegistry(
                     detector_name="retinaface-r50",
@@ -1321,7 +1334,11 @@ def upload_photos(
     user: User = Depends(require_org_member),
     db: Session = Depends(get_db),
 ):
-    event = db.scalar(select(Event).where(Event.id == event_id, Event.organization_id == user.organization_id))
+    event = db.scalar(
+        select(Event)
+        .where(Event.id == event_id, Event.organization_id == user.organization_id)
+        .with_for_update()
+    )
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
     uploaded = []
@@ -1530,19 +1547,10 @@ def review_match(
     user: User = Depends(require_org_admin),
     db: Session = Depends(get_db),
 ):
-    row = db.scalar(
-        select(FaceMatch).where(FaceMatch.id == match_id, FaceMatch.organization_id == user.organization_id)
+    raise HTTPException(
+        status_code=410,
+        detail="Manual match review is disabled; matches are approved automatically only above the confidence threshold",
     )
-    if not row:
-        raise HTTPException(status_code=404, detail="Match not found")
-    if payload.decision not in {"approved", "rejected"}:
-        raise HTTPException(status_code=422, detail="Decision must be approved or rejected")
-    row.state = payload.decision
-    row.reviewed_by = user.id
-    row.reviewed_at = utcnow()
-    audit(db, user, "Face match reviewed", f"{row.id}: {payload.decision}")
-    db.commit()
-    return {"id": row.id, "state": row.state}
 
 
 def delivery_json(db: Session, row: Delivery) -> dict:
@@ -1551,7 +1559,7 @@ def delivery_json(db: Session, row: Delivery) -> dict:
             select(func.count(FaceMatch.id)).where(
                 FaceMatch.participant_id == row.participant_id,
                 FaceMatch.event_id == row.event_id,
-                FaceMatch.state.in_(["high", "approved"]),
+                FaceMatch.state == "high",
             )
         )
         or 0
@@ -1599,11 +1607,18 @@ def send_delivery(
     )
     if not participant:
         raise HTTPException(status_code=404, detail="Participant not found")
+    db.scalar(select(Event.id).where(Event.id == participant.event_id).with_for_update())
+    total_photos, ready_photos = event_media_readiness(db, participant.event_id)
+    if total_photos == 0 or ready_photos != total_photos:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Event photos are still processing ({ready_photos}/{total_photos} ready)",
+        )
     match_count = (
         db.scalar(
             select(func.count(FaceMatch.id)).where(
                 FaceMatch.participant_id == participant.id,
-                FaceMatch.state.in_(["high", "approved"]),
+                FaceMatch.state == "high",
             )
         )
         or 0
@@ -1704,7 +1719,7 @@ def organization_dashboard(user: User = Depends(require_org_member), db: Session
                 select(func.count(func.distinct(FaceMatch.participant_id))).where(
                     FaceMatch.organization_id == user.organization_id,
                     FaceMatch.participant_id.is_not(None),
-                    FaceMatch.state.in_(["high", "approved"]),
+                    FaceMatch.state == "high",
                 )
             )
             or 0,
@@ -1745,10 +1760,10 @@ def media_thumbnail(
     photo = db.scalar(select(Photo).where(Photo.id == photo_id, Photo.organization_id == user.organization_id))
     if not photo or not photo.thumbnail_storage_key:
         raise HTTPException(status_code=404, detail="Thumbnail not found")
-    content, _ = storage.read(photo.thumbnail_storage_key)
+    content, content_type = storage.read(photo.thumbnail_storage_key)
     return Response(
         content,
-        media_type="image/jpeg",
+        media_type=content_type,
         headers={"Cache-Control": "private, max-age=3600"},
     )
 
@@ -1859,7 +1874,7 @@ def public_gallery(token: str, db: Session = Depends(get_db)):
         select(FaceMatch).where(
             FaceMatch.participant_id == delivery.participant_id,
             FaceMatch.event_id == delivery.event_id,
-            FaceMatch.state.in_(["high", "approved"]),
+            FaceMatch.state == "high",
         )
     ).all()
     photos = {row.detection.photo.id: row.detection.photo for row in matches}
@@ -1894,7 +1909,7 @@ def public_gallery_photo(token: str, photo_id: str, db: Session = Depends(get_db
             FaceMatch.participant_id == delivery.participant_id,
             FaceMatch.event_id == delivery.event_id,
             FaceDetection.photo_id == photo_id,
-            FaceMatch.state.in_(["high", "approved"]),
+            FaceMatch.state == "high",
         )
     )
     if not permitted:
@@ -1922,15 +1937,15 @@ def public_gallery_thumbnail(token: str, photo_id: str, db: Session = Depends(ge
             FaceMatch.participant_id == delivery.participant_id,
             FaceMatch.event_id == delivery.event_id,
             FaceDetection.photo_id == photo_id,
-            FaceMatch.state.in_(["high", "approved"]),
+            FaceMatch.state == "high",
         )
     )
     if not permitted or not permitted.detection.photo.thumbnail_storage_key:
         raise HTTPException(status_code=404, detail="Thumbnail not found")
-    content, _ = storage.read(permitted.detection.photo.thumbnail_storage_key)
+    content, content_type = storage.read(permitted.detection.photo.thumbnail_storage_key)
     return Response(
         content,
-        media_type="image/jpeg",
+        media_type=content_type,
         headers={"Cache-Control": "private, max-age=3600"},
     )
 
@@ -1944,7 +1959,7 @@ def public_gallery_download(token: str, photoIds: str | None = None, db: Session
         select(FaceMatch).where(
             FaceMatch.participant_id == delivery.participant_id,
             FaceMatch.event_id == delivery.event_id,
-            FaceMatch.state.in_(["high", "approved"]),
+            FaceMatch.state == "high",
         )
     ).all()
     permitted = {row.detection.photo.id: row.detection.photo for row in matches}

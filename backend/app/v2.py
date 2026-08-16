@@ -11,7 +11,9 @@ import hashlib
 import hmac
 import io
 import json
+import tempfile
 import uuid
+import zipfile
 from datetime import date, datetime, timedelta, timezone
 
 import xlrd
@@ -27,12 +29,14 @@ from fastapi import (
     Response,
     UploadFile,
 )
+from fastapi.responses import StreamingResponse
 from openpyxl import load_workbook
 from PIL import Image
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from starlette.background import BackgroundTask
 
 from .auth import (
     access_token,
@@ -92,6 +96,7 @@ from .models import (
     utcnow,
 )
 from .serializers import event_json, organization_json
+from .workflow import event_media_readiness
 
 router = APIRouter(prefix="/api/v2")
 GB = 1024**3
@@ -207,6 +212,20 @@ def tenant_event(db: Session, user: User, event_id: str, lock: bool = False) -> 
     event = db.scalar(statement)
     if not event or event.status.upper() in {"DELETION_PENDING", "DELETED"}:
         raise HTTPException(status_code=404, detail="Event was not found")
+    return event
+
+
+def require_event_media_ready(db: Session, event_id: str) -> Event:
+    """Lock the event and prevent result delivery until every photo is ready."""
+    event = db.scalar(select(Event).where(Event.id == event_id).with_for_update())
+    if not event:
+        raise HTTPException(status_code=404, detail="Event was not found")
+    total, ready = event_media_readiness(db, event_id)
+    if total == 0 or ready != total:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Event photos are still processing ({ready}/{total} ready)",
+        )
     return event
 
 
@@ -1120,7 +1139,10 @@ def admin_retry_job(
     user: User = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
-    job = db.get(ProcessingJob, job_id)
+    event_id = db.scalar(select(ProcessingJob.event_id).where(ProcessingJob.id == job_id))
+    if event_id:
+        db.scalar(select(Event.id).where(Event.id == event_id).with_for_update())
+    job = db.scalar(select(ProcessingJob).where(ProcessingJob.id == job_id).with_for_update())
     if not job or job.status not in {"failed", "FAILED", "DEAD_LETTERED"}:
         raise HTTPException(status_code=409, detail="Job is not retryable")
     job.status = "queued"
@@ -1765,7 +1787,7 @@ def participant_detail(
         db.scalar(
             select(func.count(FaceMatch.id)).where(
                 FaceMatch.participant_id == item.id,
-                FaceMatch.state.in_(["high", "approved"]),
+                FaceMatch.state == "high",
             )
         )
         or 0
@@ -2539,6 +2561,7 @@ def reprocess_media(
     user: User = Depends(require_org_admin),
     db: Session = Depends(get_db),
 ):
+    tenant_event(db, user, event_id, lock=True)
     item = tenant_photo(db, user, event_id, media_id)
     job = ProcessingJob(
         organization_id=user.organization_id,
@@ -2781,7 +2804,7 @@ def retry_processing_job(
     user: User = Depends(require_org_admin),
     db: Session = Depends(get_db),
 ):
-    tenant_event(db, user, event_id)
+    tenant_event(db, user, event_id, lock=True)
     row = db.scalar(
         select(ProcessingJob)
         .where(
@@ -2923,26 +2946,12 @@ def match_detail(
 
 def review_match(event_id: str, match_id: str, target: str, request: Request, user: User, db: Session):
     tenant_event(db, user, event_id)
-    row = db.scalar(
-        select(FaceMatch)
-        .where(
-            FaceMatch.id == match_id,
-            FaceMatch.event_id == event_id,
-            FaceMatch.organization_id == user.organization_id,
-        )
-        .with_for_update()
-    )
-    if not row:
-        raise HTTPException(status_code=404, detail="Match was not found")
-    row.state = target
-    row.decision_source = "MANUAL_CONFIRM" if target == "approved" else "MANUAL_REJECT"
-    row.reviewed_by = user.id
-    row.reviewed_at = utcnow()
-    add_audit(db, user, f"match.{target}", row.id)
-    db.commit()
-    return ok(
-        {"id": row.id, "decision": row.state, "decision_source": row.decision_source},
-        request,
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            "Manual match review is disabled; matches are approved automatically "
+            "only above the confidence threshold"
+        ),
     )
 
 
@@ -2977,6 +2986,7 @@ def build_galleries(
     db: Session = Depends(get_db),
 ):
     event = tenant_event(db, user, event_id, lock=True)
+    require_event_media_ready(db, event.id)
     idem = reserve_idempotency(db, user, idempotency_key, f"build-galleries:{event_id}")
     if idem and idem.response_body:
         return idem.response_body
@@ -2986,7 +2996,7 @@ def build_galleries(
             FaceMatch.event_id == event.id,
             FaceMatch.organization_id == user.organization_id,
             FaceMatch.participant_id.is_not(None),
-            FaceMatch.state.in_(["high", "approved"]),
+            FaceMatch.state == "high",
         )
         .distinct()
     ).all()
@@ -3093,7 +3103,7 @@ def gallery_detail(
             select(func.count(FaceMatch.id)).where(
                 FaceMatch.event_id == event_id,
                 FaceMatch.participant_id == row.participant_id,
-                FaceMatch.state.in_(["high", "approved"]),
+                FaceMatch.state == "high",
             )
         )
         or 0
@@ -3112,6 +3122,7 @@ def gallery_detail(
 
 
 def deliver_gallery(db: Session, delivery: Delivery, user: User) -> str:
+    require_event_media_ready(db, delivery.event_id)
     raw_token, token_hash = new_opaque_token()
     delivery.gallery_token_hash = token_hash
     delivery.status = "ready"
@@ -3121,7 +3132,7 @@ def deliver_gallery(db: Session, delivery: Delivery, user: User) -> str:
             select(func.count(FaceMatch.id)).where(
                 FaceMatch.event_id == delivery.event_id,
                 FaceMatch.participant_id == delivery.participant_id,
-                FaceMatch.state.in_(["high", "approved"]),
+                FaceMatch.state == "high",
             )
         )
         or 0
@@ -3245,18 +3256,23 @@ def resend_results(
     return ok(data, request)
 
 
-@router.get("/public/enrollment/{token}")
-def public_enrollment(token: str, request: Request, db: Session = Depends(get_db)):
-    check_public_rate_limit(request, "enrollment-read", token, 30)
-    token_row = db.scalar(
-        select(ParticipantEnrollmentToken)
-        .where(ParticipantEnrollmentToken.token_hash == hash_token(token))
-        .with_for_update()
-    )
+def enrollment_access(
+    db: Session,
+    token: str,
+    *,
+    lock: bool = False,
+) -> tuple[ParticipantEnrollmentToken | None, Participant, datetime]:
+    """Resolve a reusable enrollment link without widening participant access."""
+
+    token_hash = hash_token(token)
+    token_query = select(ParticipantEnrollmentToken).where(ParticipantEnrollmentToken.token_hash == token_hash)
+    if lock:
+        token_query = token_query.with_for_update()
+    token_row = db.scalar(token_query)
     participant = (
         db.get(Participant, token_row.participant_id)
         if token_row
-        else db.scalar(select(Participant).where(Participant.enrollment_token_hash == hash_token(token)))
+        else db.scalar(select(Participant).where(Participant.enrollment_token_hash == token_hash))
     )
     expires_at = token_row.expires_at if token_row else participant.enrollment_expires_at if participant else None
     if (
@@ -3264,13 +3280,64 @@ def public_enrollment(token: str, request: Request, db: Session = Depends(get_db
         or participant.event.status.upper() in {"DELETION_PENDING", "DELETED", "EXPIRED"}
         or not expires_at
         or expires_at <= utcnow()
-        or (token_row and (token_row.revoked_at or token_row.consumed_at))
+        or (token_row and token_row.revoked_at)
     ):
         raise HTTPException(status_code=404, detail="Enrollment link is invalid or expired")
+    return token_row, participant, expires_at
+
+
+def enrollment_photos(token: str, participant: Participant, db: Session) -> list[dict]:
+    rows = db.scalars(
+        select(FaceMatch).where(
+            FaceMatch.participant_id == participant.id,
+            FaceMatch.event_id == participant.event_id,
+            FaceMatch.state == "high",
+        )
+    ).all()
+    photos = {row.detection.photo.id: row.detection.photo for row in rows}
+    return [
+        {
+            "id": photo.id,
+            "filename": photo.filename,
+            "thumbnail_url": f"/api/v2/public/enrollment/{token}/photos/{photo.id}/thumbnail",
+            "download_url": f"/api/v2/public/enrollment/{token}/photos/{photo.id}/download",
+        }
+        for photo in sorted(photos.values(), key=lambda item: item.uploaded_at, reverse=True)
+    ]
+
+
+def enrollment_photo(
+    db: Session,
+    participant: Participant,
+    photo_id: str,
+) -> Photo:
+    photo = db.scalar(
+        select(Photo)
+        .join(FaceDetection, FaceDetection.photo_id == Photo.id)
+        .join(FaceMatch, FaceMatch.detection_id == FaceDetection.id)
+        .where(
+            Photo.id == photo_id,
+            Photo.event_id == participant.event_id,
+            FaceMatch.participant_id == participant.id,
+            FaceMatch.state == "high",
+        )
+        .limit(1)
+    )
+    if not photo:
+        raise HTTPException(status_code=404, detail="Photo not found")
+    return photo
+
+
+@router.get("/public/enrollment/{token}")
+def public_enrollment(token: str, request: Request, db: Session = Depends(get_db)):
+    check_public_rate_limit(request, "enrollment-read", token, 30)
+    token_row, participant, expires_at = enrollment_access(db, token, lock=True)
     if token_row and not token_row.opened_at:
         token_row.opened_at = utcnow()
-        participant.enrollment_status = "opened"
+        if participant.enrollment_status != "verified":
+            participant.enrollment_status = "opened"
         db.commit()
+    photos = enrollment_photos(token, participant, db) if participant.enrollment_status == "verified" else []
     return ok(
         {
             "organization_name": participant.event.organization.name,
@@ -3281,6 +3348,8 @@ def public_enrollment(token: str, request: Request, db: Session = Depends(get_db
             "purpose": "Find event photographs containing you",
             "retention_days": participant.event.retention_days,
             "consent_policy_version": settings.consent_policy_version,
+            "matching_results": {"photos": len(photos)},
+            "photos": photos,
         },
         request,
     )
@@ -3294,23 +3363,7 @@ def enrollment_consent(
     db: Session = Depends(get_db),
 ):
     check_public_rate_limit(request, "enrollment-consent", token, 10, 300)
-    token_row = db.scalar(
-        select(ParticipantEnrollmentToken).where(ParticipantEnrollmentToken.token_hash == hash_token(token))
-    )
-    participant = (
-        db.get(Participant, token_row.participant_id)
-        if token_row
-        else db.scalar(select(Participant).where(Participant.enrollment_token_hash == hash_token(token)))
-    )
-    expires_at = token_row.expires_at if token_row else participant.enrollment_expires_at if participant else None
-    if (
-        not participant
-        or participant.event.status.upper() in {"DELETION_PENDING", "DELETED", "EXPIRED"}
-        or not expires_at
-        or expires_at <= utcnow()
-        or (token_row and (token_row.revoked_at or token_row.consumed_at))
-    ):
-        raise HTTPException(status_code=404, detail="Enrollment link is invalid or expired")
+    _, participant, _ = enrollment_access(db, token)
     if not accepted:
         raise HTTPException(status_code=422, detail="Consent is required")
     consent = Consent(
@@ -3343,20 +3396,8 @@ def enrollment_upload_url(
     db: Session = Depends(get_db),
 ):
     check_public_rate_limit(request, "enrollment-upload-url", token, 10, 300)
-    token_row = db.scalar(
-        select(ParticipantEnrollmentToken)
-        .where(ParticipantEnrollmentToken.token_hash == hash_token(token))
-        .with_for_update()
-    )
-    participant = db.get(Participant, token_row.participant_id) if token_row else None
-    if (
-        not token_row
-        or not participant
-        or participant.event.status.upper() in {"DELETION_PENDING", "DELETED", "EXPIRED"}
-        or token_row.expires_at <= utcnow()
-        or token_row.revoked_at
-        or token_row.consumed_at
-    ):
+    token_row, participant, _ = enrollment_access(db, token, lock=True)
+    if not token_row:
         raise HTTPException(status_code=404, detail="Enrollment link is invalid or expired")
     if payload.content_type not in ALLOWED_IMAGE_TYPES:
         raise HTTPException(status_code=422, detail="A JPEG, PNG, or WEBP selfie is required")
@@ -3396,20 +3437,8 @@ async def enrollment_local_upload(token: str, request: Request, db: Session = De
     check_public_rate_limit(request, "enrollment-upload", token, 10, 300)
     if storage.s3:
         raise HTTPException(status_code=404, detail="Direct upload endpoint is unavailable")
-    token_row = db.scalar(
-        select(ParticipantEnrollmentToken)
-        .where(ParticipantEnrollmentToken.token_hash == hash_token(token))
-        .with_for_update()
-    )
-    participant = db.get(Participant, token_row.participant_id) if token_row else None
-    if (
-        not token_row
-        or not participant
-        or not token_row.pending_storage_key
-        or token_row.expires_at <= utcnow()
-        or token_row.revoked_at
-        or token_row.consumed_at
-    ):
+    token_row, _, _ = enrollment_access(db, token, lock=True)
+    if not token_row or not token_row.pending_storage_key:
         raise HTTPException(status_code=404, detail="Enrollment upload is invalid or expired")
     content = await request.body()
     if len(content) != token_row.pending_size_bytes or hashlib.sha256(content).hexdigest() != token_row.pending_sha256:
@@ -3427,25 +3456,7 @@ def complete_enrollment(
     db: Session = Depends(get_db),
 ):
     check_public_rate_limit(request, "enrollment-complete", token, 10, 300)
-    token_row = db.scalar(
-        select(ParticipantEnrollmentToken)
-        .where(ParticipantEnrollmentToken.token_hash == hash_token(token))
-        .with_for_update()
-    )
-    participant = (
-        db.get(Participant, token_row.participant_id)
-        if token_row
-        else db.scalar(select(Participant).where(Participant.enrollment_token_hash == hash_token(token)))
-    )
-    expires_at = token_row.expires_at if token_row else participant.enrollment_expires_at if participant else None
-    if (
-        not participant
-        or participant.event.status.upper() in {"DELETION_PENDING", "DELETED", "EXPIRED"}
-        or not expires_at
-        or expires_at <= utcnow()
-        or (token_row and (token_row.revoked_at or token_row.consumed_at))
-    ):
-        raise HTTPException(status_code=404, detail="Enrollment link is invalid or expired")
+    token_row, participant, expires_at = enrollment_access(db, token, lock=True)
     consent = db.scalar(
         select(Consent)
         .where(Consent.participant_id == participant.id, Consent.accepted.is_(True))
@@ -3534,13 +3545,14 @@ def complete_enrollment(
         )
     )
     if token_row:
-        token_row.consumed_at = utcnow()
+        token_row.consumed_at = token_row.consumed_at or utcnow()
         pending_key = token_row.pending_storage_key
         token_row.pending_storage_key = None
         token_row.pending_content_type = None
         token_row.pending_size_bytes = None
         token_row.pending_sha256 = None
     matching_results = refresh_enrollment_matches(db, participant, result["embedding"])
+    photos = enrollment_photos(token, participant, db)
     add_audit(db, None, "enrollment.completed", participant.email, participant.organization_id)
     db.commit()
     if previous_key and previous_key != key:
@@ -3554,8 +3566,114 @@ def complete_enrollment(
             "model_name": enrollment.model_name,
             "model_version": enrollment.model_version,
             "matching_results": matching_results,
+            "event_name": participant.event.name,
+            "organization_name": participant.event.organization.name,
+            "expires_at": expires_at.isoformat(),
+            "photos": photos,
         },
         request,
+    )
+
+
+@router.get("/public/enrollment/{token}/photos/{photo_id}/thumbnail")
+def enrollment_photo_thumbnail(
+    token: str,
+    photo_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    check_public_rate_limit(request, "enrollment-photo", token, 120)
+    _, participant, _ = enrollment_access(db, token)
+    photo = enrollment_photo(db, participant, photo_id)
+    key = photo.thumbnail_storage_key or photo.storage_key
+    content, content_type = storage.read(key)
+    return Response(
+        content,
+        media_type=content_type,
+        headers={"Cache-Control": "private, max-age=300"},
+    )
+
+
+@router.get("/public/enrollment/{token}/photos/{photo_id}/download")
+def enrollment_photo_download(
+    token: str,
+    photo_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    check_public_rate_limit(request, "enrollment-photo-download", token, 60)
+    _, participant, _ = enrollment_access(db, token)
+    photo = enrollment_photo(db, participant, photo_id)
+    content, content_type = storage.read(photo.storage_key)
+    safe_filename = photo.filename.replace('"', "")
+    return Response(
+        content,
+        media_type=content_type,
+        headers={
+            "Cache-Control": "private, no-store",
+            "Content-Disposition": f'attachment; filename="{safe_filename}"',
+        },
+    )
+
+
+class EnrollmentDownloadInput(BaseModel):
+    media_ids: list[str] = Field(min_length=1, max_length=10_000)
+
+
+@router.post("/public/enrollment/{token}/download")
+def enrollment_selected_download(
+    token: str,
+    payload: EnrollmentDownloadInput,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    check_public_rate_limit(request, "enrollment-selected-download", token, 5, 300)
+    _, participant, _ = enrollment_access(db, token)
+    requested_ids = list(dict.fromkeys(payload.media_ids))
+    rows = db.scalars(
+        select(Photo)
+        .join(FaceDetection, FaceDetection.photo_id == Photo.id)
+        .join(FaceMatch, FaceMatch.detection_id == FaceDetection.id)
+        .where(
+            Photo.id.in_(requested_ids),
+            Photo.event_id == participant.event_id,
+            FaceMatch.participant_id == participant.id,
+            FaceMatch.state == "high",
+        )
+        .distinct()
+    ).all()
+    permitted = {photo.id: photo for photo in rows}
+    if set(permitted) != set(requested_ids):
+        raise HTTPException(status_code=404, detail="One or more selected photos were not found")
+
+    archive_buffer = tempfile.SpooledTemporaryFile(max_size=32 * 1024 * 1024)
+    with zipfile.ZipFile(archive_buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for index, photo_id in enumerate(requested_ids, start=1):
+            photo = permitted[photo_id]
+            content, _ = storage.read(photo.storage_key)
+            filename = photo.filename.replace("..", "_").replace("/", "_").replace("\\", "_")
+            archive.writestr(f"{index:04d}-{photo.id[:8]}-{filename}", content)
+    archive_buffer.seek(0)
+    event_name = (
+        "".join(
+            character if character.isalnum() or character in "-_" else "-"
+            for character in participant.event.name
+        ).strip("-")
+        or "fdx-event"
+    )
+
+    def chunks():
+        while content := archive_buffer.read(1024 * 1024):
+            yield content
+
+    return StreamingResponse(
+        chunks(),
+        media_type="application/zip",
+        headers={
+            "Cache-Control": "private, no-store",
+            "Content-Disposition": f'attachment; filename="{event_name}-photos.zip"',
+        },
+        background=BackgroundTask(archive_buffer.close),
     )
 
 
@@ -3573,7 +3691,7 @@ def public_gallery(token: str, request: Request, db: Session = Depends(get_db)):
         select(FaceMatch).where(
             FaceMatch.participant_id == delivery.participant_id,
             FaceMatch.event_id == delivery.event_id,
-            FaceMatch.state.in_(["high", "approved"]),
+            FaceMatch.state == "high",
         )
     ).all()
     photos = {row.detection.photo.id: row.detection.photo for row in rows}
@@ -3603,6 +3721,10 @@ class DownloadInput(BaseModel):
     media_id: str
 
 
+class GalleryExportInput(BaseModel):
+    media_ids: list[str] | None = Field(default=None, max_length=10_000)
+
+
 @router.post("/public/gallery/{token}/download-url")
 def gallery_download_url(token: str, payload: DownloadInput, request: Request, db: Session = Depends(get_db)):
     check_public_rate_limit(request, "gallery-download", token, 60)
@@ -3620,7 +3742,7 @@ def gallery_download_url(token: str, payload: DownloadInput, request: Request, d
             FaceMatch.participant_id == delivery.participant_id,
             FaceMatch.event_id == delivery.event_id,
             FaceDetection.photo_id == payload.media_id,
-            FaceMatch.state.in_(["high", "approved"]),
+            FaceMatch.state == "high",
         )
     )
     if not match:
@@ -3635,7 +3757,12 @@ def gallery_download_url(token: str, payload: DownloadInput, request: Request, d
 
 @router.post("/public/gallery/{token}/download-all", status_code=202)
 @router.post("/public/gallery/{token}/exports", status_code=202)
-def create_gallery_export(token: str, request: Request, db: Session = Depends(get_db)):
+def create_gallery_export(
+    token: str,
+    request: Request,
+    payload: GalleryExportInput | None = None,
+    db: Session = Depends(get_db),
+):
     check_public_rate_limit(request, "gallery-export", token, 5, 300)
     delivery = db.scalar(select(Delivery).where(Delivery.gallery_token_hash == hash_token(token)))
     if (
@@ -3644,11 +3771,35 @@ def create_gallery_export(token: str, request: Request, db: Session = Depends(ge
         or delivery.expires_at <= utcnow()
     ):
         raise HTTPException(status_code=404, detail="Gallery link is invalid or expired")
+    requested_ids = None
+    if payload and payload.media_ids is not None:
+        requested_ids = list(dict.fromkeys(payload.media_ids))
+        if not requested_ids:
+            raise HTTPException(status_code=422, detail="Select at least one photo")
+        permitted_ids = set(
+            db.scalars(
+                select(FaceDetection.photo_id)
+                .join(FaceMatch, FaceMatch.detection_id == FaceDetection.id)
+                .where(
+                    FaceMatch.participant_id == delivery.participant_id,
+                    FaceMatch.event_id == delivery.event_id,
+                    FaceMatch.state == "high",
+                    FaceDetection.photo_id.in_(requested_ids),
+                )
+                .distinct()
+            ).all()
+        )
+        if permitted_ids != set(requested_ids):
+            raise HTTPException(status_code=404, detail="One or more selected photos were not found")
+    selection_hash = (
+        hashlib.sha256("\n".join(sorted(requested_ids)).encode()).hexdigest() if requested_ids is not None else "ALL"
+    )
     existing = db.scalar(
         select(GalleryExport)
         .where(
             GalleryExport.participant_id == delivery.participant_id,
             GalleryExport.event_id == delivery.event_id,
+            GalleryExport.selection_hash == selection_hash,
             GalleryExport.status.in_(["QUEUED", "PROCESSING", "READY"]),
             GalleryExport.expires_at > utcnow(),
         )
@@ -3671,6 +3822,8 @@ def create_gallery_export(token: str, request: Request, db: Session = Depends(ge
         event_id=delivery.event_id,
         participant_id=delivery.participant_id,
         processing_job_id=job.id,
+        photo_ids=requested_ids,
+        selection_hash=selection_hash,
         expires_at=min(delivery.expires_at, utcnow() + timedelta(hours=24)),
     )
     db.add(export)

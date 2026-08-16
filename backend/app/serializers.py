@@ -82,7 +82,7 @@ def event_json(db: Session, event: Event) -> dict:
             select(func.count(func.distinct(FaceMatch.participant_id))).where(
                 FaceMatch.event_id == event.id,
                 FaceMatch.participant_id.is_not(None),
-                FaceMatch.state.in_(["high", "approved"]),
+                FaceMatch.state == "high",
             )
         )
         or 0
@@ -115,7 +115,7 @@ def participant_json(db: Session, participant: Participant) -> dict:
         db.scalar(
             select(func.count(FaceMatch.id)).where(
                 FaceMatch.participant_id == participant.id,
-                FaceMatch.state.in_(["high", "approved"]),
+                FaceMatch.state == "high",
             )
         )
         or 0

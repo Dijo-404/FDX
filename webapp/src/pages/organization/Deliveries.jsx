@@ -5,6 +5,8 @@ import StatCard from "../../components/StatCard";
 import { usePlatform } from "../../context/PlatformContext";
 import { useAuth } from "../../context/AuthContext";
 import useInfiniteScroll from "../../hooks/useInfiniteScroll";
+import EmailOutbox from "./EmailOutbox";
+
 export default function Deliveries() {
   const { user } = useAuth();
   const { deliveries, deliveryStats, sendDelivery } = usePlatform();
@@ -24,10 +26,10 @@ export default function Deliveries() {
       <div className="page-head">
         <div>
           <p className="eyebrow">Private galleries</p>
-          <h2>Deliveries</h2>
+          <h2>Deliveries & email</h2>
           <p>
-            Send each participant an expiring link to only their approved
-            photos.
+            Send private galleries and monitor their email delivery in one
+            place.
           </p>
         </div>
       </div>
@@ -122,6 +124,7 @@ export default function Deliveries() {
           </p>
         ) : null}
       </div>
+      {user?.role === "org_admin" ? <EmailOutbox embedded /> : null}
     </div>
   );
 }

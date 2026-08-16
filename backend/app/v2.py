@@ -3286,6 +3286,11 @@ def enrollment_access(
     return token_row, participant, expires_at
 
 
+def effective_consent_policy_version(participant: Participant) -> str:
+    organization_version = participant.event.organization.privacy_notice_version
+    return f"{settings.consent_policy_version}:org-{organization_version}"
+
+
 def enrollment_photos(token: str, participant: Participant, db: Session) -> list[dict]:
     rows = db.scalars(
         select(FaceMatch).where(
@@ -3338,16 +3343,19 @@ def public_enrollment(token: str, request: Request, db: Session = Depends(get_db
             participant.enrollment_status = "opened"
         db.commit()
     photos = enrollment_photos(token, participant, db) if participant.enrollment_status == "verified" else []
+    organization = participant.event.organization
     return ok(
         {
-            "organization_name": participant.event.organization.name,
+            "organization_name": organization.name,
             "event_name": participant.event.name,
             "participant_name": participant.name,
             "status": participant.enrollment_status,
             "expires_at": expires_at.isoformat(),
             "purpose": "Find event photographs containing you",
             "retention_days": participant.event.retention_days,
-            "consent_policy_version": settings.consent_policy_version,
+            "consent_policy_version": effective_consent_policy_version(participant),
+            "participant_privacy_notice": organization.participant_privacy_notice,
+            "privacy_contact_email": organization.privacy_contact_email or organization.contact_email,
             "matching_results": {"photos": len(photos)},
             "photos": photos,
         },
@@ -3371,7 +3379,7 @@ def enrollment_consent(
         event_id=participant.event_id,
         participant_id=participant.id,
         consent_type="face_enrollment",
-        policy_version=settings.consent_policy_version,
+        policy_version=effective_consent_policy_version(participant),
         accepted=True,
         ip_address=request.client.host if request.client else None,
         user_agent=request.headers.get("user-agent"),
@@ -3459,7 +3467,11 @@ def complete_enrollment(
     token_row, participant, expires_at = enrollment_access(db, token, lock=True)
     consent = db.scalar(
         select(Consent)
-        .where(Consent.participant_id == participant.id, Consent.accepted.is_(True))
+        .where(
+            Consent.participant_id == participant.id,
+            Consent.accepted.is_(True),
+            Consent.policy_version == effective_consent_policy_version(participant),
+        )
         .order_by(Consent.accepted_at.desc())
     )
     if not consent:

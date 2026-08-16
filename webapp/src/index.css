@@ -565,7 +565,8 @@ tbody tr:hover {
   letter-spacing: -0.1px;
 }
 
-.face-matches-section {
+.face-matches-section,
+.email-outbox-section {
   display: grid;
   gap: 16px;
   padding-top: 4px;
@@ -1599,6 +1600,14 @@ tbody tr:hover {
 .settings-nav button:active:not(:disabled) {
   transform: scale(0.98);
 }
+.settings-nav button:hover {
+  background: var(--surface-muted);
+  color: var(--ink);
+}
+.settings-nav button:focus-visible {
+  outline: 2px solid var(--violet-500);
+  outline-offset: -2px;
+}
 .settings-nav button.active {
   background: var(--gradient-soft);
   color: var(--violet-600);
@@ -1610,6 +1619,35 @@ tbody tr:hover {
 }
 .settings-save {
   justify-self: start;
+}
+.field small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.security-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-muted);
+}
+.security-actions > div {
+  display: grid;
+  gap: 3px;
+}
+.security-actions strong {
+  font-size: 13px;
+}
+.security-actions p {
+  color: var(--muted);
+  font-size: 11px;
+}
+.security-actions .btn {
+  flex: none;
 }
 .locked-policy {
   display: grid;
@@ -1691,6 +1729,17 @@ tbody tr:hover {
   .upload-layout,
   .settings-layout {
     grid-template-columns: 1fr;
+  }
+  .settings-nav {
+    position: static;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .settings-nav button {
+    text-align: center;
+  }
+  .security-actions {
+    align-items: stretch;
+    flex-direction: column;
   }
   .pipeline {
     grid-template-columns: 1fr;
@@ -1849,6 +1898,16 @@ tbody tr:hover {
 }
 .consent-row input {
   margin-top: 3px;
+}
+.participant-privacy-notice,
+.participant-privacy-contact {
+  display: block;
+  margin-top: 7px;
+  color: var(--ink-soft);
+  line-height: 1.5;
+}
+.participant-privacy-contact {
+  color: var(--violet-600);
 }
 .success-view {
   text-align: center;

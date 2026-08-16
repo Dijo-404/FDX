@@ -64,20 +64,6 @@ export default function Dropzone({
         tabIndex={allowDirectory ? undefined : 0}
         aria-disabled={disabled}
       >
-        <input
-          ref={inputRef}
-          type="file"
-          accept={accept}
-          multiple={multiple}
-          disabled={disabled}
-          webkitdirectory={directory ? "" : undefined}
-          directory={directory ? "" : undefined}
-          hidden
-          onChange={(event) => {
-            if (event.target.files.length) addFiles(event.target.files);
-            event.target.value = "";
-          }}
-        />
         {allowDirectory ? (
           <input
             ref={directoryInputRef}
@@ -93,7 +79,22 @@ export default function Dropzone({
               event.target.value = "";
             }}
           />
-        ) : null}
+        ) : (
+          <input
+            ref={inputRef}
+            type="file"
+            accept={accept}
+            multiple={multiple}
+            disabled={disabled}
+            webkitdirectory={directory ? "" : undefined}
+            directory={directory ? "" : undefined}
+            hidden
+            onChange={(event) => {
+              if (event.target.files.length) addFiles(event.target.files);
+              event.target.value = "";
+            }}
+          />
+        )}
         <Icon name="upload" size={22} />
         <strong>{title}</strong>
         <span>{hint}</span>
@@ -102,14 +103,6 @@ export default function Dropzone({
             <button
               type="button"
               className="dropzone-action primary"
-              disabled={disabled}
-              onClick={() => inputRef.current?.click()}
-            >
-              Choose files
-            </button>
-            <button
-              type="button"
-              className="dropzone-action"
               disabled={disabled}
               onClick={() => directoryInputRef.current?.click()}
             >

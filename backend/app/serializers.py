@@ -60,6 +60,10 @@ def organization_json(db: Session, organization: Organization) -> dict:
         "contactName": organization.contact_name,
         "contactEmail": organization.contact_email,
         "phone": organization.phone,
+        "privacyContactEmail": organization.privacy_contact_email or "",
+        "privacyContactEmailEffective": organization.privacy_contact_email or organization.contact_email,
+        "participantPrivacyNotice": organization.participant_privacy_notice,
+        "privacyNoticeVersion": organization.privacy_notice_version,
         "createdAt": iso(organization.created_at),
     }
 

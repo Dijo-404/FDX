@@ -3,15 +3,18 @@ import Icon from "../../components/Icon";
 import { usePlatform } from "../../context/PlatformContext";
 import useInfiniteScroll from "../../hooks/useInfiniteScroll";
 
-export default function EmailOutbox() {
+export default function EmailOutbox({ embedded = false }) {
   const { emails, retryEmail } = usePlatform();
   const emailsTable = useInfiniteScroll(emails, "Email delivery records");
   return (
-    <div className="page">
-      <div className="page-head">
+    <section
+      id={embedded ? "email-delivery" : undefined}
+      className={embedded ? "email-outbox-section" : "page"}
+    >
+      <div className={embedded ? "section-head" : "page-head"}>
         <div>
           <p className="eyebrow">Notification service</p>
-          <h2>Email delivery</h2>
+          {embedded ? <h3>Email delivery</h3> : <h2>Email delivery</h2>}
           <p>
             Persistent delivery history for invitations, enrollment links, and
             private galleries.
@@ -74,6 +77,6 @@ export default function EmailOutbox() {
           <p className="empty-note">No email has been queued.</p>
         ) : null}
       </div>
-    </div>
+    </section>
   );
 }

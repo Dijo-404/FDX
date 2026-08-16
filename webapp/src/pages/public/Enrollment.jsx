@@ -393,6 +393,16 @@ export default function Enrollment() {
             I consent to FDX processing this selfie into a face embedding solely
             to find my photographs for this event. The data expires with the
             event retention policy.
+            {info?.participant_privacy_notice ? (
+              <small className="participant-privacy-notice">
+                {info.participant_privacy_notice}
+              </small>
+            ) : null}
+            {info?.privacy_contact_email ? (
+              <small className="participant-privacy-contact">
+                Privacy questions: {info.privacy_contact_email}
+              </small>
+            ) : null}
           </span>
         </label>
         <button

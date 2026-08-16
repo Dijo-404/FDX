@@ -19,7 +19,6 @@ import Deliveries from "./pages/organization/Deliveries";
 import OrganizationLogs from "./pages/organization/Logs";
 import Settings from "./pages/organization/Settings";
 import Team from "./pages/organization/Team";
-import EmailOutbox from "./pages/organization/EmailOutbox";
 import AcceptInvite from "./pages/public/AcceptInvite";
 import Enrollment from "./pages/public/Enrollment";
 import Gallery from "./pages/public/Gallery";
@@ -46,12 +45,10 @@ const ORGANIZATION_NAV = [
     label: "Processing & matches",
     icon: "processing",
   },
-  { to: "/organization/deliveries", label: "Deliveries", icon: "delivery" },
   {
-    to: "/organization/emails",
-    label: "Email delivery",
-    icon: "mail",
-    roles: ["org_admin"],
+    to: "/organization/deliveries",
+    label: "Deliveries & email",
+    icon: "delivery",
   },
   {
     to: "/organization/team",
@@ -152,11 +149,7 @@ export default function App() {
         <Route path="deliveries" element={<Deliveries />} />
         <Route
           path="emails"
-          element={
-            <ProtectedRoute role="org_admin">
-              <EmailOutbox />
-            </ProtectedRoute>
-          }
+          element={<Navigate to="/organization/deliveries" replace />}
         />
         <Route
           path="team"

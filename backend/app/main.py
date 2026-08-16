@@ -25,7 +25,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from openpyxl import load_workbook
 from openpyxl.utils.exceptions import InvalidFileException
 from PIL import Image, ImageOps
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -168,9 +168,47 @@ class MatchReviewInput(BaseModel):
 
 
 class SettingsInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     contactName: str | None = None
     contactEmail: EmailStr | None = None
     phone: str | None = None
+    privacyContactEmail: EmailStr | None = None
+    participantPrivacyNotice: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("contactName", "contactEmail", "phone", "participantPrivacyNotice", mode="before")
+    @classmethod
+    def reject_null_values(cls, value):
+        if value is None:
+            raise ValueError("Value cannot be null")
+        return value
+
+    @field_validator("contactName")
+    @classmethod
+    def validate_contact_name(cls, value: str) -> str:
+        value = value.strip()
+        if len(value) > 120:
+            raise ValueError("Primary contact must be at most 120 characters")
+        return value
+
+    @field_validator("phone")
+    @classmethod
+    def validate_phone(cls, value: str) -> str:
+        value = value.strip()
+        if len(value) > 40:
+            raise ValueError("Support phone must be at most 40 characters")
+        return value
+
+    @field_validator("participantPrivacyNotice")
+    @classmethod
+    def normalize_privacy_notice(cls, value: str) -> str:
+        return value.strip()
+
+    @model_validator(mode="after")
+    def require_change(self):
+        if not self.model_fields_set:
+            raise ValueError("At least one setting is required")
+        return self
 
 
 def audit(
@@ -356,15 +394,19 @@ async def http_error(request: Request, exc: HTTPException):
 
 @app.exception_handler(RequestValidationError)
 async def validation_error(request: Request, exc: RequestValidationError):
+    errors = [
+        {key: value for key, value in item.items() if key != "ctx"}
+        for item in exc.errors()
+    ]
     if not request.url.path.startswith("/api/v2"):
-        return JSONResponse(status_code=422, content={"detail": exc.errors()})
+        return JSONResponse(status_code=422, content={"detail": errors})
     return JSONResponse(
         status_code=422,
         content={
             "error": {
                 "code": "VALIDATION_ERROR",
                 "message": "Request validation failed.",
-                "details": {"errors": exc.errors()},
+                "details": {"errors": errors},
             },
             "meta": {"request_id": request.state.request_id},
         },
@@ -1674,7 +1716,19 @@ def organization_logs(user: User = Depends(require_org_member), db: Session = De
 
 @app.get("/api/organization/settings")
 def organization_settings(user: User = Depends(require_org_member), db: Session = Depends(get_db)):
-    return organization_json(db, user.organization)
+    result = organization_json(db, user.organization)
+    result.update(
+        {
+            "consentRequired": True,
+            "consentPolicyVersion": settings.consent_policy_version,
+            "securityPolicy": {
+                "accessTokenMinutes": settings.access_token_minutes,
+                "refreshSessionDays": settings.refresh_token_days,
+                "passwordResetMinutes": settings.password_reset_minutes,
+            },
+        }
+    )
+    return result
 
 
 @app.patch("/api/organization/settings")
@@ -1684,15 +1738,25 @@ def update_settings(
     db: Session = Depends(get_db),
 ):
     values = payload.model_dump(exclude_unset=True)
+    notice_changed = (
+        "participantPrivacyNotice" in values
+        and values["participantPrivacyNotice"] != user.organization.participant_privacy_notice
+    )
+    mapping = {
+        "contactName": "contact_name",
+        "contactEmail": "contact_email",
+        "privacyContactEmail": "privacy_contact_email",
+        "participantPrivacyNotice": "participant_privacy_notice",
+    }
     for key, value in values.items():
-        setattr(
-            user.organization,
-            {"contactName": "contact_name", "contactEmail": "contact_email"}.get(key, key),
-            value,
-        )
-    audit(db, user, "Organization profile updated", ", ".join(values))
+        if isinstance(value, str) and key in {"contactEmail", "privacyContactEmail"}:
+            value = value.lower()
+        setattr(user.organization, mapping.get(key, key), value)
+    if notice_changed:
+        user.organization.privacy_notice_version += 1
+    audit(db, user, "Organization settings updated", ", ".join(values))
     db.commit()
-    return organization_json(db, user.organization)
+    return organization_settings(user, db)
 
 
 @app.get("/api/organization/dashboard")

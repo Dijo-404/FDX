@@ -15,8 +15,8 @@ jobs:
       run:
         working-directory: webapp
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -47,8 +47,8 @@ jobs:
       FDX_ENVIRONMENT: test
       PYTHONPATH: backend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -68,8 +68,8 @@ jobs:
   infrastructure:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - run: pip install cfn-lint
@@ -78,7 +78,8 @@ jobs:
           POSTGRES_PASSWORD="$(openssl rand -hex 24)" \
           JWT_SECRET="$(openssl rand -hex 48)" \
           FDX_SUPER_ADMIN_PASSWORD="Fdx-$(openssl rand -hex 24)" \
-          docker compose config --quiet
+          EMAIL_WEBHOOK_SECRET="$(openssl rand -hex 48)" \
+          docker compose -f compose.local.yml config --quiet
       - run: cfn-lint deploy/aws/platform.yml
       - run: sudo apt-get update && sudo apt-get install -y shellcheck
       - run: find . -path './.venv' -prune -o -name '*.sh' -type f -print0 | xargs -0 shellcheck
@@ -88,6 +89,6 @@ jobs:
   images:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: docker build -f backend/Dockerfile -t fdx-api:ci .
       - run: docker build -f webapp/Dockerfile -t fdx-web:ci .

@@ -6,6 +6,7 @@ Revises: 20260816_09
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy import inspect
 
 revision = "20260816_10"
 down_revision = "20260816_09"
@@ -14,28 +15,32 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "organizations",
-        sa.Column("privacy_contact_email", sa.String(length=254), nullable=True),
-    )
-    op.add_column(
-        "organizations",
-        sa.Column(
-            "participant_privacy_notice",
-            sa.Text(),
-            nullable=False,
-            server_default="",
-        ),
-    )
-    op.add_column(
-        "organizations",
-        sa.Column(
-            "privacy_notice_version",
-            sa.Integer(),
-            nullable=False,
-            server_default="1",
-        ),
-    )
+    organization_columns = {column["name"] for column in inspect(op.get_bind()).get_columns("organizations")}
+    if "privacy_contact_email" not in organization_columns:
+        op.add_column(
+            "organizations",
+            sa.Column("privacy_contact_email", sa.String(length=254), nullable=True),
+        )
+    if "participant_privacy_notice" not in organization_columns:
+        op.add_column(
+            "organizations",
+            sa.Column(
+                "participant_privacy_notice",
+                sa.Text(),
+                nullable=False,
+                server_default="",
+            ),
+        )
+    if "privacy_notice_version" not in organization_columns:
+        op.add_column(
+            "organizations",
+            sa.Column(
+                "privacy_notice_version",
+                sa.Integer(),
+                nullable=False,
+                server_default="1",
+            ),
+        )
 
 
 def downgrade() -> None:

@@ -27,7 +27,6 @@ from app.worker import process_gallery_export
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, func, select
 
-
 TEST_PASSWORD = f"Test-{secrets.token_urlsafe(24)}"
 
 
@@ -196,9 +195,7 @@ def test_gallery_email_can_send_after_every_event_photo_is_ready():
             dispatch.assert_called_once()
 
         with SessionLocal() as db:
-            emails = db.scalars(
-                select(EmailOutbox).where(EmailOutbox.delivery_id == seed["delivery_id"])
-            ).all()
+            emails = db.scalars(select(EmailOutbox).where(EmailOutbox.delivery_id == seed["delivery_id"])).all()
             assert len(emails) == 1
             assert emails[0].status == "queued"
             assert db.get(Delivery, seed["delivery_id"]).status == "ready"

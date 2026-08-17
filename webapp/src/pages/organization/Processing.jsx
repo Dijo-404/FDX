@@ -22,9 +22,7 @@ export default function Processing() {
         <div>
           <p className="eyebrow">ML pipeline</p>
           <h2>Processing & face matches</h2>
-          <p>
-            Monitor ingestion and automatic identity results in one place.
-          </p>
+          <p>Monitor ingestion and automatic identity results in one place.</p>
         </div>
       </div>
       <div className="stat-grid">

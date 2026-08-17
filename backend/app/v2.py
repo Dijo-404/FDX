@@ -2949,8 +2949,7 @@ def review_match(event_id: str, match_id: str, target: str, request: Request, us
     raise HTTPException(
         status_code=410,
         detail=(
-            "Manual match review is disabled; matches are approved automatically "
-            "only above the confidence threshold"
+            "Manual match review is disabled; matches are approved automatically only above the confidence threshold"
         ),
     )
 
@@ -3668,8 +3667,7 @@ def enrollment_selected_download(
     archive_buffer.seek(0)
     event_name = (
         "".join(
-            character if character.isalnum() or character in "-_" else "-"
-            for character in participant.event.name
+            character if character.isalnum() or character in "-_" else "-" for character in participant.event.name
         ).strip("-")
         or "fdx-event"
     )

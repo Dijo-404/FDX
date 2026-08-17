@@ -394,9 +394,7 @@ def _embedding(face: np.ndarray) -> tuple[np.ndarray, float]:
     input_tensor = input_tensor / 127.5 - 1.0
     flip_tensor = input_tensor[:, :, :, ::-1].copy()
     batch = np.concatenate((input_tensor, flip_tensor), axis=0)
-    embeddings, norms = RECOGNITION_SESSION.run(
-        None, {RECOGNITION_SESSION.get_inputs()[0].name: batch}
-    )
+    embeddings, norms = RECOGNITION_SESSION.run(None, {RECOGNITION_SESSION.get_inputs()[0].name: batch})
     norms = np.asarray(norms, dtype=np.float32).reshape(-1, 1)
     weights = norms / max(float(norms.sum()), np.finfo(np.float32).eps)
     fused = np.sum(np.asarray(embeddings, dtype=np.float32) * weights, axis=0)
@@ -483,8 +481,8 @@ def find_faces():
         with INFERENCE_LOCK:
             started = time.perf_counter()
             if input_mode == "cropped":
-                detections, landmarks, embedding_image, coordinate_scale, preprocessing = (
-                    _detect_cropped(image, threshold)
+                detections, landmarks, embedding_image, coordinate_scale, preprocessing = _detect_cropped(
+                    image, threshold
                 )
             else:
                 detections, landmarks = _detect(image, threshold)
@@ -495,9 +493,7 @@ def find_faces():
             if len(detections) == 0:
                 return jsonify(message="No face is found in the given image"), 400
 
-            order = np.argsort(
-                -((detections[:, 2] - detections[:, 0]) * (detections[:, 3] - detections[:, 1]))
-            )
+            order = np.argsort(-((detections[:, 2] - detections[:, 0]) * (detections[:, 3] - detections[:, 1])))
             results = []
             for index in order:
                 detection = detections[index]
@@ -520,23 +516,15 @@ def find_faces():
                 if preprocessing is not None:
                     face_result["quality"] = {
                         **preprocessing,
-                        "source_face_width": round(
-                            max(0.0, float(source_detection[2] - source_detection[0])), 2
-                        ),
-                        "source_face_height": round(
-                            max(0.0, float(source_detection[3] - source_detection[1])), 2
-                        ),
+                        "source_face_width": round(max(0.0, float(source_detection[2] - source_detection[0])), 2),
+                        "source_face_height": round(max(0.0, float(source_detection[3] - source_detection[1])), 2),
                     }
                 if "calculator" in requested_plugins:
                     calculator_started = time.perf_counter()
-                    embedding, embedding_norm = _embedding(
-                        _align_face(embedding_image, landmarks[index])
-                    )
+                    embedding, embedding_norm = _embedding(_align_face(embedding_image, landmarks[index]))
                     face_result["embedding"] = embedding.astype(float).tolist()
                     face_result["embedding_norm"] = embedding_norm
-                    face_result["execution_time"]["calculator"] = int(
-                        (time.perf_counter() - calculator_started) * 1000
-                    )
+                    face_result["execution_time"]["calculator"] = int((time.perf_counter() - calculator_started) * 1000)
                 results.append(face_result)
 
         plugins = {"detector": DETECTOR_VERSION}

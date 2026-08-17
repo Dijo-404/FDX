@@ -5,7 +5,6 @@ from sqlalchemy.orm import Session
 
 from .models import Photo
 
-
 READY_PHOTO_STATUSES = ("ready", "completed")
 
 
@@ -18,4 +17,3 @@ def event_media_readiness(db: Session, event_id: str) -> tuple[int, int]:
         ).where(Photo.event_id == event_id)
     ).one()
     return int(total or 0), int(ready or 0)
-

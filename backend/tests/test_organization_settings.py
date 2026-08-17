@@ -19,7 +19,6 @@ from app.models import (
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, select
 
-
 TEST_PASSWORD = f"Test-{secrets.token_urlsafe(24)}"
 
 
@@ -81,16 +80,10 @@ def seed_settings_tenant() -> dict:
 
 def cleanup_settings_tenant(seed: dict) -> None:
     with SessionLocal() as db:
-        db.execute(
-            delete(AuditLog).where(AuditLog.organization_id == seed["organization_id"])
-        )
-        db.execute(
-            delete(Event).where(Event.organization_id == seed["organization_id"])
-        )
+        db.execute(delete(AuditLog).where(AuditLog.organization_id == seed["organization_id"]))
+        db.execute(delete(Event).where(Event.organization_id == seed["organization_id"]))
         db.execute(delete(User).where(User.organization_id == seed["organization_id"]))
-        db.execute(
-            delete(Organization).where(Organization.id == seed["organization_id"])
-        )
+        db.execute(delete(Organization).where(Organization.id == seed["organization_id"]))
         db.commit()
 
 
@@ -111,9 +104,7 @@ def test_privacy_settings_are_persisted_versioned_and_exposed_to_enrollment():
             body = updated.json()
             assert body["privacyContactEmail"] == "privacy@example.com"
             assert body["privacyContactEmailEffective"] == "privacy@example.com"
-            assert body["participantPrivacyNotice"].startswith(
-                "Contact our privacy team"
-            )
+            assert body["participantPrivacyNotice"].startswith("Contact our privacy team")
             assert body["privacyNoticeVersion"] == 2
             assert body["consentRequired"] is True
             assert body["consentPolicyVersion"] == settings.consent_policy_version
@@ -126,35 +117,22 @@ def test_privacy_settings_are_persisted_versioned_and_exposed_to_enrollment():
             assert unchanged.status_code == 200
             assert unchanged.json()["privacyNoticeVersion"] == 2
 
-            enrollment = client.get(
-                f"/api/v2/public/enrollment/{seed['enrollment_token']}"
-            )
+            enrollment = client.get(f"/api/v2/public/enrollment/{seed['enrollment_token']}")
             assert enrollment.status_code == 200
             enrollment_data = enrollment.json()["data"]
             assert enrollment_data["privacy_contact_email"] == "privacy@example.com"
-            assert (
-                enrollment_data["participant_privacy_notice"]
-                == body["participantPrivacyNotice"]
-            )
-            assert (
-                enrollment_data["consent_policy_version"]
-                == f"{settings.consent_policy_version}:org-2"
-            )
+            assert enrollment_data["participant_privacy_notice"] == body["participantPrivacyNotice"]
+            assert enrollment_data["consent_policy_version"] == f"{settings.consent_policy_version}:org-2"
 
             consent = client.post(
                 f"/api/v2/public/enrollment/{seed['enrollment_token']}/consent",
                 data={"accepted": "true"},
             )
             assert consent.status_code == 201
-            assert (
-                consent.json()["data"]["policy_version"]
-                == f"{settings.consent_policy_version}:org-2"
-            )
+            assert consent.json()["data"]["policy_version"] == f"{settings.consent_policy_version}:org-2"
 
         with SessionLocal() as db:
-            record = db.scalar(
-                select(Consent).where(Consent.participant_id == seed["participant_id"])
-            )
+            record = db.scalar(select(Consent).where(Consent.participant_id == seed["participant_id"]))
             assert record.policy_version == f"{settings.consent_policy_version}:org-2"
             audit = db.scalar(
                 select(AuditLog)
@@ -177,12 +155,7 @@ def test_settings_update_is_admin_only_and_rejects_invalid_payloads():
     staff_headers = {"Authorization": f"Bearer {seed['staff_token']}"}
     try:
         with TestClient(app) as client:
-            assert (
-                client.get(
-                    "/api/organization/settings", headers=staff_headers
-                ).status_code
-                == 200
-            )
+            assert client.get("/api/organization/settings", headers=staff_headers).status_code == 200
             assert (
                 client.patch(
                     "/api/organization/settings",

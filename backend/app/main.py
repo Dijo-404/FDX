@@ -394,10 +394,7 @@ async def http_error(request: Request, exc: HTTPException):
 
 @app.exception_handler(RequestValidationError)
 async def validation_error(request: Request, exc: RequestValidationError):
-    errors = [
-        {key: value for key, value in item.items() if key != "ctx"}
-        for item in exc.errors()
-    ]
+    errors = [{key: value for key, value in item.items() if key != "ctx"} for item in exc.errors()]
     if not request.url.path.startswith("/api/v2"):
         return JSONResponse(status_code=422, content={"detail": errors})
     return JSONResponse(
@@ -1377,9 +1374,7 @@ def upload_photos(
     db: Session = Depends(get_db),
 ):
     event = db.scalar(
-        select(Event)
-        .where(Event.id == event_id, Event.organization_id == user.organization_id)
-        .with_for_update()
+        select(Event).where(Event.id == event_id, Event.organization_id == user.organization_id).with_for_update()
     )
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
